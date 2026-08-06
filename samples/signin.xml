@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Canonical sample and E2E fixture: mirrors the harness ReferenceScreen sign-in panel. -->
+<ui>
+  <table id="signin-panel" class="panel" width="500" height="300">
+    <window id="signin-window" title="Sign in" expand="true" fill="true">
+      <table id="signin-form">
+        <row/>
+        <label id="signin-title" class="title" text="Sign in"/>
+        <row/>
+        <label id="username-label" text="Username"/>
+        <textfield id="username" label="Username"/>
+        <row/>
+        <label id="password-label" text="Password"/>
+        <textfield id="password" label="Password"/>
+        <row/>
+        <checkbox id="remember" text="Remember me" label="Remember me"/>
+        <row/>
+        <button id="save" class="primary" text="Save" name="Save" width="180" align="left"/>
+      </table>
+    </window>
+  </table>
+</ui>

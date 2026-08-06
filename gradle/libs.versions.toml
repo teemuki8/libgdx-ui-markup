@@ -1,0 +1,20 @@
+[versions]
+gdx = "1.14.2"
+junit = "5.10.2"
+harness = "1.0.0"
+jackson = "2.17.2"
+mcp = "2.0.0"
+kotlin = "2.1.0"
+intellij-platform = "2.18.1"
+
+[libraries]
+gdx = { module = "com.badlogicgames.gdx:gdx", version.ref = "gdx" }
+gdx-backend-lwjgl3 = { module = "com.badlogicgames.gdx:gdx-backend-lwjgl3", version.ref = "gdx" }
+harness-core = { module = "io.github.teemuki8:harness-core", version.ref = "harness" }
+harness-scene2d = { module = "io.github.teemuki8:harness-scene2d", version.ref = "harness" }
+harness-lwjgl3 = { module = "io.github.teemuki8:harness-lwjgl3", version.ref = "harness" }
+harness-protocol = { module = "io.github.teemuki8:harness-protocol", version.ref = "harness" }
+harness-mcp = { module = "io.github.teemuki8:harness-mcp", version.ref = "harness" }
+jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit" }
