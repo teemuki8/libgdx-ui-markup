@@ -9,7 +9,7 @@ allprojects {
 subprojects {
     pluginManager.apply("maven-publish")
 
-    if (name == "gdx-ui-markup-idea") {
+    if (name == "libgdx-ui-markup-idea") {
         // The IDEA plugin runs on IntelliJ's JBR (Java 21+) and manages its own toolchain.
         return@subprojects
     }
@@ -30,9 +30,9 @@ subprojects {
         publications.create<MavenPublication>("mavenJava") {
             from(components["java"])
             pom {
-                name.set("gdx-ui-markup ${project.name}")
+                name.set("libgdx-ui-markup ${project.name}")
                 description.set("Declarative HTML-like XML + CSS builder for libGDX Scene2D UIs")
-                url.set("https://github.com/teemuki8/gdx-ui-markup")
+                url.set("https://github.com/teemuki8/libgdx-ui-markup")
                 licenses {
                     license {
                         name.set("The Apache License, Version 2.0")
@@ -49,7 +49,7 @@ subprojects {
         options.release.set(25)
         options.compilerArgs.add("-Xlint:all")
         // Warnings in project code fail the build; dependency warnings stay warnings.
-        if (name != "gdx-ui-markup-idea") {
+        if (name != "libgdx-ui-markup-idea") {
             options.compilerArgs.add("-Werror")
         }
     }

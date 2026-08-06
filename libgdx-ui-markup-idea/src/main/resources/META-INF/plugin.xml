@@ -1,9 +1,9 @@
 <idea-plugin>
     <id>dev.gdx.markup.idea</id>
-    <name>gdx-ui-markup preview</name>
+    <name>libgdx-ui-markup preview</name>
     <vendor>teemuki8</vendor>
 
-    <description>Live preview and hot reload for gdx-ui-markup Scene2D markup.</description>
+    <description>Live preview and hot reload for libgdx-ui-markup Scene2D markup.</description>
 
     <depends>com.intellij.modules.platform</depends>
 
@@ -17,7 +17,7 @@
         <action id="MarkupPreview.Launch"
                 class="dev.gdx.markup.idea.LaunchMarkupPreviewAction"
                 text="Launch markup preview"
-                description="Launch the gdx-ui-markup preview for this markup file">
+                description="Launch the libgdx-ui-markup preview for this markup file">
             <add-to-group group-id="EditorPopupMenu" anchor="first"/>
         </action>
     </actions>

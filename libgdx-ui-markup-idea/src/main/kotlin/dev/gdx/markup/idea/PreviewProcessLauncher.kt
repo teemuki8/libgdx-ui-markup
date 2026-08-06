@@ -17,7 +17,7 @@ object PreviewProcessLauncher {
             return Path.of(it).takeIf(::launchable)
         }
         pluginInstallRoot()?.let { root ->
-            val bundled = root.resolve("gdx-ui-markup-preview")
+            val bundled = root.resolve("libgdx-ui-markup-preview")
             if (launchable(bundled)) {
                 return bundled
             }

@@ -1,4 +1,4 @@
-rootProject.name = "gdx-ui-markup"
+rootProject.name = "libgdx-ui-markup"
 
 pluginManagement {
     repositories {
@@ -15,9 +15,9 @@ dependencyResolutionManagement {
 }
 
 include(
-    "gdx-ui-markup",
-    "gdx-ui-markup-harness",
-    "gdx-ui-markup-runtime",
-    "gdx-ui-markup-preview",
-    "gdx-ui-markup-idea",
+    "libgdx-ui-markup",
+    "libgdx-ui-markup-harness",
+    "libgdx-ui-markup-runtime",
+    "libgdx-ui-markup-preview",
+    "libgdx-ui-markup-idea",
 )

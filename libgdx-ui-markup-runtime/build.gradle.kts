@@ -1,5 +1,5 @@
 dependencies {
-    api(project(":gdx-ui-markup"))
+    api(project(":libgdx-ui-markup"))
     api(libs.agent.runtime.core)
     testImplementation(libs.gdx.backend.lwjgl3)
     testRuntimeOnly("com.badlogicgames.gdx:gdx-platform:${libs.versions.gdx.get()}:natives-desktop")

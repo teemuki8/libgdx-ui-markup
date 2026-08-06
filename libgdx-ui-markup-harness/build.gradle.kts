@@ -1,5 +1,5 @@
 dependencies {
-    api(project(":gdx-ui-markup"))
+    api(project(":libgdx-ui-markup"))
     api(libs.harness.scene2d)
     testImplementation(libs.harness.protocol)
     testImplementation(libs.jackson.databind)
@@ -10,11 +10,11 @@ dependencies {
 
 tasks.withType<Test>().configureEach {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
-    dependsOn(project(":gdx-ui-markup-preview").tasks.named("installDist"))
+    dependsOn(project(":libgdx-ui-markup-preview").tasks.named("installDist"))
     systemProperty(
         "markup.preview.distribution",
-        project(":gdx-ui-markup-preview").layout.buildDirectory
-            .dir("install/gdx-ui-markup-preview").get().asFile.absolutePath,
+        project(":libgdx-ui-markup-preview").layout.buildDirectory
+            .dir("install/libgdx-ui-markup-preview").get().asFile.absolutePath,
     )
     systemProperty(
         "markup.samples.dir",

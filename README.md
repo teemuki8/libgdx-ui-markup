@@ -1,4 +1,4 @@
-# gdx-ui-markup
+# libgdx-ui-markup
 
 Declarative Scene2D UI authoring for libGDX: an HTML-like XML dialect plus a bounded CSS
 styling subset compiles into Scene2D actors with **semantics by construction**. The same source
@@ -9,11 +9,11 @@ come from the markup, so libgdx-ui-harness locators stop depending on inference.
 
 | Module | Responsibility |
 |---|---|
-| `gdx-ui-markup` | Core: hardened XML parser → immutable model, CSS-subset parser, tag registry, render-thread builder, programmatic default Skin, `SemanticSink` SPI |
-| `gdx-ui-markup-harness` | Adapter: `HarnessSemanticSink` maps markup semantics into the harness `Semantics` facade; end-to-end test drives a markup UI through the harness MCP |
-| `gdx-ui-markup-runtime` | Adapter: `MarkupRuntimeSource` registers `data-runtime-entity` actors as libgdx-agent-runtime value sources with live widget state and native UI bindings |
-| `gdx-ui-markup-preview` | Standalone LWJGL3 app: hot-reloads `--ui`/`--css`, typed error overlay, CI flags, optional `--mcp` harness server |
-| `gdx-ui-markup-idea` | Thin IntelliJ plugin: "Markup Preview" tool window that launches the preview and shows live build status |
+| `libgdx-ui-markup` | Core: hardened XML parser → immutable model, CSS-subset parser, tag registry, render-thread builder, programmatic default Skin, `SemanticSink` SPI |
+| `libgdx-ui-markup-harness` | Adapter: `HarnessSemanticSink` maps markup semantics into the harness `Semantics` facade; end-to-end test drives a markup UI through the harness MCP |
+| `libgdx-ui-markup-runtime` | Adapter: `MarkupRuntimeSource` registers `data-runtime-entity` actors as libgdx-agent-runtime value sources with live widget state and native UI bindings |
+| `libgdx-ui-markup-preview` | Standalone LWJGL3 app: hot-reloads `--ui`/`--css`, typed error overlay, CI flags, optional `--mcp` harness server |
+| `libgdx-ui-markup-idea` | Thin IntelliJ plugin: "Markup Preview" tool window that launches the preview and shows live build status |
 
 Layout is Scene2D-native via XML attributes (`expand`, `fill`, `align`, `colspan`, `pad`,
 `space`, `grow`); CSS is a bounded styling subset compiled into a libGDX Skin. No CSS layout
@@ -65,14 +65,14 @@ checkbox:hover { font-color: accent; }
 Run the live preview (hot reloads on file change, `esc` quits):
 
 ```
-./gradlew :gdx-ui-markup-preview:run \
+./gradlew :libgdx-ui-markup-preview:run \
   --args='--ui samples/signin.xml --css samples/signin.css'
 ```
 
 CI mode renders frames, writes a screenshot, exits 0 (or 2 with a typed error on stdout):
 
 ```
-./gradlew :gdx-ui-markup-preview:run \
+./gradlew :libgdx-ui-markup-preview:run \
   --args='--ui samples/signin.xml --css samples/signin.css --frames 5 --screenshot build/signin.png --exit'
 ```
 
@@ -95,7 +95,7 @@ API with no imperative metadata:
 Locator.testId("save")             // role=button, accessibleName=Save, testId=save
 ```
 
-The full proof lives in `gdx-ui-markup-harness`: an end-to-end test launches the preview with
+The full proof lives in `libgdx-ui-markup-harness`: an end-to-end test launches the preview with
 `--mcp`, queries `role=button name=Save` (exactly one node, `testId=save`), clicks the checkbox
 through the real input path, waits for the `checked` state, and captures a PNG — all against
 `samples/signin.xml`, no imperative wiring.
@@ -128,8 +128,8 @@ Build the plugin zip, then install it from the IDE (Settings → Plugins → gea
 from Disk):
 
 ```
-./gradlew :gdx-ui-markup-idea:buildPlugin
-# zip: gdx-ui-markup-idea/build/distributions/gdx-ui-markup-idea-0.1.0.zip
+./gradlew :libgdx-ui-markup-idea:buildPlugin
+# zip: libgdx-ui-markup-idea/build/distributions/libgdx-ui-markup-idea-0.1.0.zip
 ```
 
 Manual session: open `samples/signin.xml`, open the "Markup Preview" tool window (right
@@ -142,12 +142,12 @@ message` and the tool window status turns red with the same text.
 
 From the repository root:
 
-1. GL-free core: `./gradlew :gdx-ui-markup:test`
-2. Render-thread builder: `xvfb-run -a ./gradlew :gdx-ui-markup:test`
-3. Preview smoke: `xvfb-run -a ./gradlew :gdx-ui-markup-preview:run --args='--ui samples/signin.xml --css samples/signin.css --frames 5 --screenshot build/signin.png --exit'`
-4. Agent-runtime source: `xvfb-run -a ./gradlew :gdx-ui-markup-runtime:test`
-5. Harness E2E: `xvfb-run -a ./gradlew :gdx-ui-markup-harness:test`
-6. Plugin: `./gradlew :gdx-ui-markup-idea:buildPlugin` plus the manual IDEA session above
+1. GL-free core: `./gradlew :libgdx-ui-markup:test`
+2. Render-thread builder: `xvfb-run -a ./gradlew :libgdx-ui-markup:test`
+3. Preview smoke: `xvfb-run -a ./gradlew :libgdx-ui-markup-preview:run --args='--ui samples/signin.xml --css samples/signin.css --frames 5 --screenshot build/signin.png --exit'`
+4. Agent-runtime source: `xvfb-run -a ./gradlew :libgdx-ui-markup-runtime:test`
+5. Harness E2E: `xvfb-run -a ./gradlew :libgdx-ui-markup-harness:test`
+6. Plugin: `./gradlew :libgdx-ui-markup-idea:buildPlugin` plus the manual IDEA session above
 7. Full: `xvfb-run -a ./gradlew build`
 
 ## License

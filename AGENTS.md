@@ -1,4 +1,4 @@
-# gdx-ui-markup — Agent Instructions
+# libgdx-ui-markup — Agent Instructions
 
 ## Mission
 

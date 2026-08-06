@@ -3,9 +3,9 @@ plugins {
 }
 
 dependencies {
-    implementation(project(":gdx-ui-markup"))
-    implementation(project(":gdx-ui-markup-harness"))
-    implementation(project(":gdx-ui-markup-runtime"))
+    implementation(project(":libgdx-ui-markup"))
+    implementation(project(":libgdx-ui-markup-harness"))
+    implementation(project(":libgdx-ui-markup-runtime"))
     implementation(libs.gdx.backend.lwjgl3)
     implementation(libs.harness.core)
     implementation(libs.harness.scene2d)

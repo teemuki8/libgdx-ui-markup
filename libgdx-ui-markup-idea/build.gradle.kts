@@ -31,16 +31,16 @@ dependencies {
 
 // Bundle the preview distribution so the plugin can launch it from its install directory.
 val preparePreview = tasks.register<Copy>("preparePreview") {
-    dependsOn(":gdx-ui-markup-preview:installDist")
-    from(project(":gdx-ui-markup-preview").layout.buildDirectory
-        .dir("install/gdx-ui-markup-preview"))
+    dependsOn(":libgdx-ui-markup-preview:installDist")
+    from(project(":libgdx-ui-markup-preview").layout.buildDirectory
+        .dir("install/libgdx-ui-markup-preview"))
     into(layout.buildDirectory.dir("markup-preview"))
 }
 
 intellijPlatform {
     pluginConfiguration {
         version = "0.1.0"
-        description = "Live preview and hot reload for gdx-ui-markup Scene2D markup"
+        description = "Live preview and hot reload for libgdx-ui-markup Scene2D markup"
         ideaVersion {
             sinceBuild = "243"
             untilBuild = provider { null }
@@ -54,14 +54,14 @@ intellijPlatform {
 tasks {
     prepareSandbox {
         from(preparePreview) {
-            into("gdx-ui-markup-preview")
+            into("libgdx-ui-markup-preview")
         }
     }
 }
 
 tasks.named("buildPlugin") {
     (this as Zip).from(preparePreview) {
-        into("gdx-ui-markup-preview")
+        into("libgdx-ui-markup-preview")
     }
 }
 

@@ -15,7 +15,7 @@ JSON expresses styles only, never structure.
 
 ## Decision
 
-A standalone library (`gdx-ui-markup`) with four modules builds Scene2D UIs from an HTML-like
+A standalone library (`libgdx-ui-markup`) with four modules builds Scene2D UIs from an HTML-like
 XML dialect plus a bounded CSS subset:
 
 1. **Dialect: HTML-like XML + CSS for styling only.** Layout is Scene2D-native through XML
@@ -48,7 +48,7 @@ XML dialect plus a bounded CSS subset:
 
 ## Follow-up: agent-runtime value source
 
-The same semantics-by-construction principle extends to runtime values: `gdx-ui-markup-runtime`
+The same semantics-by-construction principle extends to runtime values: `libgdx-ui-markup-runtime`
 registers every `data-runtime-entity` actor as an agent-runtime entity (published
 `agent-runtime-core` 1.0.0) whose property supplier reads the widget's live state, plus a
 native `UiBinding` mapping the entity property to the actor's control id. This deliberately
