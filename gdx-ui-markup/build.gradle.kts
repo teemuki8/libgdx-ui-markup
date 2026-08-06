@@ -11,4 +11,5 @@ dependencies {
 
 tasks.withType<Test>().configureEach {
     jvmArgs("--enable-native-access=ALL-UNNAMED")
+    systemProperty("markup.samples.dir", rootProject.file("samples").absolutePath)
 }

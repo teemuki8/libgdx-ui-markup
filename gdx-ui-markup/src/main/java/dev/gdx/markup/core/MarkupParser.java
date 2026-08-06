@@ -47,20 +47,36 @@ public final class MarkupParser {
     private final int maxDepth;
     private final int maxAttributeValue;
     private final int maxText;
+    private final Set<String> extraTags;
 
     /** Creates a parser with the default bounded limits. */
     public MarkupParser() {
-        this(MAX_INPUT_BYTES, MAX_ELEMENTS, MAX_DEPTH, MAX_ATTRIBUTE_VALUE, MAX_TEXT);
+        this(MAX_INPUT_BYTES, MAX_ELEMENTS, MAX_DEPTH, MAX_ATTRIBUTE_VALUE, MAX_TEXT, Set.of());
+    }
+
+    /**
+     * Creates a parser that also accepts the listed custom tags (common attributes only; a
+     * {@link MarkupRegistry} factory provides the actor at build time).
+     */
+    public MarkupParser(Set<String> extraTags) {
+        this(MAX_INPUT_BYTES, MAX_ELEMENTS, MAX_DEPTH, MAX_ATTRIBUTE_VALUE, MAX_TEXT, extraTags);
     }
 
     /** Creates a parser with explicit bounded limits. */
     public MarkupParser(
             int maxInputBytes, int maxElements, int maxDepth, int maxAttributeValue, int maxText) {
+        this(maxInputBytes, maxElements, maxDepth, maxAttributeValue, maxText, Set.of());
+    }
+
+    /** Creates a parser with explicit bounded limits and custom tags. */
+    public MarkupParser(int maxInputBytes, int maxElements, int maxDepth,
+            int maxAttributeValue, int maxText, Set<String> extraTags) {
         this.maxInputBytes = maxInputBytes;
         this.maxElements = maxElements;
         this.maxDepth = maxDepth;
         this.maxAttributeValue = maxAttributeValue;
         this.maxText = maxText;
+        this.extraTags = Set.copyOf(Objects.requireNonNull(extraTags, "extraTags"));
     }
 
     /** Parses one bounded markup document into an immutable validated element tree. */
@@ -143,7 +159,7 @@ public final class MarkupParser {
                 throw tooLarge("nesting exceeds the " + maxDepth + "-level limit", path,
                         line, column);
             }
-            TagSpec spec = TagSpec.require(tag, path, line, column);
+            TagSpec spec = TagSpec.require(tag, extraTags, path, line, column);
             LinkedHashMap<String, String> attrs = new LinkedHashMap<>();
             for (int index = 0; index < attributes.getLength(); index++) {
                 String name = attributes.getQName(index);

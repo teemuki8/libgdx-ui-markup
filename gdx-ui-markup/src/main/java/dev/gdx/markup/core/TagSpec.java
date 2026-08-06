@@ -87,12 +87,24 @@ public final class TagSpec {
 
     /** Looks up one vocabulary entry, or throws a typed unknown-tag failure. */
     public static TagSpec require(String tag, String elementPath, int line, int column) {
+        return require(tag, Set.of(), elementPath, line, column);
+    }
+
+    /**
+     * Looks up one vocabulary entry, or treats {@code tag} as a custom actor with the common
+     * attribute set when listed in {@code extraTags}. Unknown tags still fail typed.
+     */
+    public static TagSpec require(String tag, Set<String> extraTags, String elementPath,
+            int line, int column) {
         TagSpec spec = VOCABULARY.get(tag);
-        if (spec == null) {
-            throw new MarkupException(MarkupException.Kind.UNKNOWN_TAG, elementPath, line,
-                    column, "unknown tag <" + tag + ">");
+        if (spec != null) {
+            return spec;
         }
-        return spec;
+        if (extraTags.contains(tag)) {
+            return new TagSpec(tag, null, COMMON_KINDS, Set.of());
+        }
+        throw new MarkupException(MarkupException.Kind.UNKNOWN_TAG, elementPath, line, column,
+                "unknown tag <" + tag + ">");
     }
 
     /** Returns whether the attribute name is valid on this tag, including {@code data-*}. */
