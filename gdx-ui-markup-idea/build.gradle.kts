@@ -1,4 +1,4 @@
-import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
+import org.gradle.api.tasks.bundling.Zip
 
 plugins {
     kotlin("jvm") version libs.versions.kotlin.get()
@@ -30,7 +30,7 @@ dependencies {
 }
 
 // Bundle the preview distribution so the plugin can launch it from its install directory.
-val preparePreview by tasks.registering(Copy::class) {
+val preparePreview = tasks.register<Copy>("preparePreview") {
     dependsOn(":gdx-ui-markup-preview:installDist")
     from(project(":gdx-ui-markup-preview").layout.buildDirectory
         .dir("install/gdx-ui-markup-preview"))
@@ -57,8 +57,11 @@ tasks {
             into("gdx-ui-markup-preview")
         }
     }
-    withType<org.gradle.jvm.tasks.Jar>().configureEach {
-        archiveBaseName.set("gdx-ui-markup-idea")
+}
+
+tasks.named("buildPlugin") {
+    (this as Zip).from(preparePreview) {
+        into("gdx-ui-markup-preview")
     }
 }
 

@@ -65,7 +65,8 @@ object PreviewProcessLauncher {
         return try {
             val path = Path.of(codeSource.toURI())
             if (path.fileName?.toString()?.endsWith(".jar") == true) {
-                path.parent
+                // Plugin jars live in <plugin>/lib/; the bundled dist sits next to lib/.
+                path.parent?.parent
             } else {
                 path.parent?.parent
             }
