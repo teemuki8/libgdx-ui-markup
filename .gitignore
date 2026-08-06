@@ -5,3 +5,4 @@ out/
 .kotlin/
 *.log
 .DS_Store
+.intellijPlatform/
