@@ -8,7 +8,7 @@
         <label id="signin-title" class="title" text="Sign in"/>
         <row/>
         <label id="username-label" text="Username"/>
-        <textfield id="username" label="Username"/>
+        <textfield id="username" label="Username" data-runtime-entity="user"/>
         <row/>
         <label id="password-label" text="Password"/>
         <textfield id="password" label="Password"/>

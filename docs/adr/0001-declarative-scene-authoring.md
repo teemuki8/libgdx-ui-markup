@@ -46,6 +46,20 @@ XML dialect plus a bounded CSS subset:
    styles; class-only and id-only selectors apply per actor (cloned style, never mutating the
    shared skin style).
 
+## Follow-up: agent-runtime value source
+
+The same semantics-by-construction principle extends to runtime values: `gdx-ui-markup-runtime`
+registers every `data-runtime-entity` actor as an agent-runtime entity (published
+`agent-runtime-core` 1.0.0) whose property supplier reads the widget's live state, plus a
+native `UiBinding` mapping the entity property to the actor's control id. This deliberately
+uses agent-runtime's own correlation surface rather than the harness's `RuntimeBinding`, which
+is not part of any published harness artifact (neither 1.0.0 nor the locally published 1.1.0
+has the `agentruntime` package or a runtime-compare MCP tool). The final hop
+(`ui_runtime_compare`) therefore waits on a harness release that includes
+`harness-agent-runtime`; until then the cross-process proof is the preview's bounded
+`markup-runtime` registration line plus the harness-visible widget value, and the value
+extraction itself is asserted in-process.
+
 ## Consequences
 
 - Markup-declared UIs are drivable through the harness MCP without any imperative metadata

@@ -77,6 +77,14 @@ final class MarkupMcpClient implements Closeable {
         requireKind(content, "action-result");
     }
 
+    void fill(String sessionId, Map<String, Object> locator, String value) throws Exception {
+        JsonNode content = call("ui_action", Map.of(
+                "sessionId", sessionId,
+                "locator", locator,
+                "action", Map.of("kind", "fill", "value", value, "force", false)));
+        requireKind(content, "action-result");
+    }
+
     JsonNode waitFor(String sessionId, Map<String, Object> locator, String condition,
             long deadlineMillis) throws Exception {
         JsonNode content = call("ui_wait", Map.of(

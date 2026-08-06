@@ -25,6 +25,10 @@ final class MarkupHarnessEndToEndTest {
     void markupDeclaredUiIsDrivableThroughTheHarnessMcp() throws Exception {
         try (PreviewProcess preview = PreviewProcess.launch()) {
             preview.awaitOkStatus(Duration.ofSeconds(30));
+            assertTrue(preview.capturedStderr().contains(
+                            "markup-runtime: {\"entities\":1,\"bindings\":1}"),
+                    "the markup-declared runtime entity is registered, got: "
+                            + preview.capturedStderr());
             try (MarkupMcpClient client = MarkupMcpClient.connect(preview)) {
                 assertTrue(client.capabilities(SESSION_ID).containsAll(
                         java.util.List.of("query", "action", "wait", "screenshot")));
@@ -42,6 +46,15 @@ final class MarkupHarnessEndToEndTest {
                 assertEquals("button", match.path("role").asText());
 
                 clickCheckboxAndObserveState(client);
+
+                // The same live value the agent-runtime entity reads is harness-visible:
+                // fill the markup textfield through the real input path and observe the text.
+                Map<String, Object> username = Map.of("kind", "test-id", "testId", "username");
+                client.fill(SESSION_ID, username, "Alice");
+                JsonNode userNode = client.query(SESSION_ID, username);
+                assertEquals(1, userNode.path("matchCount").asInt());
+                assertEquals("Alice", userNode.path("matches").get(0).path("text").asText(),
+                        "the runtime entity's value source is drivable through the harness");
 
                 MarkupMcpClient.Screenshot screenshot = client.screenshot(SESSION_ID);
                 assertEquals(1280, screenshot.width());

@@ -11,6 +11,7 @@ come from the markup, so libgdx-ui-harness locators stop depending on inference.
 |---|---|
 | `gdx-ui-markup` | Core: hardened XML parser → immutable model, CSS-subset parser, tag registry, render-thread builder, programmatic default Skin, `SemanticSink` SPI |
 | `gdx-ui-markup-harness` | Adapter: `HarnessSemanticSink` maps markup semantics into the harness `Semantics` facade; end-to-end test drives a markup UI through the harness MCP |
+| `gdx-ui-markup-runtime` | Adapter: `MarkupRuntimeSource` registers `data-runtime-entity` actors as libgdx-agent-runtime value sources with live widget state and native UI bindings |
 | `gdx-ui-markup-preview` | Standalone LWJGL3 app: hot-reloads `--ui`/`--css`, typed error overlay, CI flags, optional `--mcp` harness server |
 | `gdx-ui-markup-idea` | Thin IntelliJ plugin: "Markup Preview" tool window that launches the preview and shows live build status |
 
@@ -33,7 +34,7 @@ engine, no full HTML.
         <label id="signin-title" class="title" text="Sign in"/>
         <row/>
         <label id="username-label" text="Username"/>
-        <textfield id="username" label="Username"/>
+        <textfield id="username" label="Username" data-runtime-entity="user"/>
         <row/>
         <label id="password-label" text="Password"/>
         <textfield id="password" label="Password"/>
@@ -99,6 +100,28 @@ The full proof lives in `gdx-ui-markup-harness`: an end-to-end test launches the
 through the real input path, waits for the `checked` state, and captures a PNG — all against
 `samples/signin.xml`, no imperative wiring.
 
+## Agent runtime values
+
+An element with `data-runtime-entity` becomes a live value source in
+[libgdx-agent-runtime](https://github.com/teemuki8/libgdx-agent-runtime) (published
+`io.github.teemuki8:agent-runtime-core:1.0.0`): the widget's current state is published under
+the property named by `data-runtime-property` (default `value`), typed by widget
+(`TextField` text, `CheckBox` checked, `Slider`/`ProgressBar` value, `SelectBox`/`List`
+selection, `Label` text), and a native `UiBinding` links the entity to the actor's control id
+in the preview session, so `uiToRuntime`/`runtimeToUi` resolve the correlation. The preview
+prints a bounded registration line (`markup-runtime: {"entities":N,"bindings":N}`) and records
+a `UiFrameCorrelation` for every rendered frame.
+
+```xml
+<textfield id="username" label="Username" data-runtime-entity="user"/>
+```
+
+Note on the three-library story: markup ↔ agent-runtime and markup ↔ harness work against
+published artifacts today (verified end to end). The final hop — exposing runtime values
+through the harness `ui_runtime_compare` tool — needs a harness release that includes its
+`harness-agent-runtime` module (currently only a local snapshot; the published 1.0.0 MCP
+catalog has no runtime-compare tool).
+
 ## IDEA plugin
 
 Build the plugin zip, then install it from the IDE (Settings → Plugins → gear → Install Plugin
@@ -122,9 +145,10 @@ From the repository root:
 1. GL-free core: `./gradlew :gdx-ui-markup:test`
 2. Render-thread builder: `xvfb-run -a ./gradlew :gdx-ui-markup:test`
 3. Preview smoke: `xvfb-run -a ./gradlew :gdx-ui-markup-preview:run --args='--ui samples/signin.xml --css samples/signin.css --frames 5 --screenshot build/signin.png --exit'`
-4. Harness E2E: `xvfb-run -a ./gradlew :gdx-ui-markup-harness:test`
-5. Plugin: `./gradlew :gdx-ui-markup-idea:buildPlugin` plus the manual IDEA session above
-6. Full: `xvfb-run -a ./gradlew build`
+4. Agent-runtime source: `xvfb-run -a ./gradlew :gdx-ui-markup-runtime:test`
+5. Harness E2E: `xvfb-run -a ./gradlew :gdx-ui-markup-harness:test`
+6. Plugin: `./gradlew :gdx-ui-markup-idea:buildPlugin` plus the manual IDEA session above
+7. Full: `xvfb-run -a ./gradlew build`
 
 ## License
 

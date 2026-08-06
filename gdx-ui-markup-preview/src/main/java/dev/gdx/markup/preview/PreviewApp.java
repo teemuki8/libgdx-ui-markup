@@ -135,6 +135,9 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
             stage.getRoot().addActor(built.root());
             stage.getRoot().addActor(errorLabel);
             errorLabel.setVisible(false);
+            if (mcp != null) {
+                mcp.attachRuntime(document, built);
+            }
             status(MarkupStatus.ok(built.actors().size()));
         } catch (MarkupException failure) {
             errorLabel.setText(failure.formatted());

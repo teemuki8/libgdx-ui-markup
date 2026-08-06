@@ -3,6 +3,7 @@ gdx = "1.14.2"
 junit = "5.10.2"
 junit-platform = "1.10.2"
 harness = "1.0.0"
+agent-runtime = "1.0.0"
 jackson = "2.17.2"
 mcp = "2.0.0"
 kotlin = "2.2.20"
@@ -16,6 +17,7 @@ harness-scene2d = { module = "io.github.teemuki8:harness-scene2d", version.ref =
 harness-lwjgl3 = { module = "io.github.teemuki8:harness-lwjgl3", version.ref = "harness" }
 harness-protocol = { module = "io.github.teemuki8:harness-protocol", version.ref = "harness" }
 harness-mcp = { module = "io.github.teemuki8:harness-mcp", version.ref = "harness" }
+agent-runtime-core = { module = "io.github.teemuki8:agent-runtime-core", version.ref = "agent-runtime" }
 jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter", version.ref = "junit" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit-platform" }

@@ -27,27 +27,40 @@ final class PreviewProcess implements AutoCloseable {
 
     private final Process process;
     private final CompletableFuture<String> stderrTail = new CompletableFuture<>();
+    private final StringBuilder captured = new StringBuilder();
     private final Thread errorPump;
     private boolean closed;
 
     private PreviewProcess(Process process) {
         this.process = process;
         errorPump = Thread.ofVirtual().name("preview-process-stderr").start(() -> {
-            StringBuilder captured = new StringBuilder();
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(
                     process.getErrorStream(), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    captured.append(line).append('\n');
+                    synchronized (captured) {
+                        captured.append(line).append('\n');
+                    }
                     if (line.startsWith("markup-status:")) {
-                        stderrTail.complete(captured.toString());
+                        stderrTail.complete(peek());
                     }
                 }
             } catch (IOException ignored) {
                 // stream closed with the process
             }
-            stderrTail.complete(captured.toString());
+            stderrTail.complete(peek());
         });
+    }
+
+    /** Returns everything captured on stderr so far (status and runtime registration lines). */
+    String capturedStderr() {
+        return peek();
+    }
+
+    private String peek() {
+        synchronized (captured) {
+            return captured.toString();
+        }
     }
 
     static PreviewProcess launch() throws Exception {

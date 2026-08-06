@@ -17,6 +17,7 @@ dependencyResolutionManagement {
 include(
     "gdx-ui-markup",
     "gdx-ui-markup-harness",
+    "gdx-ui-markup-runtime",
     "gdx-ui-markup-preview",
     "gdx-ui-markup-idea",
 )
