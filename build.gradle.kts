@@ -7,8 +7,14 @@ allprojects {
 }
 
 subprojects {
-    pluginManager.apply("java-library")
     pluginManager.apply("maven-publish")
+
+    if (name == "gdx-ui-markup-idea") {
+        // The IDEA plugin runs on IntelliJ's JBR (Java 21+) and manages its own toolchain.
+        return@subprojects
+    }
+
+    pluginManager.apply("java-library")
 
     dependencies {
         add("testImplementation", junitJupiter)
