@@ -7,7 +7,6 @@ import dev.gdx.uiharness.core.locator.StrictResolution;
 import dev.gdx.uiharness.core.wait.WaitEngine;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3FrameFence;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3ScreenCapture;
-import dev.gdx.uiharness.mcp.ArtifactReference;
 import dev.gdx.uiharness.mcp.HarnessMcpServer;
 import dev.gdx.uiharness.protocol.CapabilitySet;
 import dev.gdx.uiharness.protocol.HarnessProtocolService;
@@ -62,7 +61,7 @@ final class PreviewMcp implements AutoCloseable {
                 Map.of(PreviewApp.SESSION_ID, protocolSession), clock,
                 Executors.newThreadPerTaskExecutor(
                         Thread.ofVirtual().name("markup-protocol-", 0).factory()));
-        server = HarnessMcpServer.open(protocol, ArtifactReference.Publisher.unavailable(),
+        server = HarnessMcpServer.open(protocol, new TmpDirArtifactPublisher(),
                 System.in, System.out);
         terminator = Thread.ofPlatform().name("markup-mcp-terminator").daemon().start(() -> {
             server.awaitTermination();

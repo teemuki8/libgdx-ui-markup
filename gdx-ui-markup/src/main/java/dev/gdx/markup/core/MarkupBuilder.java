@@ -186,10 +186,10 @@ public final class MarkupBuilder {
                         cellTable.row();
                         yield null;
                     }
-                    case "table", "window" -> buildTable(element, path);
-                    case "stack" -> buildStack(element, path);
-                    case "group" -> buildGroup(element, path);
-                    case "scrollpane" -> buildScrollPane(element, path);
+                    case "table", "window" -> buildTable(element, path, cellTable);
+                    case "stack" -> buildStack(element, path, cellTable);
+                    case "group" -> buildGroup(element, path, cellTable);
+                    case "scrollpane" -> buildScrollPane(element, path, cellTable);
                     default -> buildLeaf(element, path, cellTable);
                 };
                 return actor;
@@ -198,10 +198,11 @@ public final class MarkupBuilder {
             }
         }
 
-        private Table buildTable(Element element, String path) {
+        private Table buildTable(Element element, String path, Table cellTable) {
             Table table = (Table) registry.require(element.tag(), path, element.line(),
                     element.column()).create(element, context(element, path));
             actors.add(table);
+            applyCommon(element, table, cellTable);
             ResolvedStyle style = resolver.resolve(element);
             if (style.has("padding")) {
                 List<Float> values = style.lengths("padding", List.of());
@@ -230,25 +231,27 @@ public final class MarkupBuilder {
             }
         }
 
-        private Group buildStack(Element element, String path) {
+        private Group buildStack(Element element, String path, Table cellTable) {
             Stack stack = (Stack) registry.require(element.tag(), path, element.line(),
                     element.column()).create(element, context(element, path));
             actors.add(stack);
+            applyCommon(element, stack, cellTable);
             addChildren(stack, null, element.children());
             applySemantics(stack, element, path);
             return stack;
         }
 
-        private Group buildGroup(Element element, String path) {
+        private Group buildGroup(Element element, String path, Table cellTable) {
             Group group = (Group) registry.require(element.tag(), path, element.line(),
                     element.column()).create(element, context(element, path));
             actors.add(group);
+            applyCommon(element, group, cellTable);
             addChildren(group, null, element.children());
             applySemantics(group, element, path);
             return group;
         }
 
-        private ScrollPane buildScrollPane(Element element, String path) {
+        private ScrollPane buildScrollPane(Element element, String path, Table cellTable) {
             if (element.children().size() != 1) {
                 throw new MarkupException(MarkupException.Kind.INVALID_VALUE, path,
                         element.line(), element.column(),
@@ -258,6 +261,7 @@ public final class MarkupBuilder {
             ScrollPane pane = (ScrollPane) registry.require(element.tag(), path,
                     element.line(), element.column()).create(element, context(element, path));
             actors.add(pane);
+            applyCommon(element, pane, cellTable);
             Actor child = buildActor(element.children().get(0), null);
             if (child != null) {
                 pane.setActor(child);
@@ -464,14 +468,14 @@ public final class MarkupBuilder {
         }
 
         private void applyCommon(Element element, Actor actor, Table cellTable) {
+            ResolvedStyle style = resolver.resolve(element);
             if (cellTable == null) {
                 applySize(element, actor, "width", actor::setWidth);
                 applySize(element, actor, "height", actor::setHeight);
                 // Actor has no min-size setters; min-width/min-height are cell constraints.
+                applySize(element, actor, "width", style, actor::setWidth);
+                applySize(element, actor, "height", style, actor::setHeight);
             }
-            ResolvedStyle style = resolver.resolve(element);
-            applySize(element, actor, "width", style, actor::setWidth);
-            applySize(element, actor, "height", style, actor::setHeight);
             String visible = element.attr("visible");
             if (visible != null) {
                 actor.setVisible(Boolean.parseBoolean(visible));

@@ -127,6 +127,10 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
             }
             skin = newSkin;
             BuiltUi built = MarkupBuilder.build(document, css, skin, sink());
+            // The ui root group must cover the viewport or harness actionability (parent
+            // intersection and Group.hit) sees a zero-sized parent and rejects every actor.
+            built.root().setSize(stage.getViewport().getWorldWidth(),
+                    stage.getViewport().getWorldHeight());
             stage.getRoot().clearChildren();
             stage.getRoot().addActor(built.root());
             stage.getRoot().addActor(errorLabel);
@@ -138,6 +142,7 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
             status(MarkupStatus.error(failure.formatted(), failure.line(), failure.column()));
             if (options.exit()) {
                 System.out.flush();
+                System.err.flush();
                 System.exit(2);
             }
         } catch (IOException failure) {
@@ -146,6 +151,7 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
             status(MarkupStatus.error(failure.getMessage(), 0, 0));
             if (options.exit()) {
                 System.out.flush();
+                System.err.flush();
                 System.exit(2);
             }
         }
@@ -156,8 +162,14 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
     }
 
     private void status(MarkupStatus status) {
-        System.out.println("markup-status: " + status.json());
-        System.out.flush();
+        // In --mcp mode stdout carries JSON-RPC; status lines must not corrupt the framing.
+        if (mcp != null) {
+            System.err.println("markup-status: " + status.json());
+            System.err.flush();
+        } else {
+            System.out.println("markup-status: " + status.json());
+            System.out.flush();
+        }
     }
 
     private void startWatcher() {
@@ -238,6 +250,9 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
     @Override public void resize(int width, int height) {
         if (stage != null) {
             stage.getViewport().update(width, height, true);
+            if (!stage.getRoot().getChildren().isEmpty()) {
+                stage.getRoot().getChildren().first().setSize(width, height);
+            }
         }
     }
 
