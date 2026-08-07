@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Recreation of the Slay the Spire shop layout: a large center-left items panel with a
+     gold row and a right-hand relics panel with an HP bar. -->
+<ui>
+  <table id="root" width="1280" height="720">
+    <row/>
+    <table id="shop-panel" class="panel" width="680" height="500" pad="20" expand="true"
+           align="center center">
+      <row/>
+      <label id="shop-title" class="title" text="SHOP"/>
+      <row/>
+      <button id="item-1" text="Bloody Idol — 150 gold" name="Item 1" width="560" height="64"/>
+      <row/>
+      <button id="item-2" text="Frozen Eye — 120 gold" name="Item 2" width="560" height="64"/>
+      <row/>
+      <button id="item-3" text="Preserved Insect — 130 gold" name="Item 3" width="560"
+              height="64"/>
+      <row/>
+      <button id="item-4" text="Strawberry — 200 gold" name="Item 4" width="560" height="64"/>
+      <row/>
+      <label id="shop-gold" text="Gold: 137"/>
+      <row/>
+      <progressbar id="shop-gold-bar" min="0" max="300" value="137" width="420" height="16"/>
+    </table>
+    <table id="side-panel" class="panel" width="250" height="500" pad="14"
+           align="center center">
+      <row/>
+      <label id="side-title" class="title" text="RELIC"/>
+      <row/>
+      <label id="relic-1" text="Burning Blood"/>
+      <row/>
+      <label id="relic-2" text="Vajra"/>
+      <row/>
+      <label id="relic-3" text="Anchor"/>
+      <row/>
+      <label id="relic-4" text="Omamori"/>
+      <row/>
+      <label id="side-hp" text="HP 62/68"/>
+      <row/>
+      <progressbar id="side-hp-bar" min="0" max="68" value="62" width="200" height="14"/>
+      <row/>
+      <label id="side-deck" text="Deck: 12 cards"/>
+    </table>
+  </table>
+</ui>

@@ -26,4 +26,5 @@ include(
     "libgdx-ui-markup-runtime",
     "libgdx-ui-markup-preview",
     "libgdx-ui-markup-idea",
+    "libgdx-ui-markup-qualification",
 )

@@ -1,0 +1,9 @@
+/* Shared bounded styling subset for recreation corpus entries. */
+.panel { background: panel; padding: 18px; }
+.title { font-color: accent; }
+label { font-color: text; }
+button { padding: 10px; }
+button.primary { background: accent; }
+button.primary:hover { background: accent-over; }
+button.primary:pressed { background: accent-down; }
+textfield { background: field; padding: 8px; }

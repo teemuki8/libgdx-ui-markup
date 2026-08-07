@@ -124,6 +124,25 @@ MCP session advertises the runtime-compare capability, `data-runtime-entity` act
 harness runtime binding with the frame-correlation token `markup-preview-frame`, and the E2E
 asserts the correlated `EQUAL` comparison (ADR 0002).
 
+## Qualification
+
+`libgdx-ui-markup-qualification` marks up recreations of well-made game UIs and measures how
+closely their rendered structure matches the real screenshots. The corpus manifest pins each
+entry to its published source (Hades boon panel, Slay the Spire shop, Battle for Wesnoth
+gameplay) with a license note; images are fetched at test time into a gitignored cache and
+never redistributed. Each recreation is rendered by the real preview binary and compared with
+a tolerance-aware structural Dice score (80×45 variance cells, one-cell dilation); per-entry
+thresholds are measured baselines that guard regressions. Entries whose reference cannot be
+fetched are reported skipped; at least one must be scored:
+
+```
+xvfb-run -a ./gradlew :libgdx-ui-markup-qualification:test
+```
+
+The bounded report lands at
+`libgdx-ui-markup-qualification/build/qualification/output/report.json`; the corpus and
+recreations live in `libgdx-ui-markup-qualification/corpus/` (ADR 0003).
+
 ## IDEA plugin
 
 Build the plugin zip, then install it from the IDE (Settings → Plugins → gear → Install Plugin

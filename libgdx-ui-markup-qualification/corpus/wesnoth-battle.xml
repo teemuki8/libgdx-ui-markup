@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Recreation of the Battle for Wesnoth gameplay layout: a quiet map area with unit labels
+     and HP bars, and a right-hand terrain/unit sidebar with an XP bar. -->
+<ui>
+  <table id="root" width="1280" height="720">
+    <row/>
+    <table id="map" fill="true" expand="true" pad="10" align="left top">
+      <row/>
+      <label id="unit-label" text="Elvish Archer (21/21 HP)"/>
+      <row/>
+      <progressbar id="unit-hp" min="0" max="21" value="21" width="200" height="14"/>
+      <row/>
+      <table id="spacer-1" height="140"/>
+      <row/>
+      <label id="enemy-label" text="Orcish Grunt (12/12 HP)"/>
+      <row/>
+      <progressbar id="enemy-hp" min="0" max="12" value="12" width="200" height="14"/>
+      <row/>
+      <table id="spacer-2" height="180"/>
+      <row/>
+      <label id="village-label" text="Village (0 gold)"/>
+      <row/>
+      <table id="spacer-3" height="120"/>
+      <row/>
+      <label id="gold-label" text="Gold: 42"/>
+    </table>
+    <table id="sidebar" class="panel" width="230" fill="true" pad="12" align="center center">
+      <row/>
+      <label id="side-title" class="title" text="Terrain"/>
+      <row/>
+      <label id="terrain-forest" text="Forest (defense 60%)"/>
+      <row/>
+      <label id="terrain-village" text="Village (income +2)"/>
+      <row/>
+      <label id="terrain-mountain" text="Mountains (defense 70%)"/>
+      <row/>
+      <label id="unit-info" text="Unit: Elvish Archer"/>
+      <row/>
+      <progressbar id="unit-xp" min="0" max="100" value="65" width="180" height="14"/>
+      <row/>
+      <label id="turn-info" text="Turn 3 — Player 1"/>
+    </table>
+  </table>
+</ui>

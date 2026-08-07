@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Recreation of the Hades boon-selection layout: a large ornate centered panel with title,
+     boon choices, a progress row, and a bottom action row over a dark backdrop. -->
+<ui>
+  <table id="root" width="1280" height="720">
+    <row/>
+    <table id="boon-panel" class="panel" width="960" height="640" expand="true"
+           align="center center">
+      <row/>
+      <label id="boon-title" class="title" text="BOON OF APHRODITE"/>
+      <row/>
+      <label id="boon-name" text="Heartbreak Strike — Common"/>
+      <row/>
+      <label id="boon-desc" text="Your Attack deals more damage and inflicts Weak for 5s."/>
+      <row/>
+      <label id="boon-detail" text="Choose one. Other choices are lost."/>
+      <row/>
+      <checkbox id="boon-opt-1" text="Attack: Heartbreak Strike" label="Attack boon"/>
+      <row/>
+      <checkbox id="boon-opt-2" text="Special: Heartbreak Flourish" label="Special boon"/>
+      <row/>
+      <checkbox id="boon-opt-3" text="Dash: Passion Dash" label="Dash boon"/>
+      <row/>
+      <progressbar id="boon-affection" min="0" max="100" value="35" width="420" height="18"/>
+      <row/>
+      <label id="boon-affection-label" text="Affection: 35 / 100"/>
+      <row/>
+      <table id="boon-actions" align="center center">
+        <row/>
+        <button id="boon-take" class="primary" text="Take Boon" name="Take Boon" width="300"
+                height="56"/>
+        <button id="boon-leave" text="Leave" name="Leave" width="180" height="56"/>
+      </table>
+    </table>
+    <row/>
+    <table id="bottom-bar" height="64" expand="true" align="center center">
+      <row/>
+      <label id="bottom-text" text="Tartarus — Chamber 12"/>
+      <progressbar id="bottom-xp" min="0" max="100" value="60" width="240" height="14"/>
+    </table>
+  </table>
+</ui>
