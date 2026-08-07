@@ -16,12 +16,16 @@ screenshots are copyrighted by their publishers), so the corpus must be copyrigh
 A non-publishable `libgdx-ui-markup-qualification` module qualifies markup recreations against
 real game UI screenshots.
 
-1. **Corpus manifest, fetched at test time.** `corpus/manifest.json` pins each entry to a
-   stable source URL (Steam CDN, which hosts permanent per-screenshot hashes) with a license
-   note. Images are fetched at test time into a gitignored build cache and never redistributed;
-   a fetch failure (offline, moved URL, oversized, undecodable) marks the entry
-   `SKIPPED_REFERENCE`, never a failure. At least one entry must be scored or the test fails,
-   so a silent no-op cannot pass.
+1. **Corpus manifest with owned and remote references.** `corpus/manifest.json` pins each
+   entry to either a committed `referenceFile` (fully owned, no network) or a stable remote
+   `sourceUrl` (Steam CDN, which hosts permanent per-screenshot hashes) with a license note.
+   The agentic-palisade "Skirmish Configuration" screen (our own libgdx-ui-harness benchmark
+   UI, Apache-2.0, spec-defined) anchors the corpus as an owned reference; the three
+   commercial entries are fetched at test time into a gitignored cache and never
+   redistributed. A fetch failure marks the entry `SKIPPED_REFERENCE`, which is lenient
+   locally but a hard failure under `-PstrictQualification=true` (set in CI), so dead or
+   unreachable references can never silently shrink coverage. At least one entry must be
+   scored or the test fails, so a silent no-op cannot pass.
 2. **Recreations are plain markup.** Each entry's `corpus/*.xml` is a hand-authored markup
    recreation of the reference UI's layout, rendered by the real preview binary
    (`--frames --screenshot --exit`), not by a test-side builder.
@@ -48,9 +52,13 @@ real game UI screenshots.
   and the dialect's layout attributes against real, recognizable game UIs.
 - Copyrighted screenshots never enter the repository; provenance and license notes live in the
   manifest next to the pinned URLs.
-- The three initial entries (Hades boon panel, Slay the Spire shop, Battle for Wesnoth
-  gameplay) establish baselines of ~0.40, ~0.34, and ~0.19 dilated-Dice. The full pipeline —
-  fetch, render, measure, gate, and re-calibrate — runs unattended; the only committed inputs
-  are the corpus manifest URLs, the recreation markup, and the calibrated thresholds.
+- The four entries (palisade skirmish ~0.32, Hades boon panel ~0.40, Slay the Spire shop
+  ~0.34, Battle for Wesnoth gameplay ~0.19 dilated-Dice) establish the baselines. The full
+  pipeline — resolve reference, render, measure, gate, and re-calibrate — runs unattended;
+  the only committed inputs are the corpus manifest, the recreation markup, and the calibrated
+  thresholds.
+- The qualification test task declares the corpus directory as an input, so recreation edits
+  and threshold changes always re-trigger the test locally instead of Gradle serving a stale
+  up-to-date result.
 - The harness's agentic-palisade qualification is untouched and remains a libgdx-ui-harness
   concern.

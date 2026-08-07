@@ -89,7 +89,7 @@ jobs:
       - name: Install Linux virtual display
         run: sudo apt-get update && sudo apt-get install --yes xvfb
       - name: Run the game-UI qualification
-        run: xvfb-run -a ./gradlew :libgdx-ui-markup-qualification:test --warning-mode=fail
+        run: xvfb-run -a ./gradlew :libgdx-ui-markup-qualification:test -PstrictQualification=true --warning-mode=fail
       - name: Retain qualification evidence
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

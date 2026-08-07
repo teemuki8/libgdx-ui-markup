@@ -31,7 +31,8 @@ public final class CorpusManifest {
             for (JsonNode node : root.path("entries")) {
                 parsed.add(new CorpusEntry(
                         node.path("id").asText(),
-                        node.path("sourceUrl").asText(),
+                        nullable(node, "sourceUrl"),
+                        nullable(node, "referenceFile"),
                         node.path("license").asText(),
                         node.path("markupFile").asText(),
                         node.path("threshold").asDouble(),
@@ -58,7 +59,11 @@ public final class CorpusManifest {
             for (CorpusEntry entry : updatedEntries) {
                 ObjectNode node = array.addObject();
                 node.put("id", entry.id());
-                node.put("sourceUrl", entry.sourceUrl());
+                if (entry.sourceUrl() != null) {
+                    node.put("sourceUrl", entry.sourceUrl());
+                } else {
+                    node.put("referenceFile", entry.referenceFile());
+                }
                 node.put("license", entry.license());
                 node.put("markupFile", entry.markupFile());
                 node.put("threshold", Math.round(entry.threshold() * 1000) / 1000.0);
@@ -76,5 +81,9 @@ public final class CorpusManifest {
     /** Returns the corpus entries in declaration order. */
     public List<CorpusEntry> entries() {
         return entries;
+    }
+
+    private static String nullable(JsonNode node, String field) {
+        return node.path(field).isNull() ? null : node.path(field).asText(null);
     }
 }

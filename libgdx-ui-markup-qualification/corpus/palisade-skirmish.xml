@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Recreation of the agentic-palisade "Skirmish Configuration" screen (our own benchmark
+     UI, spec-driven): a centered window with a map/rule select column, a checkbox + seed
+     column, and a footer action row. -->
+<ui>
+  <table id="root" width="1280" height="720">
+    <row/>
+    <window id="palisade-window" title="Palisade Skirmish Configuration" width="980"
+            height="640" expand="true" align="center center">
+      <table id="config-body" pad="24">
+        <row/>
+        <table id="left-column" width="460" align="left top">
+          <row/>
+          <label id="map-label" text="Map"/>
+          <selectbox id="map" items="The Northern Realms,The Great Army,The Seine,The Yellow Sky,The Eastern Muster,Ichi-no-Tani" width="300"/>
+          <row/>
+          <label id="realm-label" text="Player realm"/>
+          <selectbox id="player-realm" items="Vestfold,Thegns,Althing,Kings" width="300"/>
+          <row/>
+          <label id="rivals-label" text="Major rival count"/>
+          <slider id="major-rivals" min="0" max="8" step="1" value="3" width="300"
+                  height="24"/>
+          <row/>
+          <label id="density-label" text="Petty realm density"/>
+          <selectbox id="density" items="Low,Standard,High" width="300"/>
+          <row/>
+          <label id="resources-label" text="Starting resources"/>
+          <selectbox id="resources" items="Low,Standard,High" width="300"/>
+          <row/>
+          <label id="victory-label" text="Victory condition"/>
+          <selectbox id="victory" items="Conquest,Total War,Score" width="300"/>
+          <row/>
+          <label id="rival-target-label" text="Rival target count"/>
+          <textfield id="rival-target" text="1" width="300"/>
+          <row/>
+          <label id="difficulty-label" text="AI difficulty"/>
+          <selectbox id="difficulty" items="Easy,Standard,Hard" width="300"/>
+          <row/>
+          <label id="speed-label" text="Simulation speed"/>
+          <selectbox id="speed" items="Normal,Fast" width="300"/>
+        </table>
+        <table id="right-column" width="440" align="left top">
+          <row/>
+          <checkbox id="rich-harvest" text="High income" label="High income"/>
+          <row/>
+          <checkbox id="scarce-gold" text="Low income" label="Low income"/>
+          <row/>
+          <checkbox id="costly-cavalry" text="Higher cavalry cost" label="Higher cavalry cost"/>
+          <row/>
+          <checkbox id="cavalry-rush" text="Faster cavalry" label="Faster cavalry"/>
+          <row/>
+          <checkbox id="road-boom" text="Faster road construction"
+                    label="Faster road construction"/>
+          <row/>
+          <label id="seed-label" text="Seed"/>
+          <textfield id="seed" text="generatedUint32" width="260"/>
+          <row/>
+          <button id="copy-seed" text="COPY SEED" name="Copy seed" width="170" height="44"/>
+          <button id="random-seed" text="RANDOM SEED" name="Random seed" width="170"
+                  height="44"/>
+        </table>
+        <row/>
+        <table id="footer" height="56" align="center center">
+          <row/>
+          <button id="cancel" text="CANCEL" name="Cancel" width="180" height="48"/>
+          <button id="start-battle" class="primary" text="START BATTLE" name="Start battle"
+                  width="220" height="48"/>
+        </table>
+      </table>
+    </window>
+  </table>
+</ui>

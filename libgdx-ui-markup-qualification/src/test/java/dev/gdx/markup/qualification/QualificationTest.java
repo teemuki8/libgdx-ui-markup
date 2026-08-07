@@ -28,6 +28,17 @@ final class QualificationTest {
             QualificationReport report = runner.run();
             assertTrue(report.scored() >= 1,
                     "at least one corpus entry must be fetched and scored (network or cache)");
+            if (strict()) {
+                for (EntryResult result : report.results()) {
+                    if (result.verdict() == Verdict.SKIPPED_REFERENCE
+                            || result.verdict() == Verdict.SKIPPED_RENDER) {
+                        fail("strict qualification: entry " + result.id()
+                                + " was skipped (" + result.verdict() + "); every corpus "
+                                + "entry must be measured (reference unavailable or render "
+                                + "failed)");
+                    }
+                }
+            }
             for (EntryResult result : report.results()) {
                 if (result.verdict() == Verdict.FAIL) {
                     fail("entry " + result.id() + " scored "
@@ -56,5 +67,9 @@ final class QualificationTest {
             throw new IllegalStateException("missing system property -D" + name);
         }
         return Path.of(value);
+    }
+
+    private static boolean strict() {
+        return Boolean.parseBoolean(System.getProperty("markup.qualification.strict"));
     }
 }

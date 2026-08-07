@@ -56,8 +56,7 @@ public final class QualificationRunner implements AutoCloseable {
     private EntryResult qualify(CorpusEntry entry) {
         Optional<RegionSimilarity.Regions> regions = measure(entry);
         if (regions.isEmpty()) {
-            Optional<Path> reference = store.reference(entry);
-            Verdict skipped = reference.isPresent() ? Verdict.SKIPPED_RENDER
+            Verdict skipped = reference(entry).isPresent() ? Verdict.SKIPPED_RENDER
                     : Verdict.SKIPPED_REFERENCE;
             return new EntryResult(entry.id(), entry.license(), entry.threshold(), 0, 0, 0,
                     skipped);
@@ -85,8 +84,8 @@ public final class QualificationRunner implements AutoCloseable {
                 continue;
             }
             double threshold = QualificationPolicy.threshold(regions.orElseThrow().dice());
-            updated.add(new CorpusEntry(entry.id(), entry.sourceUrl(), entry.license(),
-                    entry.markupFile(), threshold, entry.referenceWidth(),
+            updated.add(new CorpusEntry(entry.id(), entry.sourceUrl(), entry.referenceFile(),
+                    entry.license(), entry.markupFile(), threshold, entry.referenceWidth(),
                     entry.referenceHeight()));
             System.out.println("calibration: " + entry.id() + " dice="
                     + compact(regions.orElseThrow().dice()) + " threshold "
@@ -95,12 +94,21 @@ public final class QualificationRunner implements AutoCloseable {
         manifest.write(corpusDir.resolve("manifest.json"), updated);
     }
 
+    /** Resolves the entry's reference: a committed corpus file or a fetched remote image. */
+    private Optional<Path> reference(CorpusEntry entry) {
+        if (entry.referenceFile() != null) {
+            Path local = corpusDir.resolve(entry.referenceFile());
+            return Files.isRegularFile(local) ? Optional.of(local) : Optional.empty();
+        }
+        return store.reference(entry);
+    }
+
     /**
      * Fetches the reference and renders the recreation, returning the measured regions; empty
      * when the reference is unavailable or the preview process failed.
      */
     private Optional<RegionSimilarity.Regions> measure(CorpusEntry entry) {
-        Optional<Path> reference = store.reference(entry);
+        Optional<Path> reference = reference(entry);
         if (reference.isEmpty()) {
             return Optional.empty();
         }

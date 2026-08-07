@@ -128,12 +128,14 @@ asserts the correlated `EQUAL` comparison (ADR 0002).
 
 `libgdx-ui-markup-qualification` marks up recreations of well-made game UIs and measures how
 closely their rendered structure matches the real screenshots. The corpus manifest pins each
-entry to its published source (Hades boon panel, Slay the Spire shop, Battle for Wesnoth
-gameplay) with a license note; images are fetched at test time into a gitignored cache and
-never redistributed. Each recreation is rendered by the real preview binary and compared with
-a tolerance-aware structural Dice score (80×45 variance cells, one-cell dilation); per-entry
-thresholds are measured baselines that guard regressions. Entries whose reference cannot be
-fetched are reported skipped; at least one must be scored:
+entry to either a committed, fully owned reference (the agentic-palisade "Skirmish
+Configuration" screen from libgdx-ui-harness) or a published source (Hades boon panel, Slay
+the Spire shop, Battle for Wesnoth gameplay) with a license note; remote images are fetched
+at test time into a gitignored cache and never redistributed. Each recreation is rendered by
+the real preview binary and compared with a tolerance-aware structural Dice score (80×45
+variance cells, one-cell dilation); per-entry thresholds are measured baselines that guard
+regressions. Entries whose reference cannot be resolved are reported skipped locally; with
+`-PstrictQualification=true` (CI) any skip is a failure:
 
 ```
 xvfb-run -a ./gradlew :libgdx-ui-markup-qualification:test

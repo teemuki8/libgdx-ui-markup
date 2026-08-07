@@ -24,5 +24,11 @@ tasks.register<JavaExec>("calibrateQualification") {
 
 tasks.withType<Test>().configureEach {
     dependsOn(project(":libgdx-ui-markup-preview").tasks.named("installDist"))
+    // Recreation edits and manifest threshold changes must re-run the qualification.
+    inputs.files(layout.projectDirectory.dir("corpus"))
     qualificationProperties.forEach { (name, value) -> systemProperty(name, value) }
+    systemProperty(
+        "markup.qualification.strict",
+        providers.gradleProperty("strictQualification").orElse("false").get(),
+    )
 }
