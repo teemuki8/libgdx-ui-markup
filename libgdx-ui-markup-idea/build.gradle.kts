@@ -39,7 +39,7 @@ val preparePreview = tasks.register<Copy>("preparePreview") {
 
 intellijPlatform {
     pluginConfiguration {
-        version = "0.1.0"
+        version = project.version.toString()
         description = "Live preview and hot reload for libgdx-ui-markup Scene2D markup"
         ideaVersion {
             sinceBuild = "243"

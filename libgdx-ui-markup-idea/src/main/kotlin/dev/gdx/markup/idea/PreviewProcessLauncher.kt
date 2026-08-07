@@ -1,5 +1,6 @@
 package dev.gdx.markup.idea
 
+import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -29,11 +30,14 @@ object PreviewProcessLauncher {
     fun buildCommand(distribution: Path, ui: Path, css: Path?): List<String> {
         val java = Path.of(
             System.getProperty("java.home") ?: "java", "bin", "java").toString()
+        // The classpath wildcard is JVM syntax, not a filesystem path: Path.resolve("*")
+        // is illegal on Windows, so the glob is appended as a plain string.
+        val classpath = distribution.resolve("lib").toString() + File.separatorChar + "*"
         val arguments = mutableListOf(
             java,
             "--enable-native-access=ALL-UNNAMED",
             "-cp",
-            distribution.resolve("lib").resolve("*").toString(),
+            classpath,
             MAIN_CLASS,
             "--ui",
             ui.toAbsolutePath().toString(),

@@ -131,7 +131,7 @@ from Disk):
 
 ```
 ./gradlew :libgdx-ui-markup-idea:buildPlugin
-# zip: libgdx-ui-markup-idea/build/distributions/libgdx-ui-markup-idea-0.1.0.zip
+# zip: libgdx-ui-markup-idea/build/distributions/libgdx-ui-markup-idea-<version>.zip
 ```
 
 Manual session: open `samples/signin.xml`, open the "Markup Preview" tool window (right
