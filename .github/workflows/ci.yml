@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cross-platform:
+    name: JDK 25 / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install JDK 25
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Configure Gradle
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
+      - name: Install Linux virtual display
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes xvfb
+      - name: Clean checks on Linux (full ladder, GL tests under Xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a ./gradlew clean check --warning-mode=fail
+      - name: Clean backend-neutral checks on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\gradlew.bat clean check -x :libgdx-ui-markup:test -x :libgdx-ui-markup-runtime:test -x :libgdx-ui-markup-harness:test --warning-mode=fail
+      - name: Clean backend-neutral checks on macOS
+        if: runner.os == 'macOS'
+        run: ./gradlew clean check -x :libgdx-ui-markup:test -x :libgdx-ui-markup-runtime:test -x :libgdx-ui-markup-harness:test --warning-mode=fail
+      - name: Preview smoke (success and typed error paths)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          xvfb-run -a ./gradlew :libgdx-ui-markup-preview:run \
+            --args='--ui samples/signin.xml --css samples/signin.css --frames 5 --screenshot build/signin.png --exit'
+          test -s build/signin.png
+          output="$(xvfb-run -a ./gradlew :libgdx-ui-markup-preview:run \
+            --args='--ui samples/broken.xml --css samples/signin.css --frames 5 --exit' 2>&1 || true)"
+          grep -q 'markup-status: .*"ok":false' <<<"$output" \
+            || { echo 'broken path did not report a typed markup-status error' >&2; exit 1; }
+      - name: Build IDEA plugin
+        if: runner.os == 'Linux'
+        run: ./gradlew :libgdx-ui-markup-idea:buildPlugin --warning-mode=fail
+      - name: Retain failed diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: failed-diagnostics-${{ matrix.os }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            **/build/reports/**
+            **/build/test-results/**
+            **/build/**/*.png
+            **/build/**/*.zip
