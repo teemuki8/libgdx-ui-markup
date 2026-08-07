@@ -31,10 +31,14 @@ real game UI screenshots.
    differences. The score is the Dice coefficient of the two structured-region masks after a
    one-cell dilation on both sides, giving a tolerance for scale and art differences while
    still measuring whether UI elements sit in the same regions.
-4. **Measured thresholds.** Each entry's threshold is set from its measured baseline (about
-   65% of the first measured score) and guards regressions: a recreation whose structure
-   collapses or whose layout breaks fails CI. Scores below the reference's art-heavy regions
-   are expected and reflected in honest baselines rather than gamed thresholds.
+4. **Calibrated thresholds, no human tuning.** The `calibrateQualification` task measures
+   every entry and rewrites the manifest threshold to 65% of the measured dilated Dice
+   (clamped to [0.05, 0.95]); the qualification test then recomputes the implied threshold
+   from the current measurement and fails when a committed threshold drifted more than 10%
+   ("baselines stale — re-calibrate"), so thresholds track measured fidelity without human
+   judgment. The test additionally rejects recreations whose structured-cell count falls
+   outside 0.2x–3.0x of the reference's, so a recreation that floods or empties the screen
+   cannot game a region-overlap score.
 5. **CI.** A dedicated `qualification` job runs the module under Xvfb with network access and
    retains the bounded per-entry report (`dice`, cell counts, verdict, license) on failure.
 
@@ -45,7 +49,8 @@ real game UI screenshots.
 - Copyrighted screenshots never enter the repository; provenance and license notes live in the
   manifest next to the pinned URLs.
 - The three initial entries (Hades boon panel, Slay the Spire shop, Battle for Wesnoth
-  gameplay) establish baselines of ~0.40, ~0.34, and ~0.19 dilated-Dice; future recreations
-  and refinements should raise them, and thresholds move only with a measured improvement.
+  gameplay) establish baselines of ~0.40, ~0.34, and ~0.19 dilated-Dice. The full pipeline —
+  fetch, render, measure, gate, and re-calibrate — runs unattended; the only committed inputs
+  are the corpus manifest URLs, the recreation markup, and the calibrated thresholds.
 - The harness's agentic-palisade qualification is untouched and remains a libgdx-ui-harness
   concern.

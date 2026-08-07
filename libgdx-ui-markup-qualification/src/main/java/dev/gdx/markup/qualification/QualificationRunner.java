@@ -54,26 +54,69 @@ public final class QualificationRunner implements AutoCloseable {
     }
 
     private EntryResult qualify(CorpusEntry entry) {
+        Optional<RegionSimilarity.Regions> regions = measure(entry);
+        if (regions.isEmpty()) {
+            Optional<Path> reference = store.reference(entry);
+            Verdict skipped = reference.isPresent() ? Verdict.SKIPPED_RENDER
+                    : Verdict.SKIPPED_REFERENCE;
+            return new EntryResult(entry.id(), entry.license(), entry.threshold(), 0, 0, 0,
+                    skipped);
+        }
+        RegionSimilarity.Regions measured = regions.orElseThrow();
+        Verdict verdict = measured.dice() >= entry.threshold() ? Verdict.PASS : Verdict.FAIL;
+        return new EntryResult(entry.id(), entry.license(), entry.threshold(), measured.dice(),
+                measured.referenceCells(), measured.recreationCells(), verdict);
+    }
+
+    /**
+     * Measures every entry and rewrites the manifest thresholds to the calibrated fraction of
+     * each measured score (skipped entries keep their committed threshold). Run when the corpus
+     * or a recreation changes; the qualification test then gates on the refreshed baselines.
+     */
+    public void calibrate() {
+        CorpusManifest manifest = CorpusManifest.load(corpusDir.resolve("manifest.json"));
+        List<CorpusEntry> updated = new ArrayList<>();
+        for (CorpusEntry entry : manifest.entries()) {
+            Optional<RegionSimilarity.Regions> regions = measure(entry);
+            if (regions.isEmpty()) {
+                updated.add(entry);
+                System.out.println("calibration: " + entry.id()
+                        + " skipped, threshold kept " + compact(entry.threshold()));
+                continue;
+            }
+            double threshold = QualificationPolicy.threshold(regions.orElseThrow().dice());
+            updated.add(new CorpusEntry(entry.id(), entry.sourceUrl(), entry.license(),
+                    entry.markupFile(), threshold, entry.referenceWidth(),
+                    entry.referenceHeight()));
+            System.out.println("calibration: " + entry.id() + " dice="
+                    + compact(regions.orElseThrow().dice()) + " threshold "
+                    + compact(entry.threshold()) + " -> " + compact(threshold));
+        }
+        manifest.write(corpusDir.resolve("manifest.json"), updated);
+    }
+
+    /**
+     * Fetches the reference and renders the recreation, returning the measured regions; empty
+     * when the reference is unavailable or the preview process failed.
+     */
+    private Optional<RegionSimilarity.Regions> measure(CorpusEntry entry) {
         Optional<Path> reference = store.reference(entry);
         if (reference.isEmpty()) {
-            return new EntryResult(entry.id(), entry.license(), entry.threshold(), 0, 0, 0,
-                    Verdict.SKIPPED_REFERENCE);
+            return Optional.empty();
         }
         Optional<Path> recreation = render(entry);
         if (recreation.isEmpty()) {
-            return new EntryResult(entry.id(), entry.license(), entry.threshold(), 0, 0, 0,
-                    Verdict.SKIPPED_RENDER);
+            return Optional.empty();
         }
         try {
-            RegionSimilarity.Regions regions =
-                    RegionSimilarity.measure(reference.get(), recreation.get());
-            Verdict verdict = regions.dice() >= entry.threshold() ? Verdict.PASS : Verdict.FAIL;
-            return new EntryResult(entry.id(), entry.license(), entry.threshold(), regions.dice(),
-                    regions.referenceCells(), regions.recreationCells(), verdict);
+            return Optional.of(RegionSimilarity.measure(reference.get(), recreation.get()));
         } catch (IOException failure) {
-            return new EntryResult(entry.id(), entry.license(), entry.threshold(), 0, 0, 0,
-                    Verdict.SKIPPED_RENDER);
+            return Optional.empty();
         }
+    }
+
+    private static String compact(double value) {
+        return String.format(java.util.Locale.ROOT, "%.3f", value);
     }
 
     /** Renders one recreation through the preview binary; empty when the process fails. */

@@ -1,5 +1,6 @@
 package dev.gdx.markup.qualification;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -33,6 +34,17 @@ final class QualificationTest {
                             + String.format(java.util.Locale.ROOT, "%.3f", result.dice())
                             + " below threshold "
                             + String.format(java.util.Locale.ROOT, "%.3f", result.threshold()));
+                }
+                if (result.verdict() == Verdict.PASS || result.verdict() == Verdict.FAIL) {
+                    assertTrue(QualificationPolicy.densityInBand(
+                                    result.referenceCells(), result.recreationCells()),
+                            "entry " + result.id() + " recreation density "
+                                    + result.recreationCells() + "/" + result.referenceCells()
+                                    + " cells is outside the policy band");
+                    assertFalse(QualificationPolicy.stale(result.threshold(), result.dice()),
+                            "entry " + result.id()
+                                    + " baselines are stale; run :libgdx-ui-markup-qualification"
+                                    + ":calibrateQualification and commit the refreshed manifest");
                 }
             }
         }

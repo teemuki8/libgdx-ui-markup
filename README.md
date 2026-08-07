@@ -141,7 +141,12 @@ xvfb-run -a ./gradlew :libgdx-ui-markup-qualification:test
 
 The bounded report lands at
 `libgdx-ui-markup-qualification/build/qualification/output/report.json`; the corpus and
-recreations live in `libgdx-ui-markup-qualification/corpus/` (ADR 0003).
+recreations live in `libgdx-ui-markup-qualification/corpus/` (ADR 0003). Thresholds are
+calibrated, not hand-tuned: after changing a recreation or the corpus, run
+`./gradlew :libgdx-ui-markup-qualification:calibrateQualification` (rewrites thresholds at
+65% of measured) and commit the refreshed manifest. The test fails when a committed threshold
+drifted more than 10% from the current measurement, so CI itself flags when re-calibration is
+due.
 
 ## IDEA plugin
 

@@ -2,23 +2,27 @@ dependencies {
     implementation(libs.jackson.databind)
 }
 
+val qualificationProperties = mapOf(
+    "markup.qualification.corpus" to layout.projectDirectory.dir("corpus").asFile.absolutePath,
+    "markup.qualification.cache" to
+        layout.buildDirectory.dir("qualification/reference-images").get().asFile.absolutePath,
+    "markup.qualification.output" to
+        layout.buildDirectory.dir("qualification/output").get().asFile.absolutePath,
+    "markup.preview.distribution" to project(":libgdx-ui-markup-preview").layout.buildDirectory
+        .dir("install/libgdx-ui-markup-preview").get().asFile.absolutePath,
+)
+
+tasks.register<JavaExec>("calibrateQualification") {
+    group = "qualification"
+    description = "Measures every corpus recreation and rewrites manifest thresholds (65% of measured)"
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("dev.gdx.markup.qualification.CalibrateMain")
+    jvmArgs("--enable-native-access=ALL-UNNAMED")
+    qualificationProperties.forEach { (name, value) -> systemProperty(name, value) }
+    dependsOn(project(":libgdx-ui-markup-preview").tasks.named("installDist"))
+}
+
 tasks.withType<Test>().configureEach {
     dependsOn(project(":libgdx-ui-markup-preview").tasks.named("installDist"))
-    systemProperty(
-        "markup.qualification.corpus",
-        layout.projectDirectory.dir("corpus").asFile.absolutePath,
-    )
-    systemProperty(
-        "markup.qualification.cache",
-        layout.buildDirectory.dir("qualification/reference-images").get().asFile.absolutePath,
-    )
-    systemProperty(
-        "markup.qualification.output",
-        layout.buildDirectory.dir("qualification/output").get().asFile.absolutePath,
-    )
-    systemProperty(
-        "markup.preview.distribution",
-        project(":libgdx-ui-markup-preview").layout.buildDirectory
-            .dir("install/libgdx-ui-markup-preview").get().asFile.absolutePath,
-    )
+    qualificationProperties.forEach { (name, value) -> systemProperty(name, value) }
 }
