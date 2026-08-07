@@ -124,6 +124,11 @@ MCP session advertises the runtime-compare capability, `data-runtime-entity` act
 harness runtime binding with the frame-correlation token `markup-preview-frame`, and the E2E
 asserts the correlated `EQUAL` comparison (ADR 0002).
 
+Production embedding into an application-owned game (your own `Stage`, session, and
+correlation token — not the preview): see [docs/guides/embedding.md](docs/guides/embedding.md)
+for the full render-thread wiring, the per-frame `UiFrameCorrelation` recording, and the
+`ui_runtime_compare` loop-order contract.
+
 ## Qualification
 
 `libgdx-ui-markup-qualification` marks up recreations of well-made game UIs and measures how
@@ -181,3 +186,4 @@ From the repository root:
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE). Architecture decisions: `docs/adr/`.
+Production embedding: `docs/guides/embedding.md`.
