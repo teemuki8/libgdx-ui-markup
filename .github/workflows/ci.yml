@@ -41,10 +41,10 @@ jobs:
       - name: Clean backend-neutral checks on Windows
         if: runner.os == 'Windows'
         shell: pwsh
-        run: .\gradlew.bat clean check -x :libgdx-ui-markup:test -x :libgdx-ui-markup-runtime:test -x :libgdx-ui-markup-harness:test --warning-mode=fail
+        run: .\gradlew.bat clean check -x :libgdx-ui-markup:test -x :libgdx-ui-markup-runtime:test -x :libgdx-ui-markup-harness:test -x :libgdx-ui-markup-qualification:test --warning-mode=fail
       - name: Clean backend-neutral checks on macOS
         if: runner.os == 'macOS'
-        run: ./gradlew clean check -x :libgdx-ui-markup:test -x :libgdx-ui-markup-runtime:test -x :libgdx-ui-markup-harness:test --warning-mode=fail
+        run: ./gradlew clean check -x :libgdx-ui-markup:test -x :libgdx-ui-markup-runtime:test -x :libgdx-ui-markup-harness:test -x :libgdx-ui-markup-qualification:test --warning-mode=fail
       - name: Preview smoke (success and typed error paths)
         if: runner.os == 'Linux'
         run: |
