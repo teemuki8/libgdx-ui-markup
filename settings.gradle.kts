@@ -7,6 +7,12 @@ pluginManagement {
     }
 }
 
+plugins {
+    // Declares the Foojay Toolchains resolver so auto-provisioned JDKs (the IDEA module's
+    // JBR-compatible 21) do not trigger Gradle's deprecated implicit-provisioning path.
+    id("org.gradle.toolchains.foojay-resolver-convention") version "0.9.0"
+}
+
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
     repositories {
