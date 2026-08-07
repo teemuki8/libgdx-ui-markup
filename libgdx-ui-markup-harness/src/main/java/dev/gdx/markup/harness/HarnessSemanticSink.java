@@ -50,8 +50,23 @@ public final class HarnessSemanticSink implements SemanticSink {
     /**
      * Wraps one live harness semantics facade (owned by a Scene2D session).
      *
+     * <p>The {@code runtimeCorrelationToken} is a contract between this sink and the
+     * application's frame-capture path: it must equal the {@code UiFrameCorrelation}
+     * {@code correlationToken()} recorded for each rendered frame (on the render thread) under
+     * which {@code ui_runtime_compare} proves frame equality. Every {@code data-runtime-entity}
+     * binding carries this token, and the harness {@code AgentRuntimeObservationSource} resolves
+     * bindings only against correlations recorded with the same token. A token that matches
+     * nothing silently degrades {@code ui_runtime_compare} to {@code STALE}/{@code UNCORRELATED}
+     * with no diagnostic naming the token, so choose one stable application-scoped value and
+     * record every frame's correlation under it.
+     *
+     * <p>The preview uses {@code markup-preview-frame}; an application with its own frame
+     * correlation must pass its own token here, not the preview's value. See
+     * {@code docs/guides/embedding.md} for the full wiring recipe.
+     *
      * @param runtimeCorrelationToken the frame-correlation token recorded against the session
-     *     each rendered frame; carried on every {@code data-runtime-entity} binding
+     *     each rendered frame; must equal the {@code UiFrameCorrelation} correlation token
+     *     recorded by the application's frame-capture path
      */
     public HarnessSemanticSink(Semantics semantics, String runtimeCorrelationToken) {
         this.semantics = Objects.requireNonNull(semantics, "semantics");
