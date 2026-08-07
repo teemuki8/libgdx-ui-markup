@@ -97,8 +97,9 @@ Locator.testId("save")             // role=button, accessibleName=Save, testId=s
 
 The full proof lives in `libgdx-ui-markup-harness`: an end-to-end test launches the preview with
 `--mcp`, queries `role=button name=Save` (exactly one node, `testId=save`), clicks the checkbox
-through the real input path, waits for the `checked` state, and captures a PNG — all against
-`samples/signin.xml`, no imperative wiring.
+through the real input path, waits for the `checked` state, fills the `username` field and
+compares it through `ui_runtime_compare` (status `EQUAL`, entity `user`/`value`), and captures
+a PNG — all against `samples/signin.xml`, no imperative wiring.
 
 ## Agent runtime values
 
@@ -116,11 +117,12 @@ a `UiFrameCorrelation` for every rendered frame.
 <textfield id="username" label="Username" data-runtime-entity="user"/>
 ```
 
-Note on the three-library story: markup ↔ agent-runtime and markup ↔ harness work against
-published artifacts today (verified end to end). The final hop — exposing runtime values
-through the harness `ui_runtime_compare` tool — needs a harness release that includes its
-`harness-agent-runtime` module (currently only a local snapshot; the published 1.0.0 MCP
-catalog has no runtime-compare tool).
+The three-library story is complete against published artifacts: markup ↔ agent-runtime and
+markup ↔ harness (both on published jars), and agent-runtime ↔ harness through the
+`ui_runtime_compare` tool shipped in harness 1.1.0 (`harness-agent-runtime`). The preview's
+MCP session advertises the runtime-compare capability, `data-runtime-entity` actors carry the
+harness runtime binding with the frame-correlation token `markup-preview-frame`, and the E2E
+asserts the correlated `EQUAL` comparison (ADR 0002).
 
 ## IDEA plugin
 

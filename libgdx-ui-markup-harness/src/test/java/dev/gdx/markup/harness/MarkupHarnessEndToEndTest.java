@@ -69,6 +69,33 @@ final class MarkupHarnessEndToEndTest {
         }
     }
 
+    /**
+     * The final hop of the three-library story: a {@code data-runtime-entity} widget's displayed
+     * value compares EQUAL against its agent-runtime observation through the harness
+     * {@code ui_runtime_compare} tool, with typed frame correlation.
+     */
+    @Test
+    @Timeout(120)
+    void markupRuntimeEntityComparesThroughHarnessMcp() throws Exception {
+        try (PreviewProcess preview = PreviewProcess.launch()) {
+            preview.awaitOkStatus(Duration.ofSeconds(30));
+            try (MarkupMcpClient client = MarkupMcpClient.connect(preview)) {
+                Map<String, Object> username = Map.of("kind", "test-id", "testId", "username");
+                client.fill(SESSION_ID, username, "Ada");
+
+                JsonNode comparison = client.runtimeCompare(SESSION_ID, username, 5_000);
+                assertEquals("EQUAL", comparison.path("status").asText(),
+                        "the displayed text correlates with the runtime value on the proven frame");
+                assertEquals("user", comparison.path("entityId").asText(),
+                        "the markup data-runtime-entity became the harness entity id");
+                assertEquals("value", comparison.path("propertyId").asText());
+                assertEquals("Ada", comparison.path("displayedValue").asText());
+                assertEquals("Ada", comparison.path("runtimeValue").asText());
+            }
+            preview.awaitCleanExit();
+        }
+    }
+
     private static void clickCheckboxAndObserveState(MarkupMcpClient client) throws Exception {
         Map<String, Object> remember = Map.of("kind", "test-id", "testId", "remember");
         JsonNode before = client.query(SESSION_ID, remember);

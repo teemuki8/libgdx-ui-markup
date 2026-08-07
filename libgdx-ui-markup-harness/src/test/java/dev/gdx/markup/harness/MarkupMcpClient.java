@@ -17,7 +17,7 @@ import java.util.Objects;
 
 /**
  * Minimal synchronous MCP stdio client speaking real SDK JSON-RPC, mirroring the harness's
- * {@code HarnessMcpClient} against the published nine-tool catalog.
+ * {@code HarnessMcpClient} against the published harness tool catalog (1.1.0).
  */
 final class MarkupMcpClient implements Closeable {
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -47,9 +47,14 @@ final class MarkupMcpClient implements Closeable {
         }
         client.notify("notifications/initialized", Map.of());
         JsonNode listed = client.request("tools/list", Map.of());
-        if (listed.path("tools").size() != 9) {
+        List<String> names = new ArrayList<>();
+        listed.path("tools").forEach(tool -> names.add(tool.path("name").asText()));
+        if (!names.containsAll(List.of(
+                "ui_capabilities", "ui_query", "ui_action", "ui_wait", "ui_screenshot",
+                "ui_runtime_compare"))) {
             client.close();
-            throw new IllegalStateException("Expected the nine published tools: " + listed);
+            throw new IllegalStateException(
+                    "Expected the published harness tools the client exercises: " + listed);
         }
         return client;
     }
@@ -93,6 +98,17 @@ final class MarkupMcpClient implements Closeable {
                 "condition", condition,
                 "deadlineMillis", deadlineMillis));
         requireKind(content, "wait-result");
+        return content;
+    }
+
+    JsonNode runtimeCompare(String sessionId, Map<String, Object> locator, long deadlineMillis)
+            throws Exception {
+        JsonNode content = call("ui_runtime_compare", Map.of(
+                "sessionId", sessionId,
+                "locator", locator,
+                "maxDurationMillis", 5_000,
+                "deadlineMillis", deadlineMillis));
+        requireKind(content, "runtime-compare-result");
         return content;
     }
 

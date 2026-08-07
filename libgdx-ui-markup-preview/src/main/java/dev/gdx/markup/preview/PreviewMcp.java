@@ -6,7 +6,10 @@ import dev.gdx.markup.core.BuiltUi;
 import dev.gdx.markup.core.MarkupDocument;
 import dev.gdx.markup.harness.HarnessSemanticSink;
 import dev.gdx.markup.runtime.MarkupRuntimeSource;
+import dev.gdx.uiharness.agentruntime.AgentRuntimeObservationSource;
 import dev.gdx.uiharness.core.locator.StrictResolution;
+import dev.gdx.uiharness.core.runtime.RuntimeComparator;
+import dev.gdx.uiharness.core.runtime.RuntimeObservationSource;
 import dev.gdx.uiharness.core.wait.WaitEngine;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3FrameFence;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3ScreenCapture;
@@ -31,7 +34,8 @@ import java.util.concurrent.Executors;
  * Harness MCP wiring for the preview ({@code --mcp}): binds a {@link Scene2dSession} to the
  * stage, advances a fixed-step {@link ControlledStageClock} each rendered frame, and serves the
  * harness stdio protocol so the preview becomes an agent-drivable target. Mirrors the harness
- * fixture wiring against the published 1.0.0 APIs.
+ * fixture wiring against the published 1.1.0 APIs, including the runtime-compare coordinator
+ * that correlates markup-declared runtime entities through {@code ui_runtime_compare}.
  */
 final class PreviewMcp implements AutoCloseable {
     /** Fixed render step used by the deterministic clock. */
@@ -55,27 +59,39 @@ final class PreviewMcp implements AutoCloseable {
         clock = new ControlledStageClock(stage, FIXED_STEP);
         scheduler = new RenderThreadScheduler(128);
         session = new Scene2dSession(stage);
-        sink = new HarnessSemanticSink(session.semantics());
+        sink = new HarnessSemanticSink(session.semantics(), CORRELATION_TOKEN);
         fence = new Lwjgl3FrameFence(64);
         Lwjgl3ScreenCapture capture = new Lwjgl3ScreenCapture(fence, session::snapshot);
         WaitEngine waits = new WaitEngine(
                 () -> session.snapshot(clock.revision(), clock.frame()),
                 new StrictResolution(), clock, clock);
+        runtime = AgentRuntime.builder().sessionId(SessionId.of(PreviewApp.SESSION_ID)).build();
+        runtime.start();
         CapabilitySet capabilities =
-                new CapabilitySet(List.of("snapshot", "query", "action", "wait", "screenshot"));
+                new CapabilitySet(List.of("snapshot", "query", "action", "wait", "screenshot",
+                        "ui_runtime_compare"));
         Scene2dHarness harness = new Scene2dHarness(stage, stage, session, scheduler, clock,
                 clock::revision, clock::frame);
+        RuntimeObservationSource runtimeObservation =
+                new AgentRuntimeObservationSource(runtime, PreviewApp.SESSION_ID);
+        RuntimeComparator runtimeComparator = new RuntimeComparator(runtimeObservation);
+        HarnessProtocolService.RuntimeCompareCoordinator runtimeCoordinator =
+                (locator, deadline) -> scheduler.submit(
+                        () -> runtimeComparator.compare(
+                                session.snapshot(clock.revision(), clock.frame()),
+                                locator.toCore(), new StrictResolution()),
+                        deadline);
         HarnessProtocolService.Session protocolSession = new HarnessProtocolService.Session(
                 harness, new StrictResolution(), waits, capture, capabilities,
-                HarnessProtocolService.TraceController.unsupported());
+                HarnessProtocolService.TraceController.unsupported(),
+                Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                Optional.empty(), Optional.empty(), Optional.of(runtimeCoordinator));
         HarnessProtocolService protocol = new HarnessProtocolService(
                 Map.of(PreviewApp.SESSION_ID, protocolSession), clock,
                 Executors.newThreadPerTaskExecutor(
                         Thread.ofVirtual().name("markup-protocol-", 0).factory()));
         server = HarnessMcpServer.open(protocol, new TmpDirArtifactPublisher(),
                 System.in, System.out);
-        runtime = AgentRuntime.builder().sessionId(SessionId.of(PreviewApp.SESSION_ID)).build();
-        runtime.start();
         terminator = Thread.ofPlatform().name("markup-mcp-terminator").daemon().start(() -> {
             server.awaitTermination();
             Gdx.app.postRunnable(Gdx.app::exit);

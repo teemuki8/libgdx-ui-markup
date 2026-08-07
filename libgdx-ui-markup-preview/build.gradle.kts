@@ -12,6 +12,7 @@ dependencies {
     implementation(libs.harness.lwjgl3)
     implementation(libs.harness.protocol)
     implementation(libs.harness.mcp)
+    implementation(libs.harness.agent.runtime)
     implementation(libs.jackson.databind)
     runtimeOnly("com.badlogicgames.gdx:gdx-platform:${libs.versions.gdx.get()}:natives-desktop")
     runtimeOnly("org.slf4j:slf4j-nop:2.0.17")

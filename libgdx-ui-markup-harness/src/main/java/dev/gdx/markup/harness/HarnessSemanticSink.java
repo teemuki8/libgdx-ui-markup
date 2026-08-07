@@ -3,10 +3,12 @@ package dev.gdx.markup.harness;
 import com.badlogic.gdx.scenes.scene2d.Actor;
 import dev.gdx.markup.core.SemanticSink;
 import dev.gdx.uiharness.core.model.Role;
+import dev.gdx.uiharness.core.model.RuntimeBinding;
 import dev.gdx.uiharness.scene2d.Semantics;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.WeakHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -16,9 +18,19 @@ import java.util.logging.Logger;
  * identifiers, accessible names, labels, and properties; canonical role strings map to the
  * harness {@link Role} enum, with an exact enum-member-name fallback. Unknown role strings are
  * skipped (testId/name still drive locators) rather than failing the build.
+ *
+ * <p>Elements declaring {@code data-runtime-entity} (optionally {@code data-runtime-property},
+ * default {@code value}) are additionally bound to their agent-runtime entity through
+ * {@link Semantics#bind}, carrying the caller's frame-correlation token so
+ * {@code ui_runtime_compare} can prove frame equality. Actor keys are weakly held, so actors
+ * replaced by a hot reload are not retained by this sink.
  */
 public final class HarnessSemanticSink implements SemanticSink {
     private static final Logger LOG = Logger.getLogger(HarnessSemanticSink.class.getName());
+
+    private static final String ENTITY_KEY = "runtime-entity";
+    private static final String PROPERTY_KEY = "runtime-property";
+    private static final String DEFAULT_RUNTIME_PROPERTY = "value";
 
     /** Canonical markup roles to harness roles. */
     private static final Map<String, Role> ROLES = Map.of(
@@ -32,10 +44,19 @@ public final class HarnessSemanticSink implements SemanticSink {
             "window", Role.WINDOW);
 
     private final Semantics semantics;
+    private final String runtimeCorrelationToken;
+    private final WeakHashMap<Actor, PendingBinding> pendingBindings = new WeakHashMap<>();
 
-    /** Wraps one live harness semantics facade (owned by a Scene2D session). */
-    public HarnessSemanticSink(Semantics semantics) {
+    /**
+     * Wraps one live harness semantics facade (owned by a Scene2D session).
+     *
+     * @param runtimeCorrelationToken the frame-correlation token recorded against the session
+     *     each rendered frame; carried on every {@code data-runtime-entity} binding
+     */
+    public HarnessSemanticSink(Semantics semantics, String runtimeCorrelationToken) {
         this.semantics = Objects.requireNonNull(semantics, "semantics");
+        this.runtimeCorrelationToken =
+                Objects.requireNonNull(runtimeCorrelationToken, "runtimeCorrelationToken");
     }
 
     @Override public void role(Actor actor, String role) {
@@ -65,6 +86,34 @@ public final class HarnessSemanticSink implements SemanticSink {
     }
 
     @Override public void property(Actor actor, String key, String value) {
+        if (ENTITY_KEY.equals(key)) {
+            pendingBindings.computeIfAbsent(actor, ignored -> new PendingBinding()).entityId = value;
+            bindIfComplete(actor);
+        } else if (PROPERTY_KEY.equals(key)) {
+            pendingBindings.computeIfAbsent(actor, ignored -> new PendingBinding()).propertyId = value;
+            bindIfComplete(actor);
+        }
         semantics.setProperty(actor, key, value);
+    }
+
+    /**
+     * Binds the actor once its entity is known; a later {@code data-runtime-property} replaces
+     * the default {@code value} property. Binding order in the markup does not matter.
+     */
+    private void bindIfComplete(Actor actor) {
+        PendingBinding pending = pendingBindings.get(actor);
+        if (pending == null || pending.entityId == null) {
+            return;
+        }
+        String propertyId = pending.propertyId != null
+                ? pending.propertyId : DEFAULT_RUNTIME_PROPERTY;
+        semantics.bind(actor, new RuntimeBinding(
+                pending.entityId, propertyId, null, null, runtimeCorrelationToken));
+    }
+
+    /** Per-actor entity/property accumulation across one element's {@code data-*} attributes. */
+    private static final class PendingBinding {
+        String entityId;
+        String propertyId;
     }
 }
