@@ -4,7 +4,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.lwjgl.glfw.GLFW.GLFW_API_UNAVAILABLE;
+import static org.lwjgl.glfw.GLFW.GLFW_FORMAT_UNAVAILABLE;
 import static org.lwjgl.glfw.GLFW.GLFW_OUT_OF_MEMORY;
+import static org.lwjgl.glfw.GLFW.GLFW_PLATFORM_ERROR;
 
 import org.junit.jupiter.api.Test;
 
@@ -33,6 +35,49 @@ final class PreviewGlProbeTest {
         assertThrows(AssertionError.class, () -> PreviewTestProcess.classifyGlProbe(
                         0, PreviewTestChild.GL_PROBE_WINDOWS_UNAVAILABLE, "", false),
                 "the unavailable marker on a non-Windows host fails, never skips");
+    }
+
+    @Test
+    void exactMacOsHeadlessMarkerSkipsOnlyOnMac() {
+        // The mac branch keys off the running host's os.name, so pin it explicitly to make
+        // the test deterministic on every platform.
+        String previous = System.getProperty("os.name");
+        try {
+            System.setProperty("os.name", "Mac OS X");
+            assertFalse(PreviewTestProcess.classifyGlProbe(
+                            0, PreviewTestChild.GL_PROBE_MACOS_UNAVAILABLE, "", false),
+                    "the exact macOS headless NSGL pixel-format marker on macOS skips the "
+                            + "GL scenarios");
+            System.setProperty("os.name", "Linux");
+            assertThrows(AssertionError.class, () -> PreviewTestProcess.classifyGlProbe(
+                            0, PreviewTestChild.GL_PROBE_MACOS_UNAVAILABLE, "", false),
+                    "the macOS headless marker on a non-macOS host fails, never skips");
+        } finally {
+            System.setProperty("os.name", previous);
+        }
+    }
+
+    @Test
+    void macOsHeadlessSignatureMatchesOnlyTheExactCondition() {
+        String signature = GLFW_FORMAT_UNAVAILABLE
+                + ":NSGL: Failed to find a suitable pixel format";
+        assertTrue(PreviewTestChild.isMacOsHeadlessPixelFormatUnavailable(signature, true),
+                "the exact GLFW_FORMAT_UNAVAILABLE/NSGL pixel-format message on macOS matches");
+        assertFalse(PreviewTestChild.isMacOsHeadlessPixelFormatUnavailable(signature, false),
+                "the same error on a non-macOS host is not the unavailable condition");
+        assertFalse(PreviewTestChild.isMacOsHeadlessPixelFormatUnavailable(
+                GLFW_PLATFORM_ERROR + ":NSGL: Failed to find a suitable pixel format", true),
+                "a different GLFW error code is not the unavailable condition");
+        assertFalse(PreviewTestChild.isMacOsHeadlessPixelFormatUnavailable(
+                GLFW_FORMAT_UNAVAILABLE + ":CGL: Failed to find a suitable pixel format", true),
+                "a different backend message is not the unavailable condition");
+        assertFalse(PreviewTestChild.isMacOsHeadlessPixelFormatUnavailable(
+                GLFW_FORMAT_UNAVAILABLE + ":NSGL: something else entirely", true),
+                "a missing exact pixel-format message is not the unavailable condition");
+        assertFalse(PreviewTestChild.isMacOsHeadlessPixelFormatUnavailable(null, true),
+                "a missing GLFW error capture is not the unavailable condition");
+        assertFalse(PreviewTestChild.isMacOsHeadlessPixelFormatUnavailable("garbage", true),
+                "an unparsable capture is not the unavailable condition");
     }
 
     @Test

@@ -58,6 +58,15 @@ public final class PreviewTestChild {
             "preview-child: gl-probe unavailable: GLFW_API_UNAVAILABLE "
                     + "(WGL: The driver does not appear to support OpenGL)";
 
+    /** Marker printed by a {@code gl-probe} child ONLY for the exact hosted-macOS headless
+     * condition (GLFW_FORMAT_UNAVAILABLE with the NSGL "Failed to find a suitable pixel
+     * format" message on a macOS host — GitHub Actions macOS runners have no GPU/WindowServer
+     * pixel format for the default OpenGL profile). The parent classifies the probe strictly
+     * on these markers. */
+    public static final String GL_PROBE_MACOS_UNAVAILABLE =
+            "preview-child: gl-probe unavailable: GLFW_FORMAT_UNAVAILABLE "
+                    + "(NSGL: Failed to find a suitable pixel format)";
+
     private static final int FRAMES = 5;
     private static final int MAX_FAILURE_MESSAGE = 2000;
 
@@ -1321,6 +1330,8 @@ public final class PreviewTestChild {
             System.out.println(GL_PROBE_OK);
         } else if (isWindowsNoOpenGlDriver(glfwError.get(), isWindows())) {
             System.out.println(GL_PROBE_WINDOWS_UNAVAILABLE);
+        } else if (isMacOsHeadlessPixelFormatUnavailable(glfwError.get(), isMac())) {
+            System.out.println(GL_PROBE_MACOS_UNAVAILABLE);
         } else {
             fail("gl-probe window creation failed on " + hostDescription() + ": "
                     + (glfwError.get() == null ? "no GLFW error reported" : glfwError.get()));
@@ -1334,10 +1345,41 @@ public final class PreviewTestChild {
                 + " (Java " + System.getProperty("java.version", "?") + ")";
     }
 
+    /** Whether this host is macOS. */
+    private static boolean isMac() {
+        return System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT)
+                .contains("mac");
+    }
+
     /** Whether this host is Windows. */
     private static boolean isWindows() {
         return System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT)
                 .contains("win");
+    }
+
+    /** Matches the exact hosted-macOS headless pixel-format signature captured from the GLFW
+     * error callback: {@code GLFW_FORMAT_UNAVAILABLE} with an NSGL "Failed to find a
+     * suitable pixel format" description, on a macOS host only (GitHub Actions macOS runners
+     * expose no GPU/WindowServer pixel format for the default OpenGL profile). A different
+     * error code, a different backend message, a non-macOS host, or an unparsable capture is
+     * NOT the unavailable condition. */
+    static boolean isMacOsHeadlessPixelFormatUnavailable(String glfwError, boolean mac) {
+        if (!mac || glfwError == null) {
+            return false;
+        }
+        int separator = glfwError.indexOf(':');
+        if (separator <= 0) {
+            return false;
+        }
+        int code;
+        try {
+            code = Integer.parseInt(glfwError.substring(0, separator));
+        } catch (NumberFormatException notAnErrorCode) {
+            return false;
+        }
+        return code == GLFW.GLFW_FORMAT_UNAVAILABLE
+                && glfwError.contains("NSGL")
+                && glfwError.contains("Failed to find a suitable pixel format");
     }
 
     /** Matches the exact hosted-Windows no-OpenGL-driver signature captured from the GLFW

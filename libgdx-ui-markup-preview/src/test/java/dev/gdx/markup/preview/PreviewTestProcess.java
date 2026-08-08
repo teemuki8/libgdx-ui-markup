@@ -172,10 +172,11 @@ final class PreviewTestProcess implements AutoCloseable {
 
     /** Pure classification of a completed {@code gl-probe} child (unit-tested). Green: the
      * ok marker with exit 0 means the host can create a GL window; the exact structured
-     * Windows no-OpenGL-driver marker with exit 0 on a Windows host means the gated tests
-     * skip. Red (throws, never skips): any non-zero exit, a missing marker, an unavailable
-     * marker on a non-Windows host, or an unavailable marker that is not the exact structured
-     * one. */
+     * Windows no-OpenGL-driver marker with exit 0 on a Windows host, or the exact structured
+     * macOS headless NSGL pixel-format marker with exit 0 on a macOS host, means the gated
+     * tests skip. Red (throws, never skips): any non-zero exit, a missing marker, an
+     * unavailable marker on the wrong host, or an unavailable marker that is not the exact
+     * structured one. */
     static boolean classifyGlProbe(int exitCode, String stdout, String stderr, boolean windows) {
         if (exitCode != 0) {
             // The child prints JDK/LWJGL warnings first and its own 'preview-child: failure'
@@ -195,8 +196,21 @@ final class PreviewTestProcess implements AutoCloseable {
             }
             return false;
         }
+        if (stdout.contains(PreviewTestChild.GL_PROBE_MACOS_UNAVAILABLE)) {
+            if (!isMac()) {
+                throw new AssertionError("GL probe reported the macOS headless pixel-format"
+                        + " marker on a non-macOS host; stdout: " + bounded(stdout));
+            }
+            return false;
+        }
         throw new AssertionError("GL probe child produced no recognized marker; stdout: "
                 + bounded(stdout) + " stderr tail: " + boundedTail(stderr));
+    }
+
+    /** Whether this host is macOS. */
+    private static boolean isMac() {
+        return System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT)
+                .contains("mac");
     }
 
     /** Whether this host is Windows. */
