@@ -19,11 +19,14 @@ import dev.gdx.markup.core.NoopSink;
 import dev.gdx.markup.core.style.CssDocument;
 import dev.gdx.markup.core.style.CssParser;
 import io.github.teemuki8.libgdx.agent.runtime.core.AgentRuntime;
+import io.github.teemuki8.libgdx.agent.runtime.core.AgentRuntimeException;
 import io.github.teemuki8.libgdx.agent.runtime.core.EntityId;
 import io.github.teemuki8.libgdx.agent.runtime.core.EntitySnapshot;
 import io.github.teemuki8.libgdx.agent.runtime.core.FrameSnapshot;
+import io.github.teemuki8.libgdx.agent.runtime.core.RuntimeErrorCode;
 import io.github.teemuki8.libgdx.agent.runtime.core.RuntimeValue;
 import io.github.teemuki8.libgdx.agent.runtime.core.SessionId;
+import io.github.teemuki8.libgdx.agent.runtime.core.UiCorrelationLimits;
 import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -199,5 +202,280 @@ final class MarkupRuntimeSourceTest {
                     "closed registrations no longer appear in runtime frames");
             runtime.close();
         });
+    }
+
+    @Test
+    void failedRegistrationLeavesNoStateAndAllowsRetry_missingLateActor() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupDocument uiDocument = markup.parse("""
+                    <ui>
+                      <table>
+                        <textfield id="user" data-runtime-entity="user"/>
+                      </table>
+                    </ui>
+                    """);
+            MarkupDocument document = markup.parse("""
+                    <ui>
+                      <table>
+                        <textfield id="user" data-runtime-entity="user"/>
+                        <textfield id="late" data-runtime-entity="late"/>
+                      </table>
+                    </ui>
+                    """);
+            BuiltUi built = MarkupBuilder.build(
+                    uiDocument, css.parse(""), skin, new NoopSink());
+            BuiltUi correctedBuilt = MarkupBuilder.build(
+                    document, css.parse(""), skin, new NoopSink());
+            AgentRuntime runtime = AgentRuntime.builder()
+                    .sessionId(SessionId.of("runtime-test")).build();
+            runtime.start();
+            try {
+                MarkupException failure = assertThrows(MarkupException.class, () ->
+                        MarkupRuntimeSource.register(runtime, document, built, "markup-preview"));
+                assertEquals(MarkupException.Kind.INVALID_VALUE, failure.kind());
+                assertTrue(failure.getMessage().contains("no built actor"));
+                assertEquals("ui/table/textfield[1]", failure.elementPath());
+                assertNoRuntimeState(runtime);
+                try (MarkupRuntimeSource retried = MarkupRuntimeSource.register(
+                        runtime, document, correctedBuilt, "markup-preview")) {
+                    assertEquals(List.of("user", "late"), retried.registeredEntities());
+                    runtime.beginFrame(Duration.ofMillis(16).toNanos());
+                    runtime.endFrame();
+                    FrameSnapshot frame = runtime.latestFrame().orElseThrow();
+                    assertTrue(frame.entity(EntityId.of("user")).isPresent());
+                    assertTrue(frame.entity(EntityId.of("late")).isPresent());
+                }
+            } finally {
+                runtime.close();
+            }
+        });
+    }
+
+    @Test
+    void failedRegistrationLeavesNoStateAndAllowsRetry_duplicateLateEntity() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupDocument document = markup.parse("""
+                    <ui>
+                      <table>
+                        <textfield id="first" data-runtime-entity="dup"/>
+                        <textfield id="second" data-runtime-entity="dup"/>
+                      </table>
+                    </ui>
+                    """);
+            MarkupDocument corrected = markup.parse("""
+                    <ui>
+                      <table>
+                        <textfield id="first" data-runtime-entity="first"/>
+                        <textfield id="second" data-runtime-entity="second"/>
+                      </table>
+                    </ui>
+                    """);
+            BuiltUi built = MarkupBuilder.build(document, css.parse(""), skin, new NoopSink());
+            BuiltUi correctedBuilt = MarkupBuilder.build(
+                    corrected, css.parse(""), skin, new NoopSink());
+            AgentRuntime runtime = AgentRuntime.builder()
+                    .sessionId(SessionId.of("runtime-test")).build();
+            runtime.start();
+            try {
+                AgentRuntimeException failure = assertThrows(AgentRuntimeException.class, () ->
+                        MarkupRuntimeSource.register(runtime, document, built, "markup-preview"));
+                assertEquals(RuntimeErrorCode.DUPLICATE_ENTITY, failure.code(),
+                        "the runtime's own duplicate detection must reach the caller unchanged");
+                assertNoRuntimeState(runtime);
+                try (MarkupRuntimeSource retried = MarkupRuntimeSource.register(
+                        runtime, corrected, correctedBuilt, "markup-preview")) {
+                    assertEquals(List.of("first", "second"), retried.registeredEntities());
+                    runtime.beginFrame(Duration.ofMillis(16).toNanos());
+                    runtime.endFrame();
+                    FrameSnapshot frame = runtime.latestFrame().orElseThrow();
+                    assertTrue(frame.entity(EntityId.of("first")).isPresent());
+                    assertTrue(frame.entity(EntityId.of("second")).isPresent());
+                }
+            } finally {
+                runtime.close();
+            }
+        });
+    }
+
+    @Test
+    void failedRegistrationLeavesNoStateAndAllowsRetry_invalidLateEntityId() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupDocument document = markup.parse("""
+                    <ui>
+                      <table>
+                        <textfield id="user" data-runtime-entity="user"/>
+                        <textfield id="bad" data-runtime-entity="bad value!"/>
+                      </table>
+                    </ui>
+                    """);
+            MarkupDocument corrected = markup.parse("""
+                    <ui>
+                      <table>
+                        <textfield id="user" data-runtime-entity="user"/>
+                        <textfield id="bad" data-runtime-entity="bad"/>
+                      </table>
+                    </ui>
+                    """);
+            BuiltUi built = MarkupBuilder.build(document, css.parse(""), skin, new NoopSink());
+            BuiltUi correctedBuilt = MarkupBuilder.build(
+                    corrected, css.parse(""), skin, new NoopSink());
+            AgentRuntime runtime = AgentRuntime.builder()
+                    .sessionId(SessionId.of("runtime-test")).build();
+            runtime.start();
+            try {
+                MarkupException failure = assertThrows(MarkupException.class, () ->
+                        MarkupRuntimeSource.register(runtime, document, built, "markup-preview"));
+                assertEquals(MarkupException.Kind.INVALID_VALUE, failure.kind());
+                assertTrue(failure.getMessage().contains("invalid value for data-runtime-entity"));
+                assertNoRuntimeState(runtime);
+                try (MarkupRuntimeSource retried = MarkupRuntimeSource.register(
+                        runtime, corrected, correctedBuilt, "markup-preview")) {
+                    assertEquals(List.of("user", "bad"), retried.registeredEntities());
+                    runtime.beginFrame(Duration.ofMillis(16).toNanos());
+                    runtime.endFrame();
+                    FrameSnapshot frame = runtime.latestFrame().orElseThrow();
+                    assertTrue(frame.entity(EntityId.of("user")).isPresent());
+                    assertTrue(frame.entity(EntityId.of("bad")).isPresent());
+                }
+            } finally {
+                runtime.close();
+            }
+        });
+    }
+
+    @Test
+    void failedRegistrationLeavesNoStateAndAllowsRetry_beyondMaxEntities() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            StringBuilder overflow = new StringBuilder("<ui><table>");
+            StringBuilder exact = new StringBuilder("<ui><table>");
+            for (int i = 0; i <= MarkupRuntimeSource.MAX_ENTITIES; i++) {
+                overflow.append("<textfield id=\"e").append(i)
+                        .append("\" data-runtime-entity=\"e").append(i).append("\"/>");
+            }
+            for (int i = 0; i < MarkupRuntimeSource.MAX_ENTITIES; i++) {
+                exact.append("<textfield id=\"e").append(i)
+                        .append("\" data-runtime-entity=\"e").append(i).append("\"/>");
+            }
+            MarkupDocument overflowDocument = markup.parse(overflow.append("</table></ui>").toString());
+            MarkupDocument exactDocument = markup.parse(exact.append("</table></ui>").toString());
+            BuiltUi overflowBuilt = MarkupBuilder.build(
+                    overflowDocument, css.parse(""), skin, new NoopSink());
+            BuiltUi exactBuilt = MarkupBuilder.build(
+                    exactDocument, css.parse(""), skin, new NoopSink());
+            AgentRuntime runtime = AgentRuntime.builder()
+                    .sessionId(SessionId.of("runtime-test")).build();
+            runtime.start();
+            try {
+                MarkupException failure = assertThrows(MarkupException.class, () ->
+                        MarkupRuntimeSource.register(
+                                runtime, overflowDocument, overflowBuilt, "markup-preview"));
+                assertEquals(MarkupException.Kind.TOO_LARGE, failure.kind());
+                assertNoRuntimeState(runtime);
+                try (MarkupRuntimeSource retried = MarkupRuntimeSource.register(
+                        runtime, exactDocument, exactBuilt, "markup-preview")) {
+                    assertEquals(MarkupRuntimeSource.MAX_ENTITIES,
+                            retried.registeredEntities().size());
+                    assertEquals("e0", retried.registeredEntities().get(0));
+                    assertEquals("e" + (MarkupRuntimeSource.MAX_ENTITIES - 1),
+                            retried.registeredEntities().get(MarkupRuntimeSource.MAX_ENTITIES - 1));
+                    runtime.beginFrame(Duration.ofMillis(16).toNanos());
+                    runtime.endFrame();
+                    FrameSnapshot frame = runtime.latestFrame().orElseThrow();
+                    assertEquals(MarkupRuntimeSource.MAX_ENTITIES, frame.entities().size());
+                    assertTrue(frame.entity(EntityId.of("e0")).isPresent());
+                    assertTrue(frame.entity(EntityId.of("e255")).isPresent());
+                }
+            } finally {
+                runtime.close();
+            }
+        });
+    }
+
+    @Test
+    void failedRegistrationLeavesNoStateAndAllowsRetry_bindingFailure() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupDocument document = markup.parse("""
+                    <ui>
+                      <table>
+                        <textfield id="user" data-runtime-entity="user"/>
+                        <textfield id="extra" data-runtime-entity="extra"/>
+                      </table>
+                    </ui>
+                    """);
+            BuiltUi built = MarkupBuilder.build(document, css.parse(""), skin, new NoopSink());
+            AgentRuntime runtime = AgentRuntime.builder()
+                    .sessionId(SessionId.of("runtime-test"))
+                    .uiCorrelationLimits(new UiCorrelationLimits(1, 100, 1_024, 512))
+                    .build();
+            runtime.start();
+            try {
+                AgentRuntimeException failure = assertThrows(AgentRuntimeException.class, () ->
+                        MarkupRuntimeSource.register(runtime, document, built, "markup-preview"));
+                assertEquals(RuntimeErrorCode.LIMIT_EXCEEDED, failure.code());
+                assertNoRuntimeState(runtime);
+                AgentRuntime corrected = AgentRuntime.builder()
+                        .sessionId(SessionId.of("runtime-test"))
+                        .uiCorrelationLimits(new UiCorrelationLimits(2, 100, 1_024, 512))
+                        .build();
+                corrected.start();
+                try (MarkupRuntimeSource retried = MarkupRuntimeSource.register(
+                        corrected, document, built, "markup-preview")) {
+                    assertEquals(List.of("user", "extra"), retried.registeredEntities());
+                    assertEquals(2, corrected.uiCorrelations().list().size());
+                    corrected.beginFrame(Duration.ofMillis(16).toNanos());
+                    corrected.endFrame();
+                    FrameSnapshot frame = corrected.latestFrame().orElseThrow();
+                    assertTrue(frame.entity(EntityId.of("user")).isPresent());
+                    assertTrue(frame.entity(EntityId.of("extra")).isPresent());
+                }
+                corrected.close();
+            } finally {
+                runtime.close();
+            }
+        });
+    }
+
+    @Test
+    void runtimeDiagnosticsUseParentScopedCorePaths() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupDocument document = markup.parse("""
+                    <ui>
+                      <table>
+                        <textfield id="user" data-runtime-entity="user"/>
+                      </table>
+                      <table>
+                        <textfield id="bad" data-runtime-entity="bad value!"/>
+                      </table>
+                    </ui>
+                    """);
+            BuiltUi built = MarkupBuilder.build(document, css.parse(""), skin, new NoopSink());
+            AgentRuntime runtime = AgentRuntime.builder()
+                    .sessionId(SessionId.of("runtime-test")).build();
+            runtime.start();
+            try {
+                MarkupException failure = assertThrows(MarkupException.class, () ->
+                        MarkupRuntimeSource.register(runtime, document, built, "markup-preview"));
+                assertEquals("ui/table[1]/textfield", failure.elementPath(),
+                        "runtime diagnostics must match the core parent-scoped path");
+            } finally {
+                runtime.close();
+            }
+        });
+    }
+
+    private static void assertNoRuntimeState(AgentRuntime runtime) {
+        assertTrue(runtime.uiCorrelations().list().isEmpty(),
+                "no UI bindings may remain after a failed registration");
+        runtime.beginFrame(Duration.ofMillis(16).toNanos());
+        runtime.endFrame();
+        FrameSnapshot frame = runtime.latestFrame().orElseThrow();
+        assertTrue(frame.entities().isEmpty(),
+                "no entities may remain after a failed registration");
     }
 }

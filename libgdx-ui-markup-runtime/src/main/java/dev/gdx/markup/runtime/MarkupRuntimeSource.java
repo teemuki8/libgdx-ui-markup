@@ -12,6 +12,7 @@ import com.badlogic.gdx.scenes.scene2d.ui.TextButton;
 import com.badlogic.gdx.scenes.scene2d.ui.TextField;
 import dev.gdx.markup.core.BuiltUi;
 import dev.gdx.markup.core.Element;
+import dev.gdx.markup.core.ElementPathTracker;
 import dev.gdx.markup.core.MarkupDocument;
 import dev.gdx.markup.core.MarkupException;
 import io.github.teemuki8.libgdx.agent.runtime.core.AgentRuntime;
@@ -24,9 +25,7 @@ import io.github.teemuki8.libgdx.agent.runtime.core.UiBinding;
 import io.github.teemuki8.libgdx.agent.runtime.core.UiBindingRegistration;
 import io.github.teemuki8.libgdx.agent.runtime.core.UiBindingValidity;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -62,17 +61,21 @@ public final class MarkupRuntimeSource implements AutoCloseable {
     /**
      * Registers every {@code data-runtime-entity} element of the document against the actors in
      * {@code ui}. The element's {@code id} must be present and resolve to a built actor.
+     *
+     * <p>Registration is transactional: the complete immutable document is validated up front
+     * (limits, ids, actor correspondence, property ids, resolved display names) without touching
+     * the runtime, then every entity and binding handle is acquired before the source is
+     * returned. If any commit step fails, the handles acquired so far are closed in exact reverse
+     * acquisition order and the original failure is rethrown with cleanup failures suppressed, so
+     * a failed call leaves the runtime unmodified and an immediately corrected retry succeeds.
      */
     public static MarkupRuntimeSource register(AgentRuntime runtime, MarkupDocument document,
             BuiltUi ui, String uiSessionId) {
         Objects.requireNonNull(runtime, "runtime");
         Objects.requireNonNull(document, "document");
         Objects.requireNonNull(ui, "ui");
-        IdentifierSupport.check(uiSessionId, "uiSessionId");
-        MarkupRuntimeSource source = new MarkupRuntimeSource();
-        Walk walk = new Walk();
-        walk.walk(source, runtime, ui.root(), document.root(), uiSessionId);
-        return source;
+        IdentifierSupport.check(uiSessionId, "uiSessionId", "", 0, 0);
+        return RegistrationPlan.preflight(document, ui.root()).commit(runtime, uiSessionId);
     }
 
     /** Returns the entity ids registered by this source, in document order. */
@@ -93,41 +96,50 @@ public final class MarkupRuntimeSource implements AutoCloseable {
         registered.clear();
     }
 
-    private void add(EntityRegistration entity, UiBindingRegistration binding, String entityId) {
-        entities.add(entity);
-        bindings.add(binding);
-        registered.add(entityId);
-    }
+    /**
+     * Immutable preflight result. Walking the complete document produces a copied list of fully
+     * validated {@link PlannedRegistration} values without mutating the runtime; {@link #commit}
+     * then acquires every handle transactionally.
+     */
+    private static final class RegistrationPlan {
+        private final List<PlannedRegistration> registrations;
 
-    /** One document walk; owns element counting, paths, and actor lookup. */
-    private static final class Walk {
-        private final Map<String, Integer> sameTagSiblings = new HashMap<>();
-        private final java.util.ArrayDeque<String> pathStack = new java.util.ArrayDeque<>();
+        private RegistrationPlan(List<PlannedRegistration> registrations) {
+            this.registrations = registrations;
+        }
 
-        private void walk(MarkupRuntimeSource source, AgentRuntime runtime, Group root,
-                Element element, String uiSessionId) {
-            String path = pathOf(element.tag());
-            pathStack.push(path);
+        /** Walks the immutable document with the shared core path tracker and validates everything
+         * that does not require the runtime. */
+        static RegistrationPlan preflight(MarkupDocument document, Group root) {
+            List<PlannedRegistration> planned = new ArrayList<>();
+            ElementPathTracker tracker = new ElementPathTracker();
+            preflightWalk(tracker, root, document.root(), planned);
+            return new RegistrationPlan(List.copyOf(planned));
+        }
+
+        private static void preflightWalk(ElementPathTracker tracker, Group root,
+                Element element, List<PlannedRegistration> planned) {
+            String path = tracker.enter(element.tag());
             try {
                 String entityId = element.attr(ENTITY_ATTRIBUTE);
                 if (entityId != null) {
-                    register(source, runtime, root, element, entityId, path, uiSessionId);
+                    if (planned.size() >= MAX_ENTITIES) {
+                        throw new MarkupException(MarkupException.Kind.TOO_LARGE, path,
+                                element.line(), element.column(),
+                                "more than " + MAX_ENTITIES + " runtime entities declared");
+                    }
+                    planned.add(planElement(root, element, entityId, path));
                 }
                 for (Element child : element.children()) {
-                    walk(source, runtime, root, child, uiSessionId);
+                    preflightWalk(tracker, root, child, planned);
                 }
             } finally {
-                pathStack.pop();
+                tracker.exit();
             }
         }
 
-        private void register(MarkupRuntimeSource source, AgentRuntime runtime, Group root,
-                Element element, String entityId, String path, String uiSessionId) {
-            if (source.registered.size() >= MAX_ENTITIES) {
-                throw new MarkupException(MarkupException.Kind.TOO_LARGE, path, element.line(),
-                        element.column(),
-                        "more than " + MAX_ENTITIES + " runtime entities declared");
-            }
+        private static PlannedRegistration planElement(Group root, Element element,
+                String entityId, String path) {
             String id = element.id();
             if (id == null) {
                 throw new MarkupException(MarkupException.Kind.INVALID_VALUE, path,
@@ -149,22 +161,62 @@ public final class MarkupRuntimeSource implements AutoCloseable {
                 type = "widget";
             }
             String declaredName = element.attr(NAME_ATTRIBUTE);
-            String finalDisplayName = declaredName != null ? declaredName
+            String displayName = declaredName != null ? declaredName
                     : element.name() != null ? element.name()
                     : element.label() != null ? element.label()
                     : element.text() != null ? element.text() : entityId;
-            IdentifierSupport.check(entityId, ENTITY_ATTRIBUTE);
-            IdentifierSupport.check(type, TYPE_ATTRIBUTE);
-            IdentifierSupport.check(property, PROPERTY_ATTRIBUTE);
-            String finalProperty = property;
-            EntityRegistration entity = runtime.entities().register(
-                    EntityId.of(entityId), EntityType.of(type), () -> finalDisplayName,
-                    inspector -> inspector.property(finalProperty, () -> valueOf(actor)));
-            UiBindingRegistration binding = runtime.uiCorrelations().register(new UiBinding(
-                    "markup:" + entityId + ":" + property, EntityId.of(entityId),
-                    Optional.of(property), uiSessionId, actor.getName(),
-                    UiBindingValidity.always()));
-            source.add(entity, binding, entityId);
+            IdentifierSupport.check(entityId, ENTITY_ATTRIBUTE, path, element.line(),
+                    element.column());
+            IdentifierSupport.check(type, TYPE_ATTRIBUTE, path, element.line(),
+                    element.column());
+            IdentifierSupport.check(property, PROPERTY_ATTRIBUTE, path, element.line(),
+                    element.column());
+            return new PlannedRegistration(entityId, type, property, actor, displayName);
+        }
+
+        /**
+         * Acquires every entity and binding handle in document order. On failure, closes the
+         * handles acquired so far in exact reverse acquisition order, attaches any cleanup
+         * failure with {@link Throwable#addSuppressed}, and rethrows the original failure.
+         */
+        MarkupRuntimeSource commit(AgentRuntime runtime, String uiSessionId) {
+            List<EntityRegistration> entities = new ArrayList<>(registrations.size());
+            List<UiBindingRegistration> bindings = new ArrayList<>(registrations.size());
+            List<String> ids = new ArrayList<>(registrations.size());
+            java.util.ArrayDeque<Runnable> acquired = new java.util.ArrayDeque<>();
+            try {
+                for (PlannedRegistration planned : registrations) {
+                    EntityRegistration entity = runtime.entities().register(
+                            EntityId.of(planned.entityId), EntityType.of(planned.type),
+                            () -> planned.displayName,
+                            inspector -> inspector.property(planned.property,
+                                    () -> valueOf(planned.actor)));
+                    entities.add(entity);
+                    acquired.push(entity::close);
+                    UiBindingRegistration binding = runtime.uiCorrelations().register(
+                            new UiBinding("markup:" + planned.entityId + ":" + planned.property,
+                                    EntityId.of(planned.entityId),
+                                    Optional.of(planned.property), uiSessionId,
+                                    planned.actor.getName(), UiBindingValidity.always()));
+                    bindings.add(binding);
+                    ids.add(planned.entityId);
+                    acquired.push(binding::close);
+                }
+            } catch (RuntimeException failure) {
+                while (!acquired.isEmpty()) {
+                    try {
+                        acquired.pop().run();
+                    } catch (RuntimeException cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                throw failure;
+            }
+            MarkupRuntimeSource source = new MarkupRuntimeSource();
+            source.entities.addAll(entities);
+            source.bindings.addAll(bindings);
+            source.registered.addAll(ids);
+            return source;
         }
 
         private static Actor resolveActor(Group root, String id) {
@@ -173,15 +225,11 @@ public final class MarkupRuntimeSource implements AutoCloseable {
             }
             return root.findActor(id);
         }
+    }
 
-        private String pathOf(String tag) {
-            Integer count = sameTagSiblings.merge(tag, 1, Integer::sum) - 1;
-            String segment = count == 0 ? tag : tag + "[" + count + "]";
-            if (pathStack.isEmpty()) {
-                return segment;
-            }
-            return pathStack.peek() + "/" + segment;
-        }
+    /** One fully validated registration; immutable after preflight. */
+    private record PlannedRegistration(String entityId, String type, String property,
+            Actor actor, String displayName) {
     }
 
     /** Reads the widget's live state as a typed runtime value; generic actors report their name. */
@@ -224,11 +272,12 @@ public final class MarkupRuntimeSource implements AutoCloseable {
         private IdentifierSupport() {
         }
 
-        private static void check(String value, String attribute) {
+        private static void check(String value, String attribute, String path, int line,
+                int column) {
             Objects.requireNonNull(value, attribute);
             if (value.isBlank() || value.length() > 256
                     || !value.matches("[A-Za-z0-9_-]+")) {
-                throw new MarkupException(MarkupException.Kind.INVALID_VALUE, "", 0, 0,
+                throw new MarkupException(MarkupException.Kind.INVALID_VALUE, path, line, column,
                         "invalid value for " + attribute + ": \"" + value + "\"");
             }
         }
