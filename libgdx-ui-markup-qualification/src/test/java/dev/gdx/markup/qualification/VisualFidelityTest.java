@@ -326,6 +326,70 @@ final class VisualFidelityTest {
         assertTrue(identity.detail() > ceiling, "identity detail must clear the ceiling");
     }
 
+    // ------------------------------------------------------------- scale transform
+
+    @Test
+    void scaleNegativeCentersContentWithSymmetricBorders() {
+        BufferedImage source = new BufferedImage(20, 12, BufferedImage.TYPE_INT_RGB);
+        fill(source, 0xff10141a);
+        // A single marker pixel at the source center; its scaled position proves the offset.
+        source.setRGB(10, 6, 0xffe8e0c8);
+        BufferedImage scaled = NegativeTransforms.scale(source);
+        assertEquals(20, scaled.getWidth());
+        assertEquals(12, scaled.getHeight());
+        // 0.75 of 20x12 rounds to 15x9; centered offsets are (20-15)/2=2 and (12-9)/2=1.
+        // The marker at source (10,6) is sampled by output pixels with (x-2)/0.75 == 10 and
+        // (y-1)/0.75 == 6, i.e. output (10,6). A top-left-anchored scale (offset 0) would
+        // land it at output (8,5).
+        assertEquals(0xffe8e0c8, scaled.getRGB(10, 6),
+                "the scaled marker must land at the centered offset (2 + 8, 1 + 5)");
+        assertEquals(0xff10141a, scaled.getRGB(8, 5),
+                "a top-left-anchored scale would put the marker at (8,5); it must be fill");
+        assertEquals(0xff10141a, scaled.getRGB(9, 6), "marker neighborhood must be fill");
+        assertEquals(0xff10141a, scaled.getRGB(10, 5), "marker neighborhood must be fill");
+        // Odd leftover borders: 20-15=5 gives left 2 / right 3; 12-9=3 gives top 1 / bottom 2.
+        assertEquals(0xff10141a, scaled.getRGB(0, 0), "top-left corner must be filled");
+        assertEquals(0xff10141a, scaled.getRGB(19, 0), "top-right corner must be filled");
+        assertEquals(0xff10141a, scaled.getRGB(0, 11), "bottom-left corner must be filled");
+        assertEquals(0xff10141a, scaled.getRGB(19, 11), "bottom-right corner must be filled");
+    }
+
+    private static int leftBorder(BufferedImage image) {
+        for (int x = 0; x < image.getWidth(); x++) {
+            if (image.getRGB(x, 5) != 0xff10141a) {
+                return x;
+            }
+        }
+        return image.getWidth();
+    }
+
+    private static int rightBorder(BufferedImage image) {
+        for (int x = image.getWidth() - 1; x >= 0; x--) {
+            if (image.getRGB(x, 5) != 0xff10141a) {
+                return image.getWidth() - 1 - x;
+            }
+        }
+        return image.getWidth();
+    }
+
+    private static int topBorder(BufferedImage image) {
+        for (int y = 0; y < image.getHeight(); y++) {
+            if (image.getRGB(10, y) != 0xff10141a) {
+                return y;
+            }
+        }
+        return image.getHeight();
+    }
+
+    private static int bottomBorder(BufferedImage image) {
+        for (int y = image.getHeight() - 1; y >= 0; y--) {
+            if (image.getRGB(10, y) != 0xff10141a) {
+                return image.getHeight() - 1 - y;
+            }
+        }
+        return image.getHeight();
+    }
+
     // ------------------------------------------------------ resolution invariance
 
     @Test

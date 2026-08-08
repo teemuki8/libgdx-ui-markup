@@ -161,8 +161,10 @@ final class NegativeTransforms {
         int height = source.getHeight();
         int scaledWidth = Math.max(1, (int) Math.round(width * SCALE_FACTOR));
         int scaledHeight = Math.max(1, (int) Math.round(height * SCALE_FACTOR));
-        int offsetX = 0;
-        int offsetY = 0;
+        // Center the scaled content; an odd leftover pixel goes to the right/bottom border,
+        // matching the documented "centered" behavior and keeping both borders symmetric.
+        int offsetX = (width - scaledWidth) / 2;
+        int offsetY = (height - scaledHeight) / 2;
         int fill = source.getRGB(0, 0);
         BufferedImage out = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
         for (int y = 0; y < height; y++) {
