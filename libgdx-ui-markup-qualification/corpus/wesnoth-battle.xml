@@ -10,9 +10,9 @@
       <label id="turn-gold" class="title" text="SWORD 7     GOLD 6     VILLAGES 8/16     INCOME +18     TIME 20:01" width="700"/>
     </table>
     <row/>
-    <table id="battlefield-frame" width="780" height="674" pad="0">
+    <table id="battlefield-frame" width="1150" height="674" pad="0">
       <row/>
-      <table id="battlefield" class="panel-alt" width="950" height="674" pad="8" align="left top">
+      <table id="battlefield" class="panel-alt" width="1150" height="674" pad="8" align="left top">
         <row/>
         <label id="ridge-1" class="heading" text="^ ^ ^     ^ ^       ^ ^ ^^       ^      ^ ^" width="900" height="28"/>
         <row/>
@@ -65,9 +65,9 @@
         <progressbar id="enemy-hp" min="0" max="12" value="12" width="150" height="12"/>
       </table>
     </table>
-    <table id="sidebar" class="panel" width="330" height="674" pad="12" align="left top">
+    <table id="sidebar" class="panel" width="130" height="674" pad="6" align="left top">
       <row/>
-      <label id="minimap" class="panel-alt" text=". . . . .\n.  o  . o\n. . ^ . .\no . .  F .\n. . . . ." width="290" height="120" align="center"/>
+      <label id="minimap" class="panel-alt" text=". . . . .\n.  o  . o\n. . ^ . .\no . .  F .\n. . . . ." width="112" height="120" align="center"/>
       <row/>
       <label id="clock" class="title" text="20:10" width="112" height="24" align="center"/>
       <row/>
