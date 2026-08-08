@@ -9,11 +9,10 @@
       <button id="actions" text="Actions" name="Actions" width="82" height="18"/>
       <label id="turn-gold" class="title" text="SWORD 7     GOLD 6     VILLAGES 8/16     INCOME +18     TIME 20:01" width="700"/>
     </table>
-    <table id="main-field" width="1280" height="674" pad="0">
-      <table class="backdrop" width="60" height="674" pad="0"/>
-      <table id="battlefield-frame" width="1090" height="674" pad="0">
-        <row/>
-        <table id="battlefield" class="panel-alt" width="1090" height="674" pad="8" align="left top">
+    <row/>
+    <table id="battlefield-frame" width="1150" height="674" pad="0">
+      <row/>
+      <table id="battlefield" class="panel-alt" width="1150" height="674" pad="8" align="left top">
         <table width="1134" height="104" pad="3">
           <table class="panel-alt" width="378" height="98" pad="4"><label id="ridge-1" class="heading" text="^ ^ ^   ^ ^" width="350" align="left"/><row/><label id="forest-1" class="section" text="##  ###  . . ." width="350" align="right"/><row/><label class="section" text=". . ^ ^ . ." width="350" align="center"/></table>
           <table class="field-focused-bg" width="378" height="98" pad="4"><label id="river-west-text" class="section" text="~  ~  ~  ~  ~" width="350" align="left"/><row/><label class="section" text="~ ~ ~ ~ ~ ~" width="350" align="right"/><row/><label class="heading" text=". . ~ ~ . ." width="350" align="center"/></table>
@@ -65,7 +64,6 @@
       <label id="attack-title" class="heading" text="Attacks" width="112" height="22"/>
       <row/>
       <label id="attack-detail" class="section" text="5×2 mace\n7×3 composite bow" width="112" height="46"/>
-    </table>
     </table>
     <row/>
     <table id="turn-bar" class="panel" width="1280" height="24" pad="3" align="right center">
