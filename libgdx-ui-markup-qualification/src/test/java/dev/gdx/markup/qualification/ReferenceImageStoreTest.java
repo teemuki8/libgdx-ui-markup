@@ -1027,4 +1027,195 @@ final class ReferenceImageStoreTest {
             }
         }
     }
+
+    // ---------------------------------------------------------------- Content-Length grammar
+
+    @Test
+    void rejectsPlusSignContentLength() {
+        byte[] raw = ("HTTP/1.1 200 OK\r\nContent-Length: +5\r\n\r\nhello")
+                .getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsNegativeContentLength() {
+        byte[] raw = ("HTTP/1.1 200 OK\r\nContent-Length: -1\r\n\r\nhello")
+                .getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsTrailingSpaceContentLength() {
+        byte[] raw = ("HTTP/1.1 200 OK\r\nContent-Length: 5 \r\n\r\nhello")
+                .getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsHugeContentLength() {
+        byte[] raw = ("HTTP/1.1 200 OK\r\nContent-Length: "
+                + "9".repeat(30) + "\r\n\r\n").getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void acceptsContentLengthWithoutDelimiterSpace() throws IOException {
+        ReferenceImageStore.Response parsed = parse(
+                "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length:5", "hello");
+        assertArrayEquals("hello".getBytes(StandardCharsets.US_ASCII), parsed.body());
+    }
+
+    // ---------------------------------------------------------------- handshake deadline
+
+    @Test
+    void handshakeWatchdogEnforcesAbsoluteDeadline() throws Exception {
+        try (Socket socket = new Socket()) {
+            ReferenceImageStore.Clock frozen = () -> 0L;
+            long deadline = 1_000_000L; // 1 ms of budget: the watchdog fires almost immediately
+            java.util.concurrent.CountDownLatch watchdogObserved =
+                    new java.util.concurrent.CountDownLatch(1);
+            ReferenceImageStore.Handshake trickle = () -> {
+                while (!socket.isClosed()) {
+                    Thread.onSpinWait();
+                }
+                watchdogObserved.countDown();
+                throw new IOException("socket closed by the deadline watchdog");
+            };
+            IOException failure = assertThrows(IOException.class, () ->
+                    ReferenceImageStore.runHandshakeUnderDeadline(trickle, socket, frozen,
+                            deadline));
+            assertTrue(failure.getMessage().contains("socket closed"),
+                    "a trickling handshake must observe the watchdog-closed socket");
+            assertTrue(watchdogObserved.await(5, java.util.concurrent.TimeUnit.SECONDS),
+                    "the watchdog must fire at the absolute deadline");
+        }
+    }
+
+    @Test
+    void handshakeCompletesWithinDeadline() throws Exception {
+        try (Socket socket = new Socket()) {
+            ReferenceImageStore.Clock frozen = () -> 0L;
+            boolean[] ran = {false};
+            ReferenceImageStore.Handshake fast = () -> ran[0] = true;
+            ReferenceImageStore.runHandshakeUnderDeadline(fast, socket, frozen,
+                    1_000_000_000L);
+            assertTrue(ran[0], "a fast handshake must complete inside the deadline");
+        }
+    }
+
+    // ---------------------------------------------------------------- secure parent policy
+
+    private static void setMode(Path path, Set<PosixFilePermission> permissions, int sticky) {
+        try {
+            Files.setPosixFilePermissions(path, permissions);
+            if (sticky != 0) {
+                int mode = (Integer) Files.getAttribute(path, "unix:mode");
+                Files.setAttribute(path, "unix:mode", mode | sticky);
+            }
+        } catch (UnsupportedOperationException unsupported) {
+            org.junit.jupiter.api.Assumptions.abort("POSIX attributes unavailable: " + unsupported);
+        } catch (IOException failure) {
+            throw new AssertionError("cannot set POSIX mode on " + path, failure);
+        }
+    }
+
+    private static Set<PosixFilePermission> allPermissions() {
+        return Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.OWNER_EXECUTE, PosixFilePermission.GROUP_READ,
+                PosixFilePermission.GROUP_WRITE, PosixFilePermission.GROUP_EXECUTE,
+                PosixFilePermission.OTHERS_READ, PosixFilePermission.OTHERS_WRITE,
+                PosixFilePermission.OTHERS_EXECUTE);
+    }
+
+    @Test
+    void secureParentPolicySeam() throws IOException {
+        Path privateDir = Files.createDirectories(tempDir.resolve("private"));
+        setMode(privateDir, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.OWNER_EXECUTE), 0);
+        Path sharedSticky = Files.createDirectories(tempDir.resolve("shared-sticky"));
+        setMode(sharedSticky, allPermissions(), 01000);
+        Path worldWritable = Files.createDirectories(tempDir.resolve("world-writable"));
+        setMode(worldWritable, allPermissions(), 0);
+
+        assertTrue(ReferenceImageStore.isSecureParent(privateDir),
+                "a private user-owned directory is provably secure");
+        assertTrue(ReferenceImageStore.isSecureParent(sharedSticky),
+                "a shared temp with the sticky bit is provably secure");
+        assertFalse(ReferenceImageStore.isSecureParent(worldWritable),
+                "a world-writable non-sticky directory cannot be proven secure");
+    }
+
+    @Test
+    void attackerWritableConfiguredRootIsNotUsed() throws IOException {
+        Path root = Files.createDirectories(tempDir.resolve("public-cache"));
+        setMode(root, allPermissions(), 0);
+        try (ReferenceImageStore store =
+                store(root, silentTransport(), publicResolver(), ALLOWED_HOST)) {
+            assertFalse(store.sessionDir().toRealPath().startsWith(root.toRealPath()),
+                    "an attacker-writable configured root must not host the session");
+        }
+    }
+
+    @Test
+    void intermediateSymlinkInConfiguredRootIsRejected() throws IOException {
+        Path elsewhere = Files.createDirectories(tempDir.resolve("elsewhere"));
+        Path link = tempDir.resolve("link");
+        createSymlinkOrAbort(link, elsewhere);
+        Path root = Files.createDirectories(link.resolve("sub"));
+        try (ReferenceImageStore store =
+                store(root, silentTransport(), publicResolver(), ALLOWED_HOST)) {
+            assertFalse(store.sessionDir().toRealPath().startsWith(root.toRealPath()),
+                    "a symlinked intermediate must make the configured root untrusted");
+        }
+    }
+
+    @Test
+    void secureParentFailsClosedWhenFallbackIsUnsafe() throws IOException {
+        Path unsafeRoot = Files.createDirectories(tempDir.resolve("unsafe-root"));
+        setMode(unsafeRoot, allPermissions(), 0);
+        Path unsafeTemp = Files.createDirectories(tempDir.resolve("unsafe-temp"));
+        setMode(unsafeTemp, allPermissions(), 0);
+        ReferenceException failure = assertThrows(ReferenceException.class,
+                () -> ReferenceImageStore.secureParent(unsafeRoot, unsafeTemp));
+        assertEquals(ReferenceException.Kind.IO, failure.kind(),
+                "when both the configured root and the fallback are unprovable, the store "
+                        + "must fail closed");
+    }
+
+    @Test
+    void secureParentUsesValidatedFallback() throws IOException {
+        Path unsafeRoot = Files.createDirectories(tempDir.resolve("unsafe-fallback-root"));
+        setMode(unsafeRoot, allPermissions(), 0);
+        Path privateTemp = Files.createDirectories(tempDir.resolve("private-temp"));
+        setMode(privateTemp, Set.of(PosixFilePermission.OWNER_READ,
+                PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE), 0);
+        assertEquals(privateTemp, ReferenceImageStore.secureParent(unsafeRoot, privateTemp),
+                "a validated fallback parent may host the session");
+    }
+
+    // ---------------------------------------------------------------- chunked trailers
+
+    @Test
+    void acceptsChunkedTrailersAtBound() throws IOException {
+        String line = "X-1: " + "a".repeat(4096) + "\r\n";
+        byte[] raw = ("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n"
+                + line.repeat(15) + "\r\n").getBytes(StandardCharsets.US_ASCII);
+        ReferenceImageStore.Response parsed =
+                ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw));
+        assertArrayEquals(new byte[0], parsed.body(),
+                "trailers exactly at the cap plus the terminating line must parse");
+    }
+
+    @Test
+    void rejectsChunkedTrailersOverBound() {
+        String line = "X-1: " + "a".repeat(4096) + "\r\n";
+        byte[] raw = ("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n"
+                + line.repeat(16) + "\r\n").getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
 }

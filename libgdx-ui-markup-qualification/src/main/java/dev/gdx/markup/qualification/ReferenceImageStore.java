@@ -14,12 +14,14 @@ import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.nio.file.attribute.UserPrincipal;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
@@ -31,6 +33,9 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import javax.net.ssl.SNIHostName;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
@@ -68,6 +73,8 @@ public final class ReferenceImageStore implements AutoCloseable {
     static final int MAX_HEADER_BYTES = 64 * 1024;
     private static final Set<Integer> REDIRECT_STATUSES = Set.of(301, 302, 303, 307, 308);
     private static final Set<Integer> ABSENT_STATUSES = Set.of(404, 410);
+    private static final java.util.regex.Pattern CONTENT_LENGTH =
+            java.util.regex.Pattern.compile("[0-9]+");
     private static final Set<String> DEFAULT_ALLOWED_HOSTS =
             Set.of("shared.akamai.steamstatic.com");
     private static final Set<PosixFilePermission> OWNER_ONLY = Set.of(
@@ -103,6 +110,12 @@ public final class ReferenceImageStore implements AutoCloseable {
     @FunctionalInterface
     interface Clock {
         long nanoTime();
+    }
+
+    /** TLS handshake step; injectable so the deadline owner can be proven without real TLS. */
+    @FunctionalInterface
+    interface Handshake {
+        void run() throws IOException;
     }
 
     /** A reference whose bytes were authenticated and decoded once into a bounded image. */
@@ -571,8 +584,7 @@ public final class ReferenceImageStore implements AutoCloseable {
                     parameters.setServerNames(List.of(new SNIHostName(host)));
                 }
                 ssl.setSSLParameters(parameters);
-                ssl.setSoTimeout(remainingMillis(deadline));
-                ssl.startHandshake();
+                runHandshakeUnderDeadline(() -> ssl.startHandshake(), socket, clock, deadline);
                 return exchange(ssl, uri, host, port, deadline);
             } finally {
                 ssl.close();
@@ -588,6 +600,38 @@ public final class ReferenceImageStore implements AutoCloseable {
             throw new IOException("exchange deadline exceeded");
         }
         return (int) Math.min(Integer.MAX_VALUE, Math.max(1, remaining / 1_000_000));
+    }
+
+    /**
+     * Runs the TLS handshake under the same absolute deadline as the rest of the exchange. A
+     * per-exchange daemon watchdog closes the socket at the deadline, so a handshake that
+     * trickles across many reads (each individually below SO_TIMEOUT) still cannot extend the
+     * exchange; the watchdog scheduler is shut down as soon as the handshake completes, so no
+     * executor or thread leaks. Package-private so the deadline owner is testable without TLS.
+     */
+    static void runHandshakeUnderDeadline(Handshake handshake, Socket socket, Clock clock,
+            long deadlineNanos) throws IOException {
+        long remaining = deadlineNanos - clock.nanoTime();
+        if (remaining <= 0) {
+            throw new IOException("exchange deadline exceeded before handshake");
+        }
+        ScheduledExecutorService watchdog = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread thread = new Thread(r, "qualification-handshake-watchdog");
+            thread.setDaemon(true);
+            return thread;
+        });
+        try {
+            watchdog.schedule(() -> {
+                try {
+                    socket.close();
+                } catch (IOException ignored) {
+                    // the handshake is already observing a closed socket
+                }
+            }, Math.max(1, remaining / 1_000_000), TimeUnit.MILLISECONDS);
+            handshake.run();
+        } finally {
+            watchdog.shutdownNow();
+        }
     }
 
     /** Writes a bounded HTTP/1.1 request and parses the bounded response under the deadline. */
@@ -635,7 +679,7 @@ public final class ReferenceImageStore implements AutoCloseable {
             switch (name) {
                 case "content-type" -> contentType = value;
                 case "location" -> location = value;
-                case "content-length" -> contentLengths.add(value);
+                case "content-length" -> contentLengths.add(line.substring(colon + 1));
                 case "transfer-encoding" -> transferEncodings.add(value);
                 default -> { }
             }
@@ -653,25 +697,32 @@ public final class ReferenceImageStore implements AutoCloseable {
             }
             body = readChunkedBody(in);
         } else {
-            long contentLength = -1;
-            for (String value : contentLengths) {
+            Long contentLength = null;
+            for (String raw : contentLengths) {
+                // Content-Length is 1*DIGIT: OWS after the colon is the field delimiter, but
+                // the value itself must be pure ASCII digits with no sign, spaces, or overflow.
+                String candidate = raw.stripLeading();
+                if (candidate.isEmpty() || !CONTENT_LENGTH.matcher(candidate).matches()
+                        || candidate.length() > 19) {
+                    throw new IOException("malformed Content-Length: '" + raw + "'");
+                }
                 long parsed;
                 try {
-                    parsed = Long.parseLong(value);
-                } catch (NumberFormatException failure) {
-                    throw new IOException("malformed Content-Length: " + value, failure);
+                    parsed = Long.parseLong(candidate);
+                } catch (NumberFormatException overflow) {
+                    throw new IOException("Content-Length overflow: '" + raw + "'", overflow);
                 }
-                if (contentLength != -1 && parsed != contentLength) {
+                if (contentLength != null && parsed != contentLength) {
                     throw new IOException("conflicting Content-Length values");
                 }
                 contentLength = parsed;
             }
-            if (contentLength >= 0) {
+            if (contentLength != null) {
                 if (contentLength > MAX_BYTES) {
                     throw new IOException("declared content-length " + contentLength
                             + " exceeds the " + MAX_BYTES + " byte cap");
                 }
-                body = readExactly(in, (int) contentLength);
+                body = readExactly(in, contentLength.intValue());
             } else {
                 body = readBounded(in);
             }
@@ -707,12 +758,21 @@ public final class ReferenceImageStore implements AutoCloseable {
             }
             if (chunkSize == 0) {
                 ByteArrayOutputStream trailerBytes = new ByteArrayOutputStream();
-                String trailer;
-                while ((trailer = readHeaderLine(in, trailerBytes)) != null
-                        && !trailer.isEmpty()) {
-                    // trailers are discarded but bounded by the same header caps
+                while (true) {
+                    String trailer = readBoundedLine(in, MAX_HEADER_LINE);
+                    if (trailer == null) {
+                        throw new IOException("truncated chunked trailers");
+                    }
+                    if (trailer.isEmpty()) {
+                        return body.toByteArray(); // terminator: never counted against the cap
+                    }
+                    trailerBytes.write(trailer.getBytes(StandardCharsets.ISO_8859_1));
+                    trailerBytes.write('\n');
+                    if (trailerBytes.size() > MAX_HEADER_BYTES) {
+                        throw new IOException("chunked trailers exceed the " + MAX_HEADER_BYTES
+                                + " byte bound");
+                    }
                 }
-                return body.toByteArray();
             }
             body.write(readExactly(in, (int) chunkSize));
             expectChunkTerminator(in);
@@ -851,15 +911,16 @@ public final class ReferenceImageStore implements AutoCloseable {
     }
 
     /**
-     * Creates a fresh, owner-only, randomly named session directory. The parent is the
-     * configured cache root only when it is already a real directory (never a pre-planted
-     * symlink at a predictable path, never a file); otherwise the validated OS temp directory
-     * is used. The session's real path is verified to stay inside the parent and to be a real
-     * directory (no-follow identity).
+     * Creates a fresh, owner-only, randomly named session directory anchored directly under a
+     * parent whose security policy is proven (see {@link #secureParent}). The session's real
+     * path is verified to stay inside the parent and to be a real directory (no-follow
+     * identity), and the parent is re-resolved so a rename/replace of an intermediate cannot
+     * redirect the session.
      */
     private static Path createSessionDir(Path configuredRoot) {
+        Path parent = secureParent(configuredRoot,
+                Path.of(System.getProperty("java.io.tmpdir")));
         try {
-            Path parent = secureParent(configuredRoot);
             Path session = Files.createTempDirectory(parent, "libgdx-qualification-",
                     PosixFilePermissions.asFileAttribute(OWNER_ONLY));
             Path realParent = parent.toRealPath();
@@ -870,30 +931,80 @@ public final class ReferenceImageStore implements AutoCloseable {
             return session;
         } catch (IOException failure) {
             throw new ReferenceException(ReferenceException.Kind.IO,
-                    "cannot create private cache session under " + configuredRoot, failure);
+                    "cannot create private cache session under " + parent, failure);
         }
     }
 
     /**
-     * The session parent: the configured cache root once it exists as a real directory (a
-     * symlink or a regular file at that path is refused), falling back to the validated OS
-     * temp directory so a planted root can never redirect the session.
+     * Chooses a provably secure session parent: the configured root when it is a real
+     * directory chain with secure ownership/writability, otherwise the OS temp when IT is
+     * secure; if neither can be proven, the store fails closed instead of falling back to an
+     * unvalidated location. Package-private for deterministic policy seams.
      */
-    private static Path secureParent(Path configuredRoot) {
+    static Path secureParent(Path configuredRoot, Path osTemp) {
         try {
             Files.createDirectories(configuredRoot);
         } catch (IOException ignored) {
-            // fall through to the OS temp
+            // leave the directory missing; validation below decides
         }
-        if (Files.isDirectory(configuredRoot, LinkOption.NOFOLLOW_LINKS)) {
+        if (componentsAreRealDirectories(configuredRoot)
+                && isSecureParent(configuredRoot)) {
             return configuredRoot;
         }
-        Path osTemp = Path.of(System.getProperty("java.io.tmpdir"));
-        if (Files.isDirectory(osTemp, LinkOption.NOFOLLOW_LINKS)) {
+        if (componentsAreRealDirectories(osTemp) && isSecureParent(osTemp)) {
             return osTemp;
         }
         throw new ReferenceException(ReferenceException.Kind.IO,
-                "no secure cache parent: configured root and OS temp are both unusable");
+                "no provably secure cache parent: " + configuredRoot + " and " + osTemp
+                        + " both fail the ownership/writability policy");
+    }
+
+    /**
+     * Proves that every component from the filesystem root down to {@code root} is a real
+     * directory (no symlink at any level), so an attacker cannot redirect the session by
+     * renaming or replacing an intermediate path element.
+     */
+    static boolean componentsAreRealDirectories(Path root) {
+        Path current = root.toAbsolutePath().normalize();
+        while (current != null) {
+            if (!Files.isDirectory(current, LinkOption.NOFOLLOW_LINKS)) {
+                return false;
+            }
+            current = current.getParent();
+        }
+        return true;
+    }
+
+    /**
+     * Proves the parent is secure: either it is owned by the current user and not writable by
+     * group or others (private directory), or it has the sticky bit (shared-temp semantics, so
+     * other principals cannot delete or rename our child). On ACL or other systems where the
+     * policy cannot be proven, the parent is refused (fail closed). Package-private for tests.
+     */
+    static boolean isSecureParent(Path parent) {
+        if (!Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS)) {
+            return false;
+        }
+        try {
+            int mode = (Integer) Files.getAttribute(parent, "unix:mode",
+                    LinkOption.NOFOLLOW_LINKS);
+            boolean sticky = (mode & 01000) != 0;
+            boolean groupOrOtherWritable = (mode & 0022) != 0;
+            boolean ownedByCurrentUser = Files.getOwner(parent).equals(currentUser());
+            return (ownedByCurrentUser && !groupOrOtherWritable) || sticky;
+        } catch (IOException | UnsupportedOperationException unprovable) {
+            return false; // policy cannot be proven: fail closed
+        }
+    }
+
+    private static UserPrincipal currentUser() {
+        try {
+            return FileSystems.getDefault().getUserPrincipalLookupService()
+                    .lookupPrincipalByName(System.getProperty("user.name"));
+        } catch (IOException failure) {
+            throw new ReferenceException(ReferenceException.Kind.IO,
+                    "cannot resolve the current user for the cache policy", failure);
+        }
     }
 
     @Override
