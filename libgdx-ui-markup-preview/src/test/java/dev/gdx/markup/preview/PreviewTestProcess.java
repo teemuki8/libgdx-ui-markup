@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -50,18 +51,33 @@ final class PreviewTestProcess implements AutoCloseable {
     }
 
     /**
+     * Extra JVM flags the child requires on the current platform before any other option.
+     * macOS forbids GLFW/AWT window creation unless the main thread is the process's first
+     * thread, so every child (including the {@code gl-probe}) must run with
+     * {@code -XstartOnFirstThread} there; other platforms need nothing extra.
+     */
+    static List<String> childJvmFlags(String osName) {
+        if (osName != null && osName.toLowerCase(Locale.ROOT).contains("mac")) {
+            return List.of("-XstartOnFirstThread");
+        }
+        return List.of();
+    }
+
+    /**
      * Launches one child scenario JVM on the current test classpath ({@code java.home},
      * {@code java.class.path}) and display environment.
      */
     static PreviewTestProcess launch(String scenario, Path ui, Path css, Path png,
             Duration deadline) throws IOException {
         String javaBin = Path.of(System.getProperty("java.home"), "bin", "java").toString();
-        List<String> command = new ArrayList<>(List.of(
-                javaBin,
-                "--enable-native-access=ALL-UNNAMED",
-                "-cp", System.getProperty("java.class.path"),
-                PreviewTestChild.class.getName(),
-                scenario));
+        List<String> command = new ArrayList<>();
+        command.add(javaBin);
+        command.addAll(childJvmFlags(System.getProperty("os.name")));
+        command.add("--enable-native-access=ALL-UNNAMED");
+        command.add("-cp");
+        command.add(System.getProperty("java.class.path"));
+        command.add(PreviewTestChild.class.getName());
+        command.add(scenario);
         if (ui != null) {
             command.add("--ui");
             command.add(ui.toString());
