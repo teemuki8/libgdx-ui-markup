@@ -25,6 +25,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import org.lwjgl.glfw.GLFW;
+import org.lwjgl.glfw.GLFWErrorCallback;
+import org.lwjgl.system.MemoryUtil;
 
 /**
  * Test-child main for the process-isolated preview tests: each scenario runs in its own JVM so
@@ -41,6 +45,16 @@ public final class PreviewTestChild {
     /** Window size the child renders into; the parent's pixel assertions mirror it. */
     public static final int WINDOW_WIDTH = 480;
     public static final int WINDOW_HEIGHT = 360;
+
+    /** Marker printed by a {@code gl-probe} child that created a GL window. */
+    public static final String GL_PROBE_OK = "preview-child: gl-probe ok";
+
+    /** Marker printed by a {@code gl-probe} child ONLY for the exact hosted-Windows
+     * no-OpenGL-driver condition (GLFW_API_UNAVAILABLE with the WGL driver message on a
+     * Windows host). The parent classifies the probe strictly on these markers. */
+    public static final String GL_PROBE_WINDOWS_UNAVAILABLE =
+            "preview-child: gl-probe unavailable: GLFW_API_UNAVAILABLE "
+                    + "(WGL: The driver does not appear to support OpenGL)";
 
     private static final int FRAMES = 5;
     private static final int MAX_FAILURE_MESSAGE = 2000;
@@ -1215,24 +1229,71 @@ public final class PreviewTestChild {
                 : thrown.getMessage();
     }
 
-    /** Probes whether a GLFW window can actually be created on this host by exercising the
-     * exact {@link Lwjgl3Application} constructor the real scenarios use — GL-less hosts
-     * (e.g. Windows CI runners, whose WGL backend reports "The driver does not appear to
-     * support OpenGL") report {@code unavailable} instead of failing every scenario. Prints
-     * its own marker line and exits 0 either way; the parent gates GL scenarios on it. */
+    /** Probes whether a GLFW window can be created on this host by creating one directly with
+     * the same defaults the preview uses, capturing the GLFW error callback verbatim. ONLY
+     * the exact hosted-Windows no-OpenGL-driver condition — {@code GLFW_API_UNAVAILABLE} with
+     * the WGL "The driver does not appear to support OpenGL" error on a Windows host — is
+     * reported as {@link #GL_PROBE_WINDOWS_UNAVAILABLE}; every other failure exits non-zero
+     * so the parent fails the gated tests instead of skipping them. */
     private static void runGlProbe() {
+        AtomicReference<String> glfwError = new AtomicReference<>();
+        GLFWErrorCallback previous = GLFW.glfwSetErrorCallback((error, description) ->
+                glfwError.set(error + ":" + MemoryUtil.memUTF8(description)));
+        long window = 0L;
         try {
-            launch(new ApplicationAdapter() {
-                @Override public void create() {
-                    Gdx.app.exit();
-                }
-            });
-            System.out.println("preview-child: gl-probe ok");
-        } catch (Throwable thrown) {
-            System.out.println("preview-child: gl-probe unavailable: "
-                    + bound(messageOf(thrown)));
+            if (GLFW.glfwInit()) {
+                GLFW.glfwDefaultWindowHints();
+                GLFW.glfwWindowHint(GLFW.GLFW_VISIBLE, GLFW.GLFW_FALSE);
+                window = GLFW.glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "gl-probe", 0L, 0L);
+            } else {
+                glfwError.compareAndSet(null, "glfwInit failed");
+            }
+        } finally {
+            if (window != 0L) {
+                GLFW.glfwDestroyWindow(window);
+            }
+            GLFW.glfwTerminate();
+            GLFW.glfwSetErrorCallback(previous);
+        }
+        if (window != 0L) {
+            System.out.println(GL_PROBE_OK);
+        } else if (isWindowsNoOpenGlDriver(glfwError.get(), isWindows())) {
+            System.out.println(GL_PROBE_WINDOWS_UNAVAILABLE);
+        } else {
+            fail("gl-probe window creation failed: "
+                    + (glfwError.get() == null ? "no GLFW error reported" : glfwError.get()));
         }
         System.out.flush();
+    }
+
+    /** Whether this host is Windows. */
+    private static boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT)
+                .contains("win");
+    }
+
+    /** Matches the exact hosted-Windows no-OpenGL-driver signature captured from the GLFW
+     * error callback: {@code GLFW_API_UNAVAILABLE} with a WGL "The driver does not appear to
+     * support OpenGL" description, on a Windows host only. A different error code, a
+     * different backend message, a non-Windows host, or an unparsable capture is NOT the
+     * unavailable condition. */
+    static boolean isWindowsNoOpenGlDriver(String glfwError, boolean windows) {
+        if (!windows || glfwError == null) {
+            return false;
+        }
+        int separator = glfwError.indexOf(':');
+        if (separator <= 0) {
+            return false;
+        }
+        int code;
+        try {
+            code = Integer.parseInt(glfwError.substring(0, separator));
+        } catch (NumberFormatException notAnErrorCode) {
+            return false;
+        }
+        return code == GLFW.GLFW_API_UNAVAILABLE
+                && glfwError.contains("WGL")
+                && glfwError.contains("does not appear to support OpenGL");
     }
 
     private static void launch(ApplicationAdapter listener) {

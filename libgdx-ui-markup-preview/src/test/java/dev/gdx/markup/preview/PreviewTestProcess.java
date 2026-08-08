@@ -33,8 +33,12 @@ final class PreviewTestProcess implements AutoCloseable {
     private static final Duration FORCE_KILL_WAIT = Duration.ofSeconds(5);
     private static final Duration PUMP_JOIN_WAIT = Duration.ofSeconds(5);
 
-    /** Cached probe result: whether a child JVM can create an OpenGL window on this host. */
+    /** Cached probe outcome: whether a child JVM can create an OpenGL window on this host. */
     private static final AtomicReference<Boolean> GL_AVAILABLE = new AtomicReference<>();
+
+    /** Cached probe failure; rethrown by every gated test so a probe regression FAILS (never
+     * silently skips) the GL scenarios. */
+    private static final AtomicReference<AssertionError> GL_PROBE_FAILURE = new AtomicReference<>();
 
     private final Process process;
     private final Duration deadline;
@@ -98,32 +102,85 @@ final class PreviewTestProcess implements AutoCloseable {
      * Whether a child JVM on this host can create an OpenGL window, probed once lazily in a
      * dedicated child JVM launched through {@link #launch} with the exact same configuration
      * as scenario children (so any platform JVM flags, e.g. macOS {@code -XstartOnFirstThread},
-     * apply identically). GL-less hosts — e.g. Windows CI runners whose WGL backend cannot
-     * provide OpenGL — return {@code false}; GL-scenario tests should gate on this with a
-     * JUnit assumption so they skip (never fail) where no window can be created.
+     * apply identically). Returns {@code false} ONLY for the exact hosted-Windows
+     * no-OpenGL-driver signature; every unexpected probe outcome (non-zero exit, missing or
+     * lookalike marker, unavailable-on-a-non-Windows-host, launch failure, interruption) is
+     * rethrown as an {@link AssertionError} so the gated tests FAIL — a regression must never
+     * silently skip GL coverage.
      */
     static boolean glAvailable() {
+        AssertionError failed = GL_PROBE_FAILURE.get();
+        if (failed != null) {
+            throw failed;
+        }
         Boolean cached = GL_AVAILABLE.get();
         if (cached != null) {
             return cached;
         }
-        boolean available = probeGl();
+        boolean available;
+        try {
+            available = runGlProbe();
+        } catch (AssertionError failure) {
+            GL_PROBE_FAILURE.compareAndSet(null, failure);
+            throw failure;
+        }
         GL_AVAILABLE.compareAndSet(null, available);
         return GL_AVAILABLE.get();
     }
 
-    /** Runs the child {@code gl-probe} scenario once and reads its result marker. */
-    private static boolean probeGl() {
+    /** Runs the child {@code gl-probe} scenario once and classifies its outcome. */
+    private static boolean runGlProbe() {
         try (PreviewTestProcess probe = launch("gl-probe", null, null, null,
                 Duration.ofSeconds(60))) {
-            int exit = probe.await();
-            return exit == 0 && probe.stdout().contains("preview-child: gl-probe ok");
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            return false;
+            int exit;
+            try {
+                exit = probe.await();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("interrupted while running the GL probe child",
+                        interrupted);
+            }
+            return classifyGlProbe(exit, probe.stdout(), probe.stderr(), isWindows());
         } catch (IOException launchFailure) {
+            throw new AssertionError("failed to launch the GL probe child: "
+                    + launchFailure.getMessage(), launchFailure);
+        }
+    }
+
+    /** Pure classification of a completed {@code gl-probe} child (unit-tested). Green: the
+     * ok marker with exit 0 means the host can create a GL window; the exact structured
+     * Windows no-OpenGL-driver marker with exit 0 on a Windows host means the gated tests
+     * skip. Red (throws, never skips): any non-zero exit, a missing marker, an unavailable
+     * marker on a non-Windows host, or an unavailable marker that is not the exact structured
+     * one. */
+    static boolean classifyGlProbe(int exitCode, String stdout, String stderr, boolean windows) {
+        if (exitCode != 0) {
+            throw new AssertionError("GL probe child exited " + exitCode
+                    + " (expected 0); stderr: " + bounded(stderr));
+        }
+        if (stdout.contains(PreviewTestChild.GL_PROBE_OK)) {
+            return true;
+        }
+        if (stdout.contains(PreviewTestChild.GL_PROBE_WINDOWS_UNAVAILABLE)) {
+            if (!windows) {
+                throw new AssertionError("GL probe reported the Windows no-OpenGL-driver"
+                        + " marker on a non-Windows host; stdout: " + bounded(stdout));
+            }
             return false;
         }
+        throw new AssertionError("GL probe child produced no recognized marker; stdout: "
+                + bounded(stdout) + " stderr: " + bounded(stderr));
+    }
+
+    /** Whether this host is Windows. */
+    private static boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT)
+                .contains("win");
+    }
+
+    /** Bounds a captured stream for an assertion message. */
+    private static String bounded(String text) {
+        return text.length() <= 400 ? text : text.substring(0, 400) + "…";
     }
 
     /**
