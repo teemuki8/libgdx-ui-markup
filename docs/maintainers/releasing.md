@@ -119,7 +119,15 @@ re-checked against the committed keyring and trust policy:
 3. Review the generated diff: every new coordinate, checksum, and signer key must come from the
    intended upgrade and a trusted publisher, with each key scoped to its exact
    group/module/version/file entries — no wildcard trust, no `trusted-artifacts`, no
-   `ignored-keys`. **Never commit before this provenance and key/file-scope review.**
+   `ignored-keys`. **Never commit before this provenance and key/file-scope review.** The
+   generator may emit group-wide `<trusting group="..."/>` entries for keys it already knows;
+   narrow each one to file-exact entries for exactly the artifacts the bootstrap observed, and
+   record a matching checksum component for every trusted file (the committed metadata keeps
+   `trusting` a strict subset of checksummed components — an invariant CI-side audits assume).
+   The bootstrap also completes coverage for candidate metadata the locked resolution never
+   materializes (conflict-resolution losers such as `junit-jupiter-engine-5.10.1` in the IDEA
+   test-runtime configuration); include those file-exact entries so a later `--write-locks`
+   run works out of the box.
 4. Commit the lockfiles, `gradle/verification-metadata.xml`, and keyring changes together so the
    committed state never mixes an old lock set with new verification metadata.
 5. Verify with the non-writing sweep `./gradlew resolveAndLockAll --warning-mode=fail` and the
