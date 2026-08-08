@@ -272,6 +272,63 @@ final class MarkupParserTest {
     }
 
     @Test
+    void elementPathsAreScopedPerParent() {
+        MarkupException firstTableFirstButton = assertThrows(MarkupException.class,
+                () -> parser.parse("""
+                        <ui>
+                          <table>
+                            <button id="a" bogus="1"/>
+                          </table>
+                          <table>
+                            <button id="b"/>
+                          </table>
+                        </ui>
+                        """));
+        assertEquals("ui/table/button", firstTableFirstButton.elementPath());
+
+        MarkupException firstTableSecondButton = assertThrows(MarkupException.class,
+                () -> parser.parse("""
+                        <ui>
+                          <table>
+                            <button id="a"/>
+                            <button id="b" bogus="1"/>
+                          </table>
+                          <table>
+                            <button id="c"/>
+                          </table>
+                        </ui>
+                        """));
+        assertEquals("ui/table/button[1]", firstTableSecondButton.elementPath());
+
+        MarkupException secondTableFirstButton = assertThrows(MarkupException.class,
+                () -> parser.parse("""
+                        <ui>
+                          <table>
+                            <button id="a"/>
+                          </table>
+                          <table>
+                            <button id="b" bogus="1"/>
+                          </table>
+                        </ui>
+                        """));
+        assertEquals("ui/table[1]/button", secondTableFirstButton.elementPath());
+
+        MarkupException secondTableSecondButton = assertThrows(MarkupException.class,
+                () -> parser.parse("""
+                        <ui>
+                          <table>
+                            <button id="a"/>
+                          </table>
+                          <table>
+                            <button id="b"/>
+                            <button id="c" bogus="1"/>
+                          </table>
+                        </ui>
+                        """));
+        assertEquals("ui/table[1]/button[1]", secondTableSecondButton.elementPath());
+    }
+
+    @Test
     void whitespaceBetweenElementsIsIgnored() {
         MarkupDocument document = parser.parse("""
                 <ui>

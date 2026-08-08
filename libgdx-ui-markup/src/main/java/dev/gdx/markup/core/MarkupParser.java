@@ -10,7 +10,6 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import javax.xml.XMLConstants;
@@ -132,7 +131,7 @@ public final class MarkupParser {
         private final Deque<Frame> stack = new ArrayDeque<>();
         private final Set<String> ids = new HashSet<>();
         private final List<Element> roots = new ArrayList<>();
-        private final Map<String, Integer> sameTagSiblings = new LinkedHashMap<>();
+        private final ElementPathTracker paths = new ElementPathTracker();
         private Locator locator;
         private Element root;
         private int elements;
@@ -150,7 +149,7 @@ public final class MarkupParser {
             String tag = qName;
             int line = locator == null ? 0 : locator.getLineNumber();
             int column = locator == null ? 0 : locator.getColumnNumber();
-            String path = pathOf(tag);
+            String path = paths.enter(tag);
             if (++elements > maxElements) {
                 throw tooLarge("document exceeds the " + maxElements + "-element limit", path,
                         line, column);
@@ -219,6 +218,7 @@ public final class MarkupParser {
         @Override public void endElement(String uri, String localName, String qName)
                 throws SAXException {
             Frame frame = stack.pop();
+            paths.exit();
             Element element = frame.build(ids);
             if (stack.isEmpty()) {
                 roots.add(element);
@@ -269,15 +269,6 @@ public final class MarkupParser {
 
         private int column() {
             return locator == null ? 0 : locator.getColumnNumber();
-        }
-
-        private String pathOf(String tag) {
-            Integer count = sameTagSiblings.merge(tag, 1, Integer::sum) - 1;
-            String segment = count == 0 ? tag : tag + "[" + count + "]";
-            if (stack.isEmpty()) {
-                return segment;
-            }
-            return stack.peek().path + "/" + segment;
         }
     }
 

@@ -62,6 +62,11 @@ final class BuiltinTagFactories {
             float min = context.floatAttr("min", 0f);
             float max = context.floatAttr("max", 100f);
             float step = context.floatAttr("step", 1f);
+            if (min > max || step <= 0) {
+                throw new MarkupException(MarkupException.Kind.INVALID_VALUE,
+                        context.elementPath(), context.line(), context.column(),
+                        "slider requires min <= max and step > 0");
+            }
             Slider slider = new Slider(min, max, step, false,
                     context.resolveStyle(Slider.SliderStyle.class));
             slider.setValue(context.floatAttr("value", min));
@@ -70,6 +75,11 @@ final class BuiltinTagFactories {
         registry.register("progressbar", (element, context) -> {
             float min = context.floatAttr("min", 0f);
             float max = context.floatAttr("max", 100f);
+            if (min > max) {
+                throw new MarkupException(MarkupException.Kind.INVALID_VALUE,
+                        context.elementPath(), context.line(), context.column(),
+                        "progressbar requires min <= max");
+            }
             ProgressBar bar = new ProgressBar(min, max, 1f, false,
                     context.resolveStyle(ProgressBar.ProgressBarStyle.class));
             bar.setValue(context.floatAttr("value", min));

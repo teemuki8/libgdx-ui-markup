@@ -10,18 +10,21 @@ import java.util.Objects;
 /**
  * Immutable per-element style after the cascade: an ordered property-to-value map. Values are
  * kept as parsed strings; the builder interprets them against the skin (drawable names, colors,
- * lengths).
+ * lengths). Every winning value remembers the source rule that supplied it, so build-time
+ * diagnostics for that value can report the selector's coordinates.
  */
 public final class ResolvedStyle {
     private final Map<String, String> properties;
+    private final Map<String, CssRule> sources;
 
-    private ResolvedStyle(Map<String, String> properties) {
+    private ResolvedStyle(Map<String, String> properties, Map<String, CssRule> sources) {
         this.properties = Map.copyOf(properties);
+        this.sources = Map.copyOf(sources);
     }
 
     /** Creates an empty resolved style. */
     public static ResolvedStyle empty() {
-        return new ResolvedStyle(Map.of());
+        return new ResolvedStyle(Map.of(), Map.of());
     }
 
     /** Returns the winning value for one property, or {@code null} when unmatched. */
@@ -32,6 +35,14 @@ public final class ResolvedStyle {
     /** Returns whether the element matched at least one rule declaring the property. */
     public boolean has(String property) {
         return properties.containsKey(property);
+    }
+
+    /**
+     * Returns the source rule that supplied the winning value for one property, or {@code null}
+     * when the property is unmatched. Non-null whenever {@link #has} is true.
+     */
+    public CssRule sourceRule(String property) {
+        return sources.get(property);
     }
 
     /** Returns the declared boolean value, or the fallback when unmatched. */
@@ -98,18 +109,20 @@ public final class ResolvedStyle {
 
     static final class Builder {
         private final LinkedHashMap<String, String> values = new LinkedHashMap<>();
+        private final LinkedHashMap<String, CssRule> sources = new LinkedHashMap<>();
 
         private Builder() {
         }
 
-        Builder put(String property, String value) {
+        Builder put(String property, String value, CssRule source) {
             values.put(Objects.requireNonNull(property, "property"),
                     Objects.requireNonNull(value, "value"));
+            sources.put(property, Objects.requireNonNull(source, "source"));
             return this;
         }
 
         ResolvedStyle build() {
-            return new ResolvedStyle(values);
+            return new ResolvedStyle(values, sources);
         }
     }
 }

@@ -19,15 +19,18 @@ import com.badlogic.gdx.scenes.scene2d.ui.Window;
 import com.badlogic.gdx.scenes.scene2d.utils.Drawable;
 import com.badlogic.gdx.utils.Align;
 import dev.gdx.markup.core.style.CssDocument;
+import dev.gdx.markup.core.style.CssRule;
 import dev.gdx.markup.core.style.CssStyleResolver;
 import dev.gdx.markup.core.style.ResolvedStyle;
-import java.util.ArrayDeque;
+import dev.gdx.markup.core.style.Selector;
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Builds a Scene2D actor tree from a parsed markup document and stylesheet on the render thread.
@@ -45,6 +48,7 @@ public final class MarkupBuilder {
     private final SemanticSink sink;
     private final MarkupRegistry registry;
     private final CssStyleResolver resolver;
+    private final Set<String> taglessPseudoStates;
     private final int maxElements;
     private final int maxDepth;
 
@@ -56,8 +60,26 @@ public final class MarkupBuilder {
         this.sink = Objects.requireNonNull(sink, "sink");
         this.registry = Objects.requireNonNull(registry, "registry");
         this.resolver = new CssStyleResolver(css);
+        this.taglessPseudoStates = taglessPseudoStates(css);
         this.maxElements = maxElements;
         this.maxDepth = maxDepth;
+    }
+
+    /**
+     * The pseudo-states used by class-only/id-only selectors in this stylesheet. Tag selectors
+     * (and {@code tag.class}) compile into skin styles, so only tagless pseudo rules need
+     * per-actor application; resolving every state for every actor would multiply cascade work.
+     */
+    private static Set<String> taglessPseudoStates(CssDocument css) {
+        Set<String> states = new HashSet<>();
+        for (CssRule rule : css.rules()) {
+            for (Selector selector : rule.selectors()) {
+                if (selector.tag() == null && selector.pseudo() != null) {
+                    states.add(selector.pseudo());
+                }
+            }
+        }
+        return Set.copyOf(states);
     }
 
     /**
@@ -75,6 +97,30 @@ public final class MarkupBuilder {
             SemanticSink sink, MarkupRegistry registry) {
         return new MarkupBuilder(document, css, skin, sink, registry,
                 MarkupParser.MAX_ELEMENTS, MarkupParser.MAX_DEPTH).build();
+    }
+
+    /**
+     * Package-private seam for tests: explicit cascade work limits on the per-build resolver.
+     */
+    static BuiltUi build(MarkupDocument document, CssDocument css, Skin skin, SemanticSink sink,
+            MarkupRegistry registry, int maxComparisonsPerResolve, int maxComparisonsPerBuild) {
+        return new MarkupBuilder(document, css, skin, sink, registry,
+                MarkupParser.MAX_ELEMENTS, MarkupParser.MAX_DEPTH,
+                maxComparisonsPerResolve, maxComparisonsPerBuild).build();
+    }
+
+    private MarkupBuilder(MarkupDocument document, CssDocument css, Skin skin, SemanticSink sink,
+            MarkupRegistry registry, int maxElements, int maxDepth,
+            int maxComparisonsPerResolve, int maxComparisonsPerBuild) {
+        this.document = Objects.requireNonNull(document, "document");
+        this.css = Objects.requireNonNull(css, "css");
+        this.skin = Objects.requireNonNull(skin, "skin");
+        this.sink = Objects.requireNonNull(sink, "sink");
+        this.registry = Objects.requireNonNull(registry, "registry");
+        this.resolver = new CssStyleResolver(css, maxComparisonsPerResolve, maxComparisonsPerBuild);
+        this.taglessPseudoStates = taglessPseudoStates(css);
+        this.maxElements = maxElements;
+        this.maxDepth = maxDepth;
     }
 
     private BuiltUi build() {
@@ -101,15 +147,36 @@ public final class MarkupBuilder {
         return Map.copyOf(map);
     }
 
-    /** One build traversal; owns element counting, paths, and the actor list. */
+    /** One build traversal; owns element counting, paths, the actor list, and the style cache. */
     private final class Walk {
         private final List<Actor> actors = new ArrayList<>();
-        private final Map<String, Integer> sameTagSiblings = new HashMap<>();
-        private final Deque<String> pathStack = new ArrayDeque<>();
+        private final ElementPathTracker paths = new ElementPathTracker();
+        private final IdentityHashMap<Element, Map<String, ResolvedStyle>> styleCache =
+                new IdentityHashMap<>();
         private int elements;
         private int depth;
 
         private Walk() {
+        }
+
+        /**
+         * Resolves one element's style once per distinct element and pseudo-state for the
+         * duration of this build; the immutable result is reused by every consumer.
+         */
+        private ResolvedStyle resolveStyle(Element element, String pseudo) {
+            Map<String, ResolvedStyle> byPseudo = styleCache.get(element);
+            if (byPseudo == null) {
+                byPseudo = new HashMap<>(2);
+                styleCache.put(element, byPseudo);
+            }
+            ResolvedStyle style = byPseudo.get(pseudo);
+            if (style == null) {
+                // The element's path frame is entered for every caller, so the current tracked
+                // path is this element's own; limit failures then report the full path.
+                style = resolver.resolve(element, pseudo, paths.current());
+                byPseudo.put(pseudo, style);
+            }
+            return style;
         }
 
         List<Actor> actors() {
@@ -117,23 +184,14 @@ public final class MarkupBuilder {
         }
 
         void pushRootPath(String tag) {
-            pathStack.push(tag);
+            paths.enter(tag);
         }
 
         void popRootPath() {
-            pathStack.pop();
+            paths.exit();
         }
 
-        private String pathOf(String tag) {
-            Integer count = sameTagSiblings.merge(tag, 1, Integer::sum) - 1;
-            String segment = count == 0 ? tag : tag + "[" + count + "]";
-            if (pathStack.isEmpty()) {
-                return segment;
-            }
-            return pathStack.peek() + "/" + segment;
-        }
-
-        private void enter(String tag, String path, int line, int column) {
+        private void enter(String path, int line, int column) {
             if (++elements > maxElements) {
                 throw new MarkupException(MarkupException.Kind.TOO_LARGE, path, line, column,
                         "build exceeds the " + maxElements + "-element limit");
@@ -142,20 +200,17 @@ public final class MarkupBuilder {
                 throw new MarkupException(MarkupException.Kind.TOO_LARGE, path, line, column,
                         "build exceeds the " + maxDepth + "-level depth limit");
             }
-            pathStack.push(path);
         }
 
         private void exit() {
-            pathStack.pop();
+            paths.exit();
             depth--;
         }
 
         /** Adds every child of a ui/group-style parent with no cell semantics. */
         void addChildren(Group parent, Table cellTable, List<Element> children) {
             for (Element child : children) {
-                if ("row".equals(child.tag())) {
-                    throw rowOutsideTable(child, child.line(), child.column());
-                }
+                // A <row> here reaches buildActor with a null cell table and fails there typed.
                 Actor actor = buildActor(child, cellTable);
                 if (actor != null) {
                     parent.addActor(actor);
@@ -163,25 +218,35 @@ public final class MarkupBuilder {
             }
         }
 
-        private MarkupException rowOutsideTable(Element element, int line, int column) {
+        private MarkupException rowOutsideTable(int line, int column) {
             return new MarkupException(MarkupException.Kind.INVALID_VALUE,
-                    pathOf(element.tag()), line, column,
+                    paths.current(), line, column,
                     "<row> is only valid directly inside a <table> or <window>");
         }
 
         /** Builds one element into the given cell table (or {@code null} outside tables). */
         Actor buildActor(Element element, Table cellTable) {
-            String path = pathOf(element.tag());
+            return buildActor(element, cellTable, null);
+        }
+
+        /**
+         * Builds one element; {@code beforeExit} runs after the actor is built but while the
+         * element's path frame is still entered, so post-build steps such as cell-constraint
+         * application can report {@code paths.current()} for this element.
+         */
+        Actor buildActor(Element element, Table cellTable,
+                java.util.function.Consumer<Actor> beforeExit) {
+            String path = paths.enter(element.tag());
             int line = element.line();
             int column = element.column();
-            enter(element.tag(), path, line, column);
+            enter(path, line, column);
             try {
                 Actor actor = switch (element.tag()) {
                     case "ui" -> throw new MarkupException(MarkupException.Kind.INVALID_VALUE,
                             path, line, column, "<ui> must be the document root");
                     case "row" -> {
                         if (cellTable == null) {
-                            throw rowOutsideTable(element, line, column);
+                            throw rowOutsideTable(line, column);
                         }
                         cellTable.row();
                         yield null;
@@ -192,6 +257,9 @@ public final class MarkupBuilder {
                     case "scrollpane" -> buildScrollPane(element, path, cellTable);
                     default -> buildLeaf(element, path, cellTable);
                 };
+                if (beforeExit != null) {
+                    beforeExit.accept(actor);
+                }
                 return actor;
             } finally {
                 exit();
@@ -203,7 +271,8 @@ public final class MarkupBuilder {
                     element.column()).create(element, context(element, path));
             actors.add(table);
             applyCommon(element, table, cellTable);
-            ResolvedStyle style = resolver.resolve(element);
+            assignPseudoStyle(element, table);
+            ResolvedStyle style = resolveStyle(element, null);
             if (style.has("padding")) {
                 List<Float> values = style.lengths("padding", List.of());
                 if (values.size() == 1) {
@@ -223,11 +292,11 @@ public final class MarkupBuilder {
                     table.row();
                     continue;
                 }
-                Actor actor = buildActor(child, table);
-                if (actor == null) {
-                    continue;
-                }
-                applyCell(table.add(actor), child);
+                buildActor(child, table, actor -> {
+                    if (actor != null) {
+                        applyCell(table.add(actor), child);
+                    }
+                });
             }
         }
 
@@ -236,6 +305,7 @@ public final class MarkupBuilder {
                     element.column()).create(element, context(element, path));
             actors.add(stack);
             applyCommon(element, stack, cellTable);
+            assignPseudoStyle(element, stack);
             addChildren(stack, null, element.children());
             applySemantics(stack, element, path);
             return stack;
@@ -246,6 +316,7 @@ public final class MarkupBuilder {
                     element.column()).create(element, context(element, path));
             actors.add(group);
             applyCommon(element, group, cellTable);
+            assignPseudoStyle(element, group);
             addChildren(group, null, element.children());
             applySemantics(group, element, path);
             return group;
@@ -262,6 +333,7 @@ public final class MarkupBuilder {
                     element.line(), element.column()).create(element, context(element, path));
             actors.add(pane);
             applyCommon(element, pane, cellTable);
+            assignPseudoStyle(element, pane);
             Actor child = buildActor(element.children().get(0), null);
             if (child != null) {
                 pane.setActor(child);
@@ -281,11 +353,11 @@ public final class MarkupBuilder {
         }
 
         private BuildContext context(Element element, String path) {
-            return new BuildContext(element, skin, resolver.resolve(element), sink, path);
+            return new BuildContext(element, skin, resolveStyle(element, null), sink, path);
         }
 
         private void applyCell(com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cell, Element element) {
-            ResolvedStyle style = resolver.resolve(element);
+            ResolvedStyle style = resolveStyle(element, null);
             applyCellAttrs(cell, element);
             applyCellCss(cell, element, style);
         }
@@ -295,6 +367,7 @@ public final class MarkupBuilder {
             String expand = element.attr("expand");
             if (expand != null) {
                 switch (expand) {
+                    case "false" -> { }
                     case "x" -> cell.expandX();
                     case "y" -> cell.expandY();
                     default -> cell.expand();
@@ -303,6 +376,7 @@ public final class MarkupBuilder {
             String fill = element.attr("fill");
             if (fill != null) {
                 switch (fill) {
+                    case "false" -> { }
                     case "x" -> cell.fillX();
                     case "y" -> cell.fillY();
                     default -> cell.fill();
@@ -325,6 +399,7 @@ public final class MarkupBuilder {
             String grow = element.attr("grow");
             if (grow != null) {
                 switch (grow) {
+                    case "false" -> { }
                     case "x" -> cell.growX();
                     case "y" -> cell.growY();
                     default -> cell.grow();
@@ -389,7 +464,7 @@ public final class MarkupBuilder {
                 // fall through to the typed failure
             }
             throw new MarkupException(MarkupException.Kind.INVALID_VALUE,
-                    pathOf(element.tag()), element.line(), element.column(),
+                    paths.current(), element.line(), element.column(),
                     "invalid numeric value \"" + raw + "\"");
         }
 
@@ -403,7 +478,7 @@ public final class MarkupBuilder {
                     case "right" -> Align.right;
                     case "center" -> Align.center;
                     default -> throw new MarkupException(MarkupException.Kind.INVALID_VALUE,
-                            pathOf(element.tag()), element.line(), element.column(),
+                            paths.current(), element.line(), element.column(),
                             "unknown align token \"" + token + "\"");
                 };
             }
@@ -468,7 +543,7 @@ public final class MarkupBuilder {
         }
 
         private void applyCommon(Element element, Actor actor, Table cellTable) {
-            ResolvedStyle style = resolver.resolve(element);
+            ResolvedStyle style = resolveStyle(element, null);
             if (cellTable == null) {
                 applySize(element, actor, "width", actor::setWidth);
                 applySize(element, actor, "height", actor::setHeight);
@@ -520,60 +595,146 @@ public final class MarkupBuilder {
             }
         }
 
-        /** Applies class-only/id-only CSS style overrides directly to the actor's style. */
+        /**
+         * Applies class-only/id-only CSS style overrides directly to the actor's style. The
+         * base variant mutates a clone of the actor's style; every tagless pseudo variant in
+         * this stylesheet mutates the same clone through the shared pseudo-to-field mapping, so
+         * the derived style is assigned only to this actor and the shared skin style is never
+         * touched.
+         */
         private void applyCssOverrides(Element element, Actor actor, Table cellTable) {
-            ResolvedStyle style = resolver.resolve(element);
-            if (actor instanceof Table table && style.has("background")) {
-                table.setBackground(requireDrawable(element, style.get("background")));
-            }
-            if (!style.has("font-color") && !style.has("color") && !style.has("font")
-                    && !style.has("background") && !style.has("text-align")) {
-                return;
+            ResolvedStyle base = resolveStyle(element, null);
+            if (actor instanceof Table table && base.has("background")) {
+                table.setBackground(requireDrawable(element, base.get("background")));
             }
             Object copied = null;
-            if (style.has("font-color") || style.has("color")) {
-                Object styleObject = widgetStyle(actor);
-                if (styleObject != null) {
-                    copied = SkinStyleCompiler.copyOf(styleObject);
-                    SkinStyleCompiler.setColor(copied, color(element, style));
-                }
+            if (hasStateStyle(base)) {
+                copied = applyStateStyle(element, actor, base, null, copied);
             }
-            if (style.has("font")) {
-                Object styleObject = copied != null ? copied : widgetStyle(actor);
-                if (styleObject != null) {
-                    if (copied == null) {
-                        copied = SkinStyleCompiler.copyOf(styleObject);
-                    }
-                    SkinStyleCompiler.setFont(copied, requireFont(element, style.get("font")));
-                }
-            }
-            if (style.has("background")) {
-                Object styleObject = copied != null ? copied : widgetStyle(actor);
-                if (styleObject != null) {
-                    if (copied == null) {
-                        copied = SkinStyleCompiler.copyOf(styleObject);
-                    }
-                    SkinStyleCompiler.setBaseDrawable(copied,
-                            requireDrawable(element, style.get("background")));
-                }
-            }
+            copied = applyPseudoCssOverrides(element, actor, copied);
             if (copied != null) {
                 setWidgetStyle(actor, copied);
             }
-            if (style.has("text-align")) {
+            if (base.has("text-align")) {
                 if (actor instanceof Label label) {
-                    label.setAlignment(alignOf(style.get("text-align")));
+                    label.setAlignment(alignOf(base.get("text-align")));
                 } else if (actor instanceof TextField field) {
-                    field.setAlignment(alignOf(style.get("text-align")));
+                    field.setAlignment(alignOf(base.get("text-align")));
                 }
             }
+        }
+
+        /**
+         * Validates and applies every tagless pseudo variant for one actor: a pseudo rule with
+         * state-style properties either maps to a supported state field on the actor's widget
+         * style (returning the clone to assign) or fails with a located {@code STYLE_ERROR}.
+         * Container builders call this on their own (after their base handling) so tagless
+         * pseudo selectors are never silently ignored for containers; leaves reach it through
+         * {@link #applyCssOverrides}. Base-state behavior of the caller is intentionally
+         * untouched.
+         */
+        private Object applyPseudoCssOverrides(Element element, Actor actor, Object copied) {
+            if (!needsTaglessPseudoStyles(element)) {
+                return copied;
+            }
+            for (String pseudo : taglessPseudoStates) {
+                ResolvedStyle variant = resolveStyle(element, pseudo);
+                if (hasStateStyle(variant)) {
+                    copied = applyStateStyle(element, actor, variant, pseudo, copied);
+                }
+            }
+            return copied;
+        }
+
+        /**
+         * Runs the tagless pseudo validation for a container actor (no container style has
+         * state fields today, so a state-style pseudo variant either fails located or leaves
+         * the clone null; the assignment would only matter for a future style with state
+         * fields). Container base-state behavior is untouched.
+         */
+        private void assignPseudoStyle(Element element, Actor actor) {
+            Object copied = applyPseudoCssOverrides(element, actor, null);
+            if (copied != null) {
+                setWidgetStyle(actor, copied);
+            }
+        }
+
+        /** Style-field properties applied per actor for tagless selectors. */
+        private static final List<String> STATE_STYLE_PROPERTIES = List.of(
+                "background", "background-over", "background-down", "background-checked",
+                "background-disabled", "font-color", "color", "font");
+
+        private static boolean hasStateStyle(ResolvedStyle style) {
+            for (String property : STATE_STYLE_PROPERTIES) {
+                if (style.has(property)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private boolean needsTaglessPseudoStyles(Element element) {
+            return !taglessPseudoStates.isEmpty()
+                    && (element.id() != null || !element.classes().isEmpty());
+        }
+
+        /**
+         * Applies every state style property of one pseudo variant to the actor's widget style,
+         * cloning it before the first mutation. Returns the (possibly new) clone, or {@code null}
+         * when nothing was applied.
+         */
+        private Object applyStateStyle(Element element, Actor actor, ResolvedStyle style,
+                String pseudo, Object copied) {
+            Object styleObject = copied != null ? copied : widgetStyle(actor);
+            if (styleObject == null) {
+                if (pseudo != null) {
+                    throw unsupportedState(element, style, pseudo);
+                }
+                return copied; // base font-color on an image: preserved silent no-op
+            }
+            if (copied == null) {
+                copied = SkinStyleCompiler.copyOf(styleObject);
+            }
+            for (String property : STATE_STYLE_PROPERTIES) {
+                if (!style.has(property)) {
+                    continue;
+                }
+                String state = SkinStyleCompiler.propertyState(property, pseudo);
+                CssRule source = style.sourceRule(property);
+                switch (property) {
+                    case "background", "background-over", "background-down", "background-checked",
+                            "background-disabled" -> SkinStyleCompiler.setStateDrawable(copied,
+                                    state, requireDrawable(element, style.get(property)),
+                                    element.tag(), property, source);
+                    case "color", "font-color" -> SkinStyleCompiler.setStateColor(copied, state,
+                            color(element, style), element.tag(), property, source);
+                    case "font" -> SkinStyleCompiler.setStateFont(copied, state,
+                            requireFont(element, style.get("font")), element.tag(), property,
+                            source);
+                    default -> throw new AssertionError(property);
+                }
+            }
+            return copied;
+        }
+
+        private MarkupException unsupportedState(Element element, ResolvedStyle style,
+                String pseudo) {
+            String property = null;
+            for (String candidate : STATE_STYLE_PROPERTIES) {
+                if (style.has(candidate)) {
+                    property = candidate;
+                    break;
+                }
+            }
+            CssRule source = style.sourceRule(property);
+            return SkinStyleCompiler.unsupported(element.tag(), pseudo, property, source);
         }
 
         private Drawable requireDrawable(Element element, String name) {
             Drawable drawable = skin.optional(name, Drawable.class);
             if (drawable == null) {
                 throw new MarkupException(MarkupException.Kind.UNRESOLVED_STYLE,
-                        pathOf(element.tag()), element.line(), element.column(),
+                        paths.current(), element.line(), element.column(),
                         "skin has no drawable named \"" + name + "\"");
             }
             return drawable;
@@ -584,7 +745,7 @@ public final class MarkupBuilder {
             com.badlogic.gdx.graphics.Color color = BuildContext.parseColor(skin, name);
             if (color == null) {
                 throw new MarkupException(MarkupException.Kind.UNRESOLVED_STYLE,
-                        pathOf(element.tag()), element.line(), element.column(),
+                        paths.current(), element.line(), element.column(),
                         "skin has no color named \"" + name + "\"");
             }
             return color;
@@ -596,7 +757,7 @@ public final class MarkupBuilder {
                     skin.optional(name, com.badlogic.gdx.graphics.g2d.BitmapFont.class);
             if (font == null) {
                 throw new MarkupException(MarkupException.Kind.UNRESOLVED_STYLE,
-                        pathOf(element.tag()), element.line(), element.column(),
+                        paths.current(), element.line(), element.column(),
                         "skin has no font named \"" + name + "\"");
             }
             return font;

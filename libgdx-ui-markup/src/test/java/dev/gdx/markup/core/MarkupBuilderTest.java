@@ -3,12 +3,15 @@ package dev.gdx.markup.core;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.badlogic.gdx.graphics.Color;
+import com.badlogic.gdx.graphics.Pixmap;
+import com.badlogic.gdx.graphics.Texture;
 import com.badlogic.gdx.scenes.scene2d.Actor;
 import com.badlogic.gdx.scenes.scene2d.Group;
 import com.badlogic.gdx.scenes.scene2d.ui.CheckBox;
@@ -167,6 +170,76 @@ final class MarkupBuilderTest {
     }
 
     @Test
+    void secondBranchErrorPathIsParentScopedWithoutDoubleEnter() throws Exception {
+        GdxTestHost.run(() -> {
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("""
+                            <ui>
+                              <table id="one">
+                                <button id="a"/>
+                              </table>
+                              <table id="two">
+                                <button id="b" class="bad"/>
+                              </table>
+                            </ui>
+                            """), css.parse(".bad { font-color: missing; }"),
+                            DefaultSkin.create(), new NoopSink()));
+            assertEquals(MarkupException.Kind.UNRESOLVED_STYLE, failure.kind());
+            assertEquals("ui/table[1]/button", failure.elementPath(),
+                    "the second table's first button is indexed by its parent, and the "
+                            + "error helper must not enter the current element a second time");
+        });
+    }
+
+    @Test
+    void cascadeLimitReportsFullTrackedPath() throws Exception {
+        GdxTestHost.run(() -> {
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("""
+                            <ui>
+                              <table>
+                                <button/>
+                                <button/>
+                              </table>
+                            </ui>
+                            """), css.parse("button { width: 1px; }\nlabel { height: 2px; }"),
+                            DefaultSkin.create(), new NoopSink(), MarkupRegistry.defaultRegistry(),
+                            dev.gdx.markup.core.style.CssStyleResolver.MAX_COMPARISONS_PER_RESOLVE,
+                            5));
+            assertEquals(MarkupException.Kind.TOO_LARGE, failure.kind());
+            assertEquals("ui/table/button[1]", failure.elementPath(),
+                    "cascade limit failures carry the full tracked path of the element "
+                            + "being resolved");
+        });
+    }
+
+    @Test
+    void builderElementPathsAreScopedPerParent() throws Exception {
+        GdxTestHost.run(() -> {
+            MarkupException firstTableFirstButton = buildWithInvalidPad(
+                    table(button("a", invalidPad()), button("b", Map.of())),
+                    table(button("c", Map.of()), button("d", Map.of())));
+            assertEquals(MarkupException.Kind.INVALID_VALUE, firstTableFirstButton.kind());
+            assertEquals("ui/table/button", firstTableFirstButton.elementPath());
+
+            MarkupException firstTableSecondButton = buildWithInvalidPad(
+                    table(button("a", Map.of()), button("b", invalidPad())),
+                    table(button("c", Map.of()), button("d", Map.of())));
+            assertEquals("ui/table/button[1]", firstTableSecondButton.elementPath());
+
+            MarkupException secondTableFirstButton = buildWithInvalidPad(
+                    table(button("a", Map.of()), button("b", Map.of())),
+                    table(button("c", invalidPad()), button("d", Map.of())));
+            assertEquals("ui/table[1]/button", secondTableFirstButton.elementPath());
+
+            MarkupException secondTableSecondButton = buildWithInvalidPad(
+                    table(button("a", Map.of()), button("b", Map.of())),
+                    table(button("c", Map.of()), button("d", invalidPad())));
+            assertEquals("ui/table[1]/button[1]", secondTableSecondButton.elementPath());
+        });
+    }
+
+    @Test
     void missingDrawableFails() throws Exception {
         GdxTestHost.run(() -> {
             MarkupException failure = assertThrows(MarkupException.class, () ->
@@ -259,6 +332,154 @@ final class MarkupBuilderTest {
     }
 
     @Test
+    void cssCompiledPseudoFontColorIsStateSpecific() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            BuiltUi built = MarkupBuilder.build(markup.parse("<ui><checkbox id=\"c\"/></ui>"),
+                    css.parse("checkbox:hover { font-color: accent; }"), skin, new NoopSink());
+            CheckBox checkBox = (CheckBox) built.root().getChildren().first();
+            CheckBox.CheckBoxStyle style = checkBox.getStyle();
+            assertEquals(skin.getColor("accent"), style.overFontColor,
+                    "hover compiles into the over font color");
+            assertEquals(skin.get("default", CheckBox.CheckBoxStyle.class).fontColor,
+                    style.fontColor, "the base font color is unchanged");
+            assertNull(style.downFontColor, "pressed stays untouched");
+            assertNull(style.checkedFontColor, "checked stays untouched");
+            assertEquals(skin.get("default", CheckBox.CheckBoxStyle.class).disabledFontColor,
+                    style.disabledFontColor, "the disabled font color is unchanged");
+        });
+    }
+
+    @Test
+    void cssClassPseudoFontColorAppliesPerActorWithoutMutatingSkin() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            BuiltUi built = MarkupBuilder.build(markup.parse(
+                    "<ui><button id=\"b\" class=\"warning\"/></ui>"),
+                    css.parse(".warning:hover { font-color: accent; }"), skin, new NoopSink());
+            TextButton button = (TextButton) built.root().getChildren().first();
+            TextButton.TextButtonStyle style = button.getStyle();
+            assertEquals(skin.getColor("accent"), style.overFontColor,
+                    "class hover maps to the over font color");
+            assertEquals(skin.get("button", TextButton.TextButtonStyle.class).fontColor,
+                    style.fontColor, "the base font color is unchanged");
+            assertNull(style.downFontColor, "only the hover field changes");
+            assertNotSame(skin.get("button", TextButton.TextButtonStyle.class), style,
+                    "the actor owns a per-actor clone");
+            assertNull(skin.get("button", TextButton.TextButtonStyle.class).overFontColor,
+                    "the shared skin style is never mutated");
+        });
+    }
+
+    @Test
+    void cssIdPseudoFontColorAppliesPerActor() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            BuiltUi built = MarkupBuilder.build(markup.parse(
+                    "<ui><button id=\"save\"/></ui>"),
+                    css.parse("#save:disabled { font-color: accent; }"), skin, new NoopSink());
+            TextButton button = (TextButton) built.root().getChildren().first();
+            TextButton.TextButtonStyle style = button.getStyle();
+            assertEquals(skin.getColor("accent"), style.disabledFontColor,
+                    "id disabled maps to the disabled font color");
+            assertEquals(skin.get("button", TextButton.TextButtonStyle.class).fontColor,
+                    style.fontColor, "the base font color is unchanged");
+            assertNull(style.overFontColor, "only the disabled field changes");
+            assertNotSame(skin.get("button", TextButton.TextButtonStyle.class), style,
+                    "the actor owns a per-actor clone");
+            assertNull(skin.get("button", TextButton.TextButtonStyle.class).disabledFontColor,
+                    "the shared skin style is never mutated");
+        });
+    }
+
+    @Test
+    void cssUnsupportedPseudoCombinationFailsLocatedAtSelector() throws Exception {
+        GdxTestHost.run(() -> {
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("<ui><label id=\"l\"/></ui>"),
+                            css.parse("button { padding: 4px; }\n"
+                                    + "label:hover { font-color: accent; }\n"),
+                            DefaultSkin.create(), new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+            assertEquals("css", failure.elementPath());
+            assertEquals(2, failure.line(), "selector coordinates, not the rule index");
+            assertEquals(1, failure.column());
+            assertTrue(failure.getMessage().contains("label"));
+            assertTrue(failure.getMessage().contains("hover"));
+        });
+    }
+
+    @Test
+    void cssTaglessUnsupportedPseudoCombinationFailsLocatedAtSelector() throws Exception {
+        GdxTestHost.run(() -> {
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse(
+                            "<ui><label id=\"l\" class=\"warning\"/></ui>"),
+                            css.parse("button { padding: 4px; }\n"
+                                    + ".warning:hover { font-color: accent; }\n"),
+                            DefaultSkin.create(), new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+            assertEquals("css", failure.elementPath());
+            assertEquals(2, failure.line(), "selector coordinates from the source rule");
+            assertEquals(1, failure.column());
+            assertTrue(failure.getMessage().contains("label"));
+            assertTrue(failure.getMessage().contains("hover"));
+        });
+    }
+
+    @Test
+    void cssTaglessPseudoCombinationOnWindowFailsLocated() throws Exception {
+        GdxTestHost.run(() -> {
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse(
+                            "<ui><window class=\"panel\" title=\"T\"/></ui>"),
+                            css.parse("button { padding: 4px; }\n"
+                                    + ".panel:hover { font-color: accent; }\n"),
+                            DefaultSkin.create(), new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+            assertEquals("css", failure.elementPath());
+            assertEquals(2, failure.line(), "selector coordinates from the source rule");
+            assertEquals(1, failure.column());
+            assertTrue(failure.getMessage().contains("window"));
+            assertTrue(failure.getMessage().contains("hover"));
+        });
+    }
+
+    @Test
+    void cssTaglessPseudoCombinationOnTableFailsLocated() throws Exception {
+        GdxTestHost.run(() -> {
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse(
+                            "<ui><table class=\"panel\" id=\"t\"><button id=\"b\"/></table></ui>"),
+                            css.parse("button { padding: 4px; }\n"
+                                    + ".panel:hover { font-color: accent; }\n"),
+                            DefaultSkin.create(), new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+            assertEquals("css", failure.elementPath());
+            assertEquals(2, failure.line(), "selector coordinates from the source rule");
+            assertEquals(1, failure.column());
+            assertTrue(failure.getMessage().contains("table"));
+            assertTrue(failure.getMessage().contains("hover"));
+        });
+    }
+
+    @Test
+    void cssTaglessPseudoWithoutStateFieldsBuildsForContainers() throws Exception {
+        GdxTestHost.run(() -> {
+            // No container style has state fields, so no container pseudo state is
+            // representable; a tagless pseudo rule carrying only non-state properties must
+            // neither error nor disturb the base build.
+            BuiltUi built = MarkupBuilder.build(markup.parse(
+                    "<ui><window class=\"panel\" title=\"T\"/></ui>"),
+                    css.parse(".panel:hover { padding: 4px; }\n.panel { padding: 8px; }"),
+                    DefaultSkin.create(), new NoopSink());
+            Window window = (Window) built.root().getChildren().first();
+            window.validate();
+            assertEquals(8f, window.getPadTop(), 0.001, "base padding still applies");
+        });
+    }
+
+    @Test
     void customFactoryExtendsTheVocabulary() throws Exception {
         GdxTestHost.run(() -> {
             MarkupRegistry registry = MarkupRegistry.defaultRegistry();
@@ -311,6 +532,144 @@ final class MarkupBuilderTest {
     }
 
     @Test
+    void sliderRangeAndStepAreValidated() throws Exception {
+        GdxTestHost.run(() -> {
+            MarkupException range = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("""
+                            <ui>
+                              <slider id="s" min="2" max="1"/>
+                            </ui>
+                            """), css.parse(""), DefaultSkin.create(), new NoopSink()));
+            assertEquals(MarkupException.Kind.INVALID_VALUE, range.kind());
+            assertEquals("ui/slider", range.elementPath());
+            assertEquals(2, range.line());
+            // JDK SAX reports the column just past the scanned start tag; assert presence.
+            assertTrue(range.column() >= 5);
+            assertTrue(range.getMessage().contains("min"),
+                    "the message names the conflicting fields");
+            assertTrue(range.getMessage().contains("max"),
+                    "the message names the conflicting fields");
+
+            MarkupException step = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("""
+                            <ui>
+                              <slider id="s" min="0" max="1" step="0"/>
+                            </ui>
+                            """), css.parse(""), DefaultSkin.create(), new NoopSink()));
+            assertEquals(MarkupException.Kind.INVALID_VALUE, step.kind());
+            assertEquals("ui/slider", step.elementPath());
+            assertEquals(2, step.line());
+            assertTrue(step.getMessage().contains("step"),
+                    "the message names the conflicting fields");
+        });
+    }
+
+    @Test
+    void progressBarRangeIsValidated() throws Exception {
+        GdxTestHost.run(() -> {
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("""
+                            <ui>
+                              <progressbar id="p" min="2" max="1"/>
+                            </ui>
+                            """), css.parse(""), DefaultSkin.create(), new NoopSink()));
+            assertEquals(MarkupException.Kind.INVALID_VALUE, failure.kind());
+            assertEquals("ui/progressbar", failure.elementPath());
+            assertEquals(2, failure.line());
+            // JDK SAX reports the column just past the scanned start tag; assert presence.
+            assertTrue(failure.column() >= 5);
+            assertTrue(failure.getMessage().contains("min"),
+                    "the message names the conflicting fields");
+            assertTrue(failure.getMessage().contains("max"),
+                    "the message names the conflicting fields");
+        });
+    }
+
+    @Test
+    void falseLayoutAxisValuesDisableBothAxes() throws Exception {
+        GdxTestHost.run(() -> {
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <table id="grid">
+                        <button id="a" expand="false"/>
+                        <button id="b" fill="false"/>
+                        <button id="c" grow="false"/>
+                      </table>
+                    </ui>
+                    """), css.parse(""), DefaultSkin.create(), new NoopSink());
+            Table table = (Table) built.root().getChildren().first();
+            table.validate();
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cellA = table.getCells().get(0);
+            assertEquals(0, cellA.getExpandX(), "expand=false enables neither axis");
+            assertEquals(0, cellA.getExpandY(), "expand=false enables neither axis");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cellB = table.getCells().get(1);
+            assertEquals(0f, cellB.getFillX(), "fill=false enables neither axis");
+            assertEquals(0f, cellB.getFillY(), "fill=false enables neither axis");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cellC = table.getCells().get(2);
+            assertEquals(0, cellC.getExpandX(), "grow=false enables neither axis");
+            assertEquals(0, cellC.getExpandY(), "grow=false enables neither axis");
+            assertEquals(0f, cellC.getFillX(), "grow=false enables neither axis");
+            assertEquals(0f, cellC.getFillY(), "grow=false enables neither axis");
+        });
+    }
+
+    @Test
+    void booleanAndAxisLayoutValuesPreserveBehavior() throws Exception {
+        GdxTestHost.run(() -> {
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <table id="grid">
+                        <button id="a" expand="true"/>
+                        <button id="b" expand="x"/>
+                        <button id="c" expand="y"/>
+                        <button id="d" fill="true"/>
+                        <button id="e" fill="x"/>
+                        <button id="f" fill="y"/>
+                        <button id="g" grow="true"/>
+                        <button id="h" grow="x"/>
+                        <button id="i" grow="y"/>
+                      </table>
+                    </ui>
+                    """), css.parse(""), DefaultSkin.create(), new NoopSink());
+            Table table = (Table) built.root().getChildren().first();
+            table.validate();
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> c0 = table.getCells().get(0);
+            assertEquals(1, c0.getExpandX(), "expand=true enables both axes");
+            assertEquals(1, c0.getExpandY(), "expand=true enables both axes");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> c1 = table.getCells().get(1);
+            assertEquals(1, c1.getExpandX(), "expand=x enables x only");
+            assertEquals(0, c1.getExpandY(), "expand=x enables x only");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> c2 = table.getCells().get(2);
+            assertEquals(0, c2.getExpandX(), "expand=y enables y only");
+            assertEquals(1, c2.getExpandY(), "expand=y enables y only");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> c3 = table.getCells().get(3);
+            assertEquals(1f, c3.getFillX(), "fill=true enables both axes");
+            assertEquals(1f, c3.getFillY(), "fill=true enables both axes");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> c4 = table.getCells().get(4);
+            assertEquals(1f, c4.getFillX(), "fill=x enables x only");
+            assertEquals(0f, c4.getFillY(), "fill=x enables x only");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> c5 = table.getCells().get(5);
+            assertEquals(0f, c5.getFillX(), "fill=y enables y only");
+            assertEquals(1f, c5.getFillY(), "fill=y enables y only");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> c6 = table.getCells().get(6);
+            assertEquals(1, c6.getExpandX(), "grow=true expands both axes");
+            assertEquals(1, c6.getExpandY(), "grow=true expands both axes");
+            assertEquals(1f, c6.getFillX(), "grow=true fills both axes");
+            assertEquals(1f, c6.getFillY(), "grow=true fills both axes");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> c7 = table.getCells().get(7);
+            assertEquals(1, c7.getExpandX(), "grow=x expands x only");
+            assertEquals(0, c7.getExpandY(), "grow=x expands x only");
+            assertEquals(1f, c7.getFillX(), "grow=x fills x only");
+            assertEquals(0f, c7.getFillY(), "grow=x fills x only");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> c8 = table.getCells().get(8);
+            assertEquals(0, c8.getExpandX(), "grow=y expands y only");
+            assertEquals(1, c8.getExpandY(), "grow=y expands y only");
+            assertEquals(0f, c8.getFillX(), "grow=y fills y only");
+            assertEquals(1f, c8.getFillY(), "grow=y fills y only");
+        });
+    }
+
+    @Test
     void selectboxAndListReceiveItems() throws Exception {
         GdxTestHost.run(() -> {
             BuiltUi built = MarkupBuilder.build(markup.parse("""
@@ -331,6 +690,128 @@ final class MarkupBuilderTest {
                             built.root().getChildren().get(1);
             assertEquals(2, list.getItems().size);
         });
+    }
+
+    @Test
+    void defaultSkinDisposesUploadPixmapOnceAndSkinOwnsTexture() throws Exception {
+        GdxTestHost.run(() -> {
+            List<TrackingPixmap> pixmaps = new ArrayList<>();
+            List<TrackingTexture> textures = new ArrayList<>();
+            List<Skin> skins = new ArrayList<>();
+            for (int round = 0; round < 2; round++) {
+                TrackingPixmap pixmap = new TrackingPixmap();
+                pixmaps.add(pixmap);
+                Skin skin = DefaultSkin.create(() -> pixmap, pixel -> {
+                    TrackingTexture texture = new TrackingTexture(pixel);
+                    textures.add(texture);
+                    return texture;
+                });
+                skins.add(skin);
+                assertEquals(1, pixmap.disposeCount,
+                        "the uploaded pixmap is disposed exactly once after upload");
+                assertTrue(pixmap.isDisposed(), "the uploaded pixmap is disposed after upload");
+                TrackingTexture texture = textures.get(round);
+                assertSame(texture, skin.get("pixel", TrackingTexture.class),
+                        "the pixel texture is registered with the skin");
+                assertEquals(0, texture.disposeCount,
+                        "create() keeps the texture alive; only the pixmap is disposed");
+            }
+            for (int i = 0; i < skins.size(); i++) {
+                skins.get(i).dispose();
+                TrackingTexture texture = textures.get(i);
+                assertEquals(1, texture.disposeCount,
+                        "skin disposal owns the texture and disposes it exactly once");
+                assertEquals(1, pixmaps.get(i).disposeCount,
+                        "the pixmap is not retained in the skin and is never double-disposed");
+            }
+        });
+    }
+
+    @Test
+    void defaultSkinFailurePathDisposesPixmapExactlyOnce() throws Exception {
+        GdxTestHost.run(() -> {
+            RuntimeException uploadFailure = new RuntimeException("simulated upload failure");
+            TrackingPixmap pixmap = new TrackingPixmap();
+            RuntimeException failure = assertThrows(RuntimeException.class, () ->
+                    DefaultSkin.create(() -> pixmap, pixel -> {
+                        throw uploadFailure;
+                    }));
+            assertSame(uploadFailure, failure, "the construction failure propagates to the caller");
+            assertEquals(1, pixmap.disposeCount,
+                    "a failed texture construction still disposes the pixmap exactly once");
+            assertTrue(pixmap.isDisposed(), "the pixmap is disposed on the failure path");
+
+            TrackingPixmap first = new TrackingPixmap();
+            TrackingPixmap second = new TrackingPixmap();
+            assertThrows(RuntimeException.class, () ->
+                    DefaultSkin.create(() -> first, pixel -> {
+                        throw uploadFailure;
+                    }));
+            assertThrows(RuntimeException.class, () ->
+                    DefaultSkin.create(() -> second, pixel -> {
+                        throw uploadFailure;
+                    }));
+            assertEquals(1, first.disposeCount, "repeated failure leaks no pixmap");
+            assertEquals(1, second.disposeCount, "repeated failure leaks no pixmap");
+        });
+    }
+
+    /** Counts {@link Pixmap#dispose()} calls so ownership tests can assert exactly-once disposal. */
+    private static final class TrackingPixmap extends Pixmap {
+        int disposeCount;
+
+        TrackingPixmap() {
+            super(1, 1, Pixmap.Format.RGBA8888);
+            setColor(Color.WHITE);
+            fill();
+        }
+
+        @Override
+        public void dispose() {
+            disposeCount++;
+            super.dispose();
+        }
+    }
+
+    /** Counts {@link Texture#dispose()} calls; uploads a real texture from the given pixmap. */
+    private static final class TrackingTexture extends Texture {
+        int disposeCount;
+
+        TrackingTexture(Pixmap pixmap) {
+            super(pixmap);
+        }
+
+        @Override
+        public void dispose() {
+            disposeCount++;
+            super.dispose();
+        }
+    }
+
+    private static Map<String, String> invalidPad() {
+        return Map.of("pad", "abc");
+    }
+
+    private static Element button(String id, Map<String, String> attrs) {
+        return new Element("button", id, null, null, null, attrs, List.of(), List.of(), 1, 1);
+    }
+
+    private static Element table(Element... children) {
+        return new Element("table", null, null, null, null, Map.of(), List.of(),
+                List.of(children), 1, 1);
+    }
+
+    /**
+     * Builds a programmatically constructed document whose second table's child carries an
+     * invalid cell float. The document bypasses parser validation, so the invalid value reaches
+     * the builder's cell-constraint application.
+     */
+    private static MarkupException buildWithInvalidPad(Element firstTable, Element secondTable) {
+        Element ui = new Element("ui", null, null, null, null, Map.of(), List.of(),
+                List.of(firstTable, secondTable), 1, 1);
+        return assertThrows(MarkupException.class, () -> MarkupBuilder.build(
+                new MarkupDocument(ui, 0), new CssParser().parse(""),
+                DefaultSkin.create(), new NoopSink()));
     }
 
     private BuiltUi buildSample() throws Exception {

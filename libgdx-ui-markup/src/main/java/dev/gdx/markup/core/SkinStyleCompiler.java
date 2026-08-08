@@ -27,8 +27,12 @@ import java.util.Objects;
  * default skin is never mutated in place). Pseudo-states map to the widget style's state fields
  * ({@code :hover} &rarr; {@code over}, {@code :pressed} &rarr; {@code down}, {@code :checked}
  * &rarr; {@code checked}, {@code :disabled} &rarr; {@code disabled}); the {@code background-*}
- * properties target the same fields explicitly. Class-only and id-only selectors are applied
- * per-actor by the builder, not here.
+ * properties target the same fields explicitly, and {@code font-color}/{@code color}/{@code font}
+ * follow the same state mapping ({@code :hover} &rarr; {@code overFontColor}, …). Class-only
+ * and id-only selectors are applied per-actor by the builder, which shares the same
+ * pseudo-to-field mapping through the {@code setState*} methods below; a widget/state/property
+ * combination without a target field fails with a located {@code STYLE_ERROR} instead of being
+ * silently dropped.
  */
 final class SkinStyleCompiler {
     private static final String BASE = "base";
@@ -64,8 +68,8 @@ final class SkinStyleCompiler {
         Object base = style(styleName, styleClass, rule);
         Object copy = copyOf(base);
         for (Map.Entry<String, String> property : rule.properties().entrySet()) {
-            applyProperty(copy, styleClass, property.getKey(), property.getValue(),
-                    selector.pseudo(), rule);
+            applyProperty(copy, property.getKey(), property.getValue(), selector.pseudo(),
+                    selector.tag(), rule);
         }
         skin.add(styleName, copy);
     }
@@ -83,17 +87,18 @@ final class SkinStyleCompiler {
         return fallback;
     }
 
-    private void applyProperty(Object style, Class<?> styleClass, String property,
-            String value, String pseudo, CssRule rule) {
+    private void applyProperty(Object style, String property, String value, String pseudo,
+            String tag, CssRule rule) {
         switch (property) {
             case "background", "background-over", "background-down", "background-checked",
                     "background-disabled" -> {
                 String state = propertyState(property, pseudo);
-                Drawable drawable = drawable(value, rule);
-                setStateDrawable(style, state, drawable);
+                setStateDrawable(style, state, drawable(value, rule), tag, property, rule);
             }
-            case "color", "font-color" -> setColorField(style, color(value, rule));
-            case "font" -> setFontField(style, font(value, rule));
+            case "color", "font-color" -> setStateColor(style, propertyState(property, pseudo),
+                    color(value, rule), tag, property, rule);
+            case "font" -> setStateFont(style, propertyState(property, pseudo),
+                    font(value, rule), tag, property, rule);
             default -> {
                 // padding/margin/width/height/min-*/text-align/visible are actor and cell
                 // properties handled by the builder, not the skin.
@@ -101,7 +106,13 @@ final class SkinStyleCompiler {
         }
     }
 
-    private static String propertyState(String property, String pseudo) {
+    /**
+     * Maps one CSS property plus its selector pseudo-state to the shared state vocabulary used
+     * by the {@code setState*} field setters: explicit {@code background-*} properties name
+     * their state directly, otherwise the selector's pseudo is the state and a {@code null}
+     * pseudo (base rule) targets the base field.
+     */
+    static String propertyState(String property, String pseudo) {
         String explicit = switch (property) {
             case "background-over" -> "hover";
             case "background-down" -> "pressed";
@@ -138,7 +149,19 @@ final class SkinStyleCompiler {
 
     private static MarkupException unresolved(CssRule rule, String message) {
         return new MarkupException(MarkupException.Kind.UNRESOLVED_STYLE, "css",
-                rule.ruleIndex(), 0, message);
+                rule.line(), rule.column(), message);
+    }
+
+    /**
+     * Located {@code STYLE_ERROR} for a widget/state/property combination with no target field
+     * (for example {@code label:hover { font-color: … }}). Shared with the builder so tagless
+     * selectors report the same diagnostic at the source rule's selector coordinates.
+     */
+    static MarkupException unsupported(String tag, String state, String property,
+            CssRule source) {
+        return new MarkupException(MarkupException.Kind.STYLE_ERROR, "css",
+                source.line(), source.column(),
+                tag + " does not support the " + state + " state for " + property);
     }
 
     private static Class<?> styleClass(String tag) {
@@ -177,7 +200,15 @@ final class SkinStyleCompiler {
         };
     }
 
-    private static void setStateDrawable(Object style, String state, Drawable drawable) {
+    /**
+     * Applies one state's drawable field (the shared pseudo-to-field mapping for
+     * {@code background} and {@code background-*}, used by both tag compilation and the
+     * builder's per-actor class/id application). Widgets without a field for the state fail
+     * with a located {@code STYLE_ERROR}; a base-state combination on a widget that genuinely
+     * has no such field stays a silent no-op to preserve prior behavior.
+     */
+    static void setStateDrawable(Object style, String state, Drawable drawable,
+            String tag, String property, CssRule source) {
         switch (style) {
             case CheckBoxStyle s -> {
                 switch (state) {
@@ -186,8 +217,7 @@ final class SkinStyleCompiler {
                     case "pressed" -> s.checkboxOnOver = drawable;
                     case "checked" -> s.checkboxOn = drawable;
                     case "disabled" -> s.checkboxOffDisabled = drawable;
-                    default -> {
-                    }
+                    default -> throw unsupported(tag, state, property, source);
                 }
             }
             case TextButtonStyle s -> {
@@ -197,8 +227,7 @@ final class SkinStyleCompiler {
                     case "pressed" -> s.down = drawable;
                     case "checked" -> s.checked = drawable;
                     case "disabled" -> s.disabled = drawable;
-                    default -> {
-                    }
+                    default -> throw unsupported(tag, state, property, source);
                 }
             }
             case TextFieldStyle s -> {
@@ -206,8 +235,7 @@ final class SkinStyleCompiler {
                     case BASE -> s.background = drawable;
                     case "hover" -> s.focusedBackground = drawable;
                     case "disabled" -> s.disabledBackground = drawable;
-                    default -> {
-                    }
+                    default -> throw unsupported(tag, state, property, source);
                 }
             }
             case SelectBoxStyle s -> {
@@ -215,77 +243,183 @@ final class SkinStyleCompiler {
                     case BASE -> s.background = drawable;
                     case "hover" -> s.backgroundOver = drawable;
                     case "disabled" -> s.backgroundDisabled = drawable;
-                    default -> {
-                    }
+                    default -> throw unsupported(tag, state, property, source);
+                }
+            }
+            case LabelStyle s -> {
+                if (BASE.equals(state)) {
+                    s.background = drawable;
+                } else {
+                    throw unsupported(tag, state, property, source);
                 }
             }
             case WindowStyle s -> {
                 if (BASE.equals(state)) {
                     s.background = drawable;
+                } else {
+                    throw unsupported(tag, state, property, source);
                 }
             }
             case ScrollPaneStyle s -> {
                 if (BASE.equals(state)) {
                     s.background = drawable;
+                } else {
+                    throw unsupported(tag, state, property, source);
                 }
             }
             case ListStyle s -> {
                 if (BASE.equals(state)) {
                     s.background = drawable;
+                } else {
+                    throw unsupported(tag, state, property, source);
                 }
             }
             case SliderStyle s -> {
                 if (BASE.equals(state)) {
                     s.background = drawable;
+                } else {
+                    throw unsupported(tag, state, property, source);
                 }
             }
             case ProgressBarStyle s -> {
                 if (BASE.equals(state)) {
                     s.background = drawable;
+                } else {
+                    throw unsupported(tag, state, property, source);
+                }
+            }
+            default -> throw unsupported(tag, state, property, source);
+        }
+    }
+
+    /**
+     * Applies one state's font-color field (the shared pseudo-to-field mapping for
+     * {@code color}/{@code font-color}); unsupported widget/state combinations fail located.
+     */
+    static void setStateColor(Object style, String state, Color color, String tag,
+            String property, CssRule source) {
+        switch (style) {
+            case CheckBoxStyle s -> setTextButtonColor(s, state, color, tag, property, source);
+            case TextButtonStyle s -> setTextButtonColor(s, state, color, tag, property, source);
+            case TextFieldStyle s -> {
+                switch (state) {
+                    case BASE -> s.fontColor = color;
+                    case "hover" -> s.focusedFontColor = color;
+                    case "disabled" -> s.disabledFontColor = color;
+                    default -> throw unsupported(tag, state, property, source);
+                }
+            }
+            case SelectBoxStyle s -> {
+                switch (state) {
+                    case BASE -> s.fontColor = color;
+                    case "hover" -> s.overFontColor = color;
+                    case "disabled" -> s.disabledFontColor = color;
+                    default -> throw unsupported(tag, state, property, source);
+                }
+            }
+            case LabelStyle s -> {
+                if (BASE.equals(state)) {
+                    s.fontColor = color;
+                } else {
+                    throw unsupported(tag, state, property, source);
+                }
+            }
+            case ListStyle s -> {
+                if (BASE.equals(state)) {
+                    s.fontColorUnselected = color;
+                } else {
+                    throw unsupported(tag, state, property, source);
+                }
+            }
+            case WindowStyle s -> {
+                if (BASE.equals(state)) {
+                    s.titleFontColor = color;
+                } else {
+                    throw unsupported(tag, state, property, source);
                 }
             }
             default -> {
+                if (!BASE.equals(state)) {
+                    throw unsupported(tag, state, property, source);
+                }
+                // Slider/ProgressBar/ScrollPane carry no font color; a base combination is
+                // genuinely field-less and stays a silent no-op (prior behavior).
             }
         }
     }
 
-    static void setColor(Object style, Color color) {
-        setColorField(style, color);
+    private static void setTextButtonColor(TextButtonStyle style, String state, Color color,
+            String tag, String property, CssRule source) {
+        switch (state) {
+            case BASE -> style.fontColor = color;
+            case "hover" -> style.overFontColor = color;
+            case "pressed" -> style.downFontColor = color;
+            case "checked" -> style.checkedFontColor = color;
+            case "disabled" -> style.disabledFontColor = color;
+            default -> throw unsupported(tag, state, property, source);
+        }
     }
 
-    static void setFont(Object style, BitmapFont font) {
-        setFontField(style, font);
-    }
-
-    static void setBaseDrawable(Object style, Drawable drawable) {
-        setStateDrawable(style, BASE, drawable);
-    }
-
-    private static void setColorField(Object style, Color color) {
+    /**
+     * Applies one state's font field (the shared pseudo-to-field mapping for {@code font}).
+     * No widget has state-specific fonts, so every pseudo state is unsupported and fails
+     * located; only the base font field exists.
+     */
+    static void setStateFont(Object style, String state, BitmapFont font, String tag,
+            String property, CssRule source) {
         switch (style) {
-            case CheckBoxStyle s -> s.fontColor = color;
-            case TextButtonStyle s -> s.fontColor = color;
-            case TextFieldStyle s -> s.fontColor = color;
-            case SelectBoxStyle s -> s.fontColor = color;
-            case ListStyle s -> s.fontColorUnselected = color;
-            case WindowStyle s -> s.titleFontColor = color;
-            case LabelStyle s -> s.fontColor = color;
+            case CheckBoxStyle s -> setTextButtonFont(s, state, font, tag, property, source);
+            case TextButtonStyle s -> setTextButtonFont(s, state, font, tag, property, source);
+            case TextFieldStyle s -> {
+                if (BASE.equals(state)) {
+                    s.font = font;
+                } else {
+                    throw unsupported(tag, state, property, source);
+                }
+            }
+            case SelectBoxStyle s -> {
+                if (BASE.equals(state)) {
+                    s.font = font;
+                } else {
+                    throw unsupported(tag, state, property, source);
+                }
+            }
+            case LabelStyle s -> {
+                if (BASE.equals(state)) {
+                    s.font = font;
+                } else {
+                    throw unsupported(tag, state, property, source);
+                }
+            }
+            case ListStyle s -> {
+                if (BASE.equals(state)) {
+                    s.font = font;
+                } else {
+                    throw unsupported(tag, state, property, source);
+                }
+            }
+            case WindowStyle s -> {
+                if (BASE.equals(state)) {
+                    s.titleFont = font;
+                } else {
+                    throw unsupported(tag, state, property, source);
+                }
+            }
             default -> {
+                if (!BASE.equals(state)) {
+                    throw unsupported(tag, state, property, source);
+                }
+                // Slider/ProgressBar/ScrollPane carry no font; base stays a silent no-op.
             }
         }
     }
 
-    private static void setFontField(Object style, BitmapFont font) {
-        switch (style) {
-            case CheckBoxStyle s -> s.font = font;
-            case TextButtonStyle s -> s.font = font;
-            case TextFieldStyle s -> s.font = font;
-            case SelectBoxStyle s -> s.font = font;
-            case ListStyle s -> s.font = font;
-            case WindowStyle s -> s.titleFont = font;
-            case LabelStyle s -> s.font = font;
-            default -> {
-            }
+    private static void setTextButtonFont(TextButtonStyle style, String state, BitmapFont font,
+            String tag, String property, CssRule source) {
+        if (BASE.equals(state)) {
+            style.font = font;
+        } else {
+            throw unsupported(tag, state, property, source);
         }
     }
 
