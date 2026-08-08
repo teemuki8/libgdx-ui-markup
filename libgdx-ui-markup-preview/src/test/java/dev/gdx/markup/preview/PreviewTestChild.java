@@ -147,6 +147,7 @@ public final class PreviewTestChild {
                 case "restore-failure" -> runRestoreFailure(ui, css);
                 case "mcp-cleanup-failure" -> runMcpCleanupFailure(ui, css);
                 case "mcp-close-failure" -> runMcpCloseFailure(ui, css);
+                case "mcp-close-all" -> runMcpCloseAll(ui, css);
                 case "mcp-cause-chain" -> runMcpCauseChain(ui, css);
                 case "mcp-init-failure" -> runMcpInitFailure(ui, css);
                 default -> fail("unknown scenario " + scenario);
@@ -890,7 +891,7 @@ public final class PreviewTestChild {
                         assertNull(app.mcp(), "the MCP session is detached in the terminal state");
                         // A second close is idempotent: it must not re-close (or re-throw).
                         mcpRef.close();
-                        assertEquals(7, closeAttempts.get(),
+                        assertEquals(12, closeAttempts.get(),
                                 "every owned component close was attempted exactly once");
                         assertSame(good, app.skin(), "the last-good skin stays on screen");
                         assertTrue(app.stageContains("user"), "the last-good scene stays on screen");
@@ -1114,6 +1115,73 @@ public final class PreviewTestChild {
                 if (probe != null) {
                     probe.dispose();
                 }
+            }
+        });
+    }
+
+    /**
+     * Success-close regression: the normal {@code PreviewMcp.close()} must close EVERY
+     * acquired component (runtime registration, MCP server, artifact publisher, protocol
+     * executor, scene2d harness, agent runtime, wait engine, screen capture, frame fence,
+     * session, scheduler, clock) exactly once, continue aggregating after a close failure,
+     * detach the ownership fields, and make a second close a no-op.
+     */
+    private static void runMcpCloseAll(Path ui, Path css) {
+        writeFixture(ui, css, ENTITY_UI_A);
+        PreviewApp app = new PreviewApp(CliOptions.parse(new String[]{
+                "--ui", ui.toString(), "--css", css.toString(), "--mcp"}));
+        launch(new ApplicationAdapter() {
+            private int frame;
+            private PreviewMcp mcpRef;
+            private final AtomicInteger closeAttempts = new AtomicInteger();
+
+            @Override public void create() {
+                app.create();
+            }
+
+            @Override public void render() {
+                try {
+                    frame++;
+                    if (frame == 1) {
+                        app.render();
+                        mcpRef = app.mcp();
+                        assertNotNull(mcpRef, "the preview runs with --mcp");
+                        assertNotNull(mcpRef.runtimeSource(), "attachRuntime returns a live owner");
+                        assertEquals(List.of("user"), mcpRef.runtimeSource().registeredEntities());
+                        assertFrameHasOnly("user", app);
+                    } else if (frame == 2) {
+                        // Count every component close; make the agent runtime close fail to
+                        // prove aggregation continues after the failure (the later components —
+                        // wait engine, screen capture, frame fence, session, scheduler, clock —
+                        // are still attempted and closed).
+                        mcpRef.componentCloser = component -> {
+                            closeAttempts.incrementAndGet();
+                            if (component == mcpRef.runtime()) {
+                                throw new IllegalStateException("injected-runtime-close-failure");
+                            }
+                            component.close(); // real close for every other owned component
+                        };
+                        RuntimeException closeFailure = assertThrows(RuntimeException.class,
+                                mcpRef::close);
+                        assertTrue(closeFailure.getMessage().contains("failed to close agent runtime"),
+                                "the aggregated close failure names the failing component; got: "
+                                        + closeFailure.getMessage());
+                        assertEquals(12, closeAttempts.get(),
+                                "every acquired component close was attempted exactly once");
+                        // Second close is idempotent: no re-close, no rethrow.
+                        mcpRef.close();
+                        assertEquals(12, closeAttempts.get(), "a second close re-closes nothing");
+                        assertNull(mcpRef.runtimeSource(),
+                                "ownership fields are detached after close");
+                        Gdx.app.exit();
+                    }
+                } catch (Throwable thrown) {
+                    fail(messageOf(thrown));
+                }
+            }
+
+            @Override public void dispose() {
+                app.dispose();
             }
         });
     }

@@ -56,7 +56,11 @@ final class PreviewMcp implements AutoCloseable {
     private final RenderThreadScheduler scheduler;
     private final Scene2dSession session;
     private final Lwjgl3FrameFence fence;
+    private final Lwjgl3ScreenCapture capture;
+    private final WaitEngine waits;
     private final HarnessSemanticSink sink;
+    private final Scene2dHarness harness;
+    private final java.util.concurrent.ExecutorService protocolExecutor;
     private final HarnessMcpServer server;
     private final TmpDirArtifactPublisher artifacts;
     private final AgentRuntime runtime;
@@ -107,9 +111,11 @@ final class PreviewMcp implements AutoCloseable {
             this.fence = fence;
             Lwjgl3ScreenCapture capture = new Lwjgl3ScreenCapture(fence, session::snapshot);
             acquired.add(capture);
+            this.capture = capture;
             WaitEngine waits = new WaitEngine(this::snapshotForWait,
                     new StrictResolution(), clock, clock);
             acquired.add(waits);
+            this.waits = waits;
             AgentRuntime runtime = AgentRuntime.builder()
                     .sessionId(SessionId.of(PreviewApp.SESSION_ID)).build();
             // Acquired BEFORE start: a partial start failure must still roll the runtime back.
@@ -122,6 +128,7 @@ final class PreviewMcp implements AutoCloseable {
             Scene2dHarness harness = new Scene2dHarness(stage, stage, session, scheduler, clock,
                     clock::revision, clock::frame);
             acquired.add(harness);
+            this.harness = harness;
             RuntimeObservationSource runtimeObservation =
                     new AgentRuntimeObservationSource(runtime, PreviewApp.SESSION_ID);
             RuntimeComparator runtimeComparator = new RuntimeComparator(runtimeObservation);
@@ -142,6 +149,7 @@ final class PreviewMcp implements AutoCloseable {
                     Executors.newThreadPerTaskExecutor(
                             Thread.ofVirtual().name("markup-protocol-", 0).factory());
             acquired.add(protocolExecutor);
+            this.protocolExecutor = protocolExecutor;
             HarnessProtocolService protocol = new HarnessProtocolService(
                     Map.of(PreviewApp.SESSION_ID, protocolSession), clock, protocolExecutor);
             TmpDirArtifactPublisher artifacts = artifactsFactory.create();
@@ -509,10 +517,19 @@ final class PreviewMcp implements AutoCloseable {
         closed = true;
         RuntimeException primary = null;
         try {
+            // Strictly reverse acquisition order (the runtime registration is the newest
+            // acquisition): the MCP server, artifact publisher, protocol executor, harness,
+            // agent runtime, wait engine, screen capture, frame fence, session, scheduler,
+            // and clock each close best-effort, so a throwing close never skips the rest.
             primary = closeOwned(primary, runtimeSource, "runtime registration");
-            primary = closeOwned(primary, runtime, "agent runtime");
             primary = closeOwned(primary, server, "MCP server");
             primary = closeOwned(primary, artifacts, "artifact publisher");
+            primary = closeOwned(primary, protocolExecutor, "protocol executor");
+            primary = closeOwned(primary, harness, "scene2d harness");
+            primary = closeOwned(primary, runtime, "agent runtime");
+            primary = closeOwned(primary, waits, "wait engine");
+            primary = closeOwned(primary, capture, "screen capture");
+            primary = closeOwned(primary, fence, "frame fence");
             primary = closeOwned(primary, session, "scene2d session");
             primary = closeOwned(primary, scheduler, "render scheduler");
             primary = closeOwned(primary, clock, "controlled clock");

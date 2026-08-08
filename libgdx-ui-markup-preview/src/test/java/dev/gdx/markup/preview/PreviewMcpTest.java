@@ -208,6 +208,22 @@ final class PreviewMcpTest {
         assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
     }
 
+    @Test
+    @Timeout(120)
+    void successCloseClosesEveryAcquiredComponentOnce() throws Exception {
+        Path ui = tempDir.resolve("mcp-close-all.xml");
+        Path css = tempDir.resolve("mcp-close-all.css");
+        Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
+        try (PreviewTestProcess child = PreviewTestProcess.launch(
+                "mcp-close-all", ui, css, null, Duration.ofSeconds(60))) {
+            int exit = child.await();
+            assertEquals(0, exit, "child exit code; stderr: " + child.stderr());
+            assertTrue(child.stdout().contains("preview-child: mcp-close-all ok"),
+                    "child ok line; stdout: " + child.stdout() + " stderr: " + child.stderr());
+        }
+        assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
+    }
+
     private static int countOccurrences(String text, String fragment) {
         int count = 0;
         for (int index = text.indexOf(fragment); index >= 0;
