@@ -54,6 +54,7 @@ final class PreviewMcp implements AutoCloseable {
     private final Lwjgl3FrameFence fence;
     private final HarnessSemanticSink sink;
     private final HarnessMcpServer server;
+    private final TmpDirArtifactPublisher artifacts;
     private final AgentRuntime runtime;
     private final Thread terminator;
     /** Committed (live) runtime registration; replaced only by a committed candidate. */
@@ -101,8 +102,8 @@ final class PreviewMcp implements AutoCloseable {
                 Map.of(PreviewApp.SESSION_ID, protocolSession), clock,
                 Executors.newThreadPerTaskExecutor(
                         Thread.ofVirtual().name("markup-protocol-", 0).factory()));
-        server = HarnessMcpServer.open(protocol, new TmpDirArtifactPublisher(),
-                System.in, System.out);
+        artifacts = new TmpDirArtifactPublisher();
+        server = HarnessMcpServer.open(protocol, artifacts, System.in, System.out);
         terminator = Thread.ofPlatform().name("markup-mcp-terminator").daemon().start(() -> {
             server.awaitTermination();
             Gdx.app.postRunnable(Gdx.app::exit);
@@ -415,6 +416,7 @@ final class PreviewMcp implements AutoCloseable {
             primary = closeOwned(primary, runtimeSource, "runtime registration");
             primary = closeOwned(primary, runtime, "agent runtime");
             primary = closeOwned(primary, server, "MCP server");
+            primary = closeOwned(primary, artifacts, "artifact publisher");
             primary = closeOwned(primary, session, "scene2d session");
             primary = closeOwned(primary, scheduler, "render scheduler");
             primary = closeOwned(primary, clock, "controlled clock");

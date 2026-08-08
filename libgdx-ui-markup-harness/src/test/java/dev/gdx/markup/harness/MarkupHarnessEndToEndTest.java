@@ -36,11 +36,13 @@ import io.github.teemuki8.libgdx.agent.runtime.core.RuntimeValues;
 import io.github.teemuki8.libgdx.agent.runtime.core.SessionId;
 import io.github.teemuki8.libgdx.agent.runtime.core.UiFrameCorrelation;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -338,9 +340,18 @@ final class MarkupHarnessEndToEndTest {
     private static byte[] readBack(MarkupMcpClient.Artifact artifact) throws Exception {
         String sha256 = artifact.sha256();
         assertNotNull(sha256);
-        Path payload = Path.of(System.getProperty("java.io.tmpdir"),
-                "gdx-ui-markup-artifacts", sha256);
-        assertTrue(Files.isRegularFile(payload), "artifact persisted by digest: " + payload);
+        Path root = Path.of(System.getProperty("java.io.tmpdir"),
+                "gdx-ui-markup-artifacts");
+        assertTrue(Files.isDirectory(root), "artifact root exists: " + root);
+        Path payload;
+        try (Stream<Path> walk = Files.walk(root, 2)) {
+            payload = walk
+                    .filter(path -> path.getFileName().toString().equals(sha256))
+                    .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError(
+                            "artifact persisted by digest under " + root));
+        }
         return Files.readAllBytes(payload);
     }
 

@@ -886,7 +886,7 @@ public final class PreviewTestChild {
                         assertNull(app.mcp(), "the MCP session is detached in the terminal state");
                         // A second close is idempotent: it must not re-close (or re-throw).
                         mcpRef.close();
-                        assertEquals(6, closeAttempts.get(),
+                        assertEquals(7, closeAttempts.get(),
                                 "every owned component close was attempted exactly once");
                         assertSame(good, app.skin(), "the last-good skin stays on screen");
                         assertTrue(app.stageContains("user"), "the last-good scene stays on screen");
