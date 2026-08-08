@@ -30,10 +30,13 @@ import java.util.concurrent.TimeUnit;
  * and stops the run from starting later work; calibration fails loudly on the same internal
  * {@link DeadlineExceededException} instead of committing a partial manifest.
  *
- * <p>Every render child is owned: its stdout/stderr drains are started and joined by the
- * runner, and an unfinished child is terminated destroy {@code ->} bounded wait {@code ->}
- * force {@code ->} final bounded wait, with the interrupt flag restored on interruption so a
- * cancelled run leaves no orphan process and no unjoined drain.
+ * <p>Every render child is owned until it is confirmed terminal: its stdout/stderr drains are
+ * started and bounded-joined by the runner, an unfinished child is terminated destroy
+ * {@code ->} bounded wait {@code ->} force {@code ->} final bounded wait inside one shared
+ * teardown window, and a child that still refuses to die makes the run fail closed (no later
+ * work is started). The interrupt flag is restored on interruption, and the drains are
+ * cancelled and joined even when the calling thread is itself interrupted, so a cancelled run
+ * leaves no orphan process and no unjoined drain.
  */
 public final class QualificationRunner implements AutoCloseable {
     static final int RENDER_FRAMES = 10;
@@ -43,8 +46,12 @@ public final class QualificationRunner implements AutoCloseable {
     static final Duration TERMINATION_GRACE = Duration.ofSeconds(5);
     /** Final bounded wait after {@link Process#destroyForcibly()} before giving up on a child. */
     static final Duration TERMINATION_FORCE_WAIT = Duration.ofSeconds(5);
-    /** Bounded real-time window for joining the stdout/stderr drain threads. */
-    static final Duration DRAIN_JOIN_WAIT = Duration.ofSeconds(5);
+    /**
+     * One bounded teardown window covering the destroy grace, the force wait, and the drain
+     * joins, so terminating an unfinished child is itself bounded and the drain joins draw
+     * from the same window instead of a fresh deadline.
+     */
+    static final Duration TERMINATION_BUDGET = Duration.ofSeconds(15);
     /** One monotonic total budget for a whole run by default. */
     static final Duration DEFAULT_RUN_BUDGET = Duration.ofMinutes(30);
     /** Default aggregate work budget: 128 entries, 512 analysis frames of pixels, 1024 scores. */
@@ -106,7 +113,8 @@ public final class QualificationRunner implements AutoCloseable {
                 new WorkBudget(workLimits));
         List<EntryResult> results = new ArrayList<>();
         for (CorpusEntry entry : manifest.entries()) {
-            if (Thread.currentThread().isInterrupted() || run.work.exhausted()) {
+            if (Thread.currentThread().isInterrupted() || run.work.exhausted()
+                    || run.unkillable) {
                 break;
             }
             if (run.deadlineNanos - clock.nanoTime() <= 0) {
@@ -143,7 +151,7 @@ public final class QualificationRunner implements AutoCloseable {
             run.work.spendScore(entry.id());
             FidelityScore score = VisualFidelity.measure(referenceImage, recreation);
             List<List<Double>> negatives = negativeObservations(referenceImage, recreation,
-                    run.work, entry.id());
+                    run, entry.id());
             boolean stale = isStale(score, entry.thresholds(), negatives);
             List<FidelityComponent> failed = failedDimensions(score, entry.thresholds());
             Verdict verdict = failed.isEmpty() ? Verdict.PASS : Verdict.FAIL;
@@ -209,7 +217,8 @@ public final class QualificationRunner implements AutoCloseable {
                 new WorkBudget(workLimits));
         List<CorpusEntry> updated = new ArrayList<>();
         for (CorpusEntry entry : manifest.entries()) {
-            if (Thread.currentThread().isInterrupted() || run.work.exhausted()) {
+            if (Thread.currentThread().isInterrupted() || run.work.exhausted()
+                    || run.unkillable) {
                 throw new DeadlineExceededException(DeadlineExceededException.Kind.TIME,
                         Step.RENDER, entry.id(), "calibration cancelled or budget exhausted; "
                                 + "no partial manifest is committed");
@@ -223,7 +232,7 @@ public final class QualificationRunner implements AutoCloseable {
             FidelityScore score = positive.orElseThrow();
             BufferedImage recreation = decodedRecreation(entry, run);
             List<List<Double>> negativeObservations = negativeObservations(
-                    reference(entry, run).orElseThrow(), recreation, run.work, entry.id());
+                    reference(entry, run).orElseThrow(), recreation, run, entry.id());
             logNegativeObservations(entry, negativeObservations);
             double geometry = calibrateComponent(entry, FidelityComponent.GEOMETRY,
                     score.geometry(), negativeObservations.get(0));
@@ -243,30 +252,36 @@ public final class QualificationRunner implements AutoCloseable {
                     + compact(score.detail()) + "->" + compact(detail)
                     + " coarse=" + compact(score.coarseLayout()) + "->" + compact(coarse));
         }
+        // A calibration that reached the write with the deadline spent must not commit the
+        // partial threshold rewrite; fail loudly instead.
+        requireRemaining(run, Step.SCORE, "manifest");
         manifest.write(corpusDir.resolve("manifest.json"), updated);
     }
 
     /**
-     * Applies the deterministic deliberate negatives to the decoded recreation and measures
-     * each against the reference, returning the component-relevant observation lists. Each
-     * transformation is a negative for the failure mode it exhibits: a vertical flip, a fixed
-     * translation, and a uniform scale misplace layout (geometry); a hue rotation re-palettes
-     * the screen (color); a box blur and a uniform scale destroy typography and fine structure
-     * (detail). The palette-preserving flip/translation/hue scores on other components are not
-     * calibration negatives for those components.
+     * Applies the deterministic deliberate negatives to the decoded recreation one at a time
+     * and measures each against the reference, returning the component-relevant observation
+     * lists. Each transformation is a negative for the failure mode it exhibits: a vertical
+     * flip, a fixed translation, and a uniform scale misplace layout (geometry); a hue
+     * rotation re-palettes the screen (color); a box blur and a uniform scale destroy
+     * typography and fine structure (detail). The palette-preserving flip/translation/hue
+     * scores on other components are not calibration negatives for those components.
+     *
+     * <p>Every transform and every score re-checks the run's remaining monotonic budget, so
+     * neither this run nor a calibration can allocate frames or measure after expiry.
      */
-    private static List<List<Double>> negativeObservations(
+    private List<List<Double>> negativeObservations(
             ReferenceImageStore.ReferenceImage reference, BufferedImage recreationImage,
-            WorkBudget budget, String entryId) {
+            RunBudget run, String entryId) {
         List<Double> geometryNegatives = new ArrayList<>();
         List<Double> colorNegatives = new ArrayList<>();
         List<Double> detailNegatives = new ArrayList<>();
-        BufferedImage[] negatives = NegativeTransforms.all(recreationImage);
-        String[] names = NegativeTransforms.names();
-        for (int i = 0; i < negatives.length; i++) {
-            budget.spendScore(entryId);
-            FidelityScore negativeScore = VisualFidelity.measure(reference, negatives[i]);
-            String name = names[i];
+        for (String name : NegativeTransforms.names()) {
+            requireRemaining(run, Step.SCORE, entryId);
+            BufferedImage negative = applyNegative(name, recreationImage);
+            requireRemaining(run, Step.SCORE, entryId);
+            run.work.spendScore(entryId);
+            FidelityScore negativeScore = VisualFidelity.measure(reference, negative);
             if ("flip".equals(name) || "translate".equals(name) || "scale".equals(name)) {
                 geometryNegatives.add(negativeScore.geometry());
             }
@@ -278,6 +293,24 @@ public final class QualificationRunner implements AutoCloseable {
             }
         }
         return List.of(geometryNegatives, colorNegatives, detailNegatives);
+    }
+
+    /** Applies one named deliberate negative to the recreation. */
+    private static BufferedImage applyNegative(String name, BufferedImage source) {
+        switch (name) {
+            case "flip":
+                return NegativeTransforms.flip(source);
+            case "translate":
+                return NegativeTransforms.translate(source);
+            case "hue":
+                return NegativeTransforms.hueRotate(source);
+            case "blur":
+                return NegativeTransforms.blur(source);
+            case "scale":
+                return NegativeTransforms.scale(source);
+            default:
+                throw new IllegalArgumentException("unknown deliberate negative " + name);
+        }
     }
 
     /** Renders and decodes one entry's recreation at the bounded analysis resolution. */
@@ -477,8 +510,10 @@ public final class QualificationRunner implements AutoCloseable {
      * Renders one recreation through the preview binary; empty when the process fails. The
      * process wait is bounded by the run's remaining budget (never a fresh per-render
      * timeout), and an unfinished child is terminated destroy {@code ->} bounded wait
-     * {@code ->} force {@code ->} final bounded wait before the entry fails, so no child is
-     * ever left running and no drain is left unjoined.
+     * {@code ->} force {@code ->} final bounded wait inside one shared teardown window. The
+     * child is retained until it is confirmed terminal: a child still alive after the final
+     * wait makes the run fail closed so no later work is started, and the drains are joined
+     * against the same window (never a fresh deadline) and cancelled if they refuse to end.
      */
     private Optional<Path> render(CorpusEntry entry, RunBudget run) {
         Path xml = resolveInside(corpusDir, entry.markupFile());
@@ -509,6 +544,10 @@ public final class QualificationRunner implements AutoCloseable {
                 "--exit"));
         Process process = null;
         List<Thread> drains = List.of();
+        // Happy path: drains join inside the run's own monotonic deadline. When teardown is
+        // needed (deadline hit or interrupt) a fresh bounded teardown window covers the
+        // destroy/force waits AND the drain joins, so teardown is bounded as a whole.
+        long drainDeadline = run.deadlineNanos;
         try {
             long waitNanos = Math.min(requireRemaining(run, Step.RENDER, entry.id()),
                     RENDER_PROCESS_CAP.toNanos());
@@ -516,7 +555,10 @@ public final class QualificationRunner implements AutoCloseable {
             drains = startDrains(process);
             boolean finished = process.waitFor(waitNanos, TimeUnit.NANOSECONDS);
             if (!finished) {
-                terminate(process);
+                drainDeadline = teardownDeadline();
+                if (!terminate(process, drainDeadline)) {
+                    run.unkillable = true;
+                }
                 throw new DeadlineExceededException(DeadlineExceededException.Kind.TIME,
                         Step.RENDER, entry.id(), "render did not finish within the run deadline");
             }
@@ -527,7 +569,10 @@ public final class QualificationRunner implements AutoCloseable {
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             if (process != null) {
-                forceKill(process);
+                drainDeadline = teardownDeadline();
+                if (!forceKill(process, drainDeadline)) {
+                    run.unkillable = true;
+                }
             }
             return Optional.empty();
         } catch (IOException failure) {
@@ -537,37 +582,49 @@ public final class QualificationRunner implements AutoCloseable {
                 closeQuietly(process.getInputStream());
                 closeQuietly(process.getErrorStream());
             }
-            joinDrains(drains);
+            joinDrains(drains, drainDeadline);
         }
+    }
+
+    /** Starts a fresh bounded teardown window once the run deadline is already spent. */
+    private long teardownDeadline() {
+        return clock.nanoTime() + TERMINATION_BUDGET.toNanos();
     }
 
     /**
-     * Terminates a child that outlived its remaining budget: destroy, bounded wait, force,
-     * final bounded wait. Every phase is capped so teardown itself is bounded, and an
-     * interrupt during teardown restores the flag and still force-destroys the child.
+     * Terminates a child inside the teardown window: destroy, bounded wait, force, final
+     * bounded wait, each phase capped and drawing from the same window. Returns whether the
+     * child was confirmed dead; a child still alive after the final wait must make the run
+     * fail closed (callers set {@link RunBudget#unkillable}) instead of being dropped.
      */
-    private static void terminate(Process process) {
+    private boolean terminate(Process process, long teardownDeadline) {
         if (!process.isAlive()) {
-            return;
+            return true;
         }
         process.destroy();
-        if (await(process, TERMINATION_GRACE)) {
-            return;
+        if (await(process, Math.min(TERMINATION_GRACE.toNanos(), remaining(teardownDeadline)))) {
+            return true;
         }
         process.destroyForcibly();
-        await(process, TERMINATION_FORCE_WAIT);
+        return await(process, Math.min(TERMINATION_FORCE_WAIT.toNanos(),
+                remaining(teardownDeadline)));
     }
 
-    /** Force-destroys a child and waits a final bounded window for it to die. */
-    private static void forceKill(Process process) {
+    /** Force-destroys a child and waits the remaining teardown window for it to die. */
+    private boolean forceKill(Process process, long teardownDeadline) {
         process.destroyForcibly();
-        await(process, TERMINATION_FORCE_WAIT);
+        return await(process, remaining(teardownDeadline));
+    }
+
+    /** Remaining monotonic budget of a deadline, floored at zero for a bounded wait. */
+    private long remaining(long deadlineNanos) {
+        return Math.max(0, deadlineNanos - clock.nanoTime());
     }
 
     /** Bounded, interrupt-preserving process wait used only for teardown phases. */
-    private static boolean await(Process process, Duration timeout) {
+    private static boolean await(Process process, long timeoutNanos) {
         try {
-            return process.waitFor(timeout.toNanos(), TimeUnit.NANOSECONDS);
+            return process.waitFor(timeoutNanos, TimeUnit.NANOSECONDS);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             return false;
@@ -603,17 +660,33 @@ public final class QualificationRunner implements AutoCloseable {
         }
     }
 
-    /** Joins every drain within a bounded real-time window; an interrupt restores the flag. */
-    private static void joinDrains(List<Thread> drains) {
-        long deadline = System.nanoTime() + DRAIN_JOIN_WAIT.toNanos();
-        for (Thread drain : drains) {
-            long remaining = deadline - System.nanoTime();
-            if (remaining <= 0) {
-                return;
+    /**
+     * Joins every drain within the given monotonic deadline; a drain that still refuses to
+     * finish at the deadline is cancelled (interrupted) instead of being dropped alive. The
+     * pipe ends were already closed, so a well-behaved drain unblocks at EOF. Works even when
+     * the calling thread is itself interrupted: the interrupt is cleared for the duration of
+     * the join and restored afterwards, so a cancelled run still confirms its drain joins.
+     */
+    private void joinDrains(List<Thread> drains, long deadlineNanos) {
+        boolean interrupted = Thread.interrupted();
+        try {
+            for (Thread drain : drains) {
+                while (drain.isAlive()) {
+                    long remaining = deadlineNanos - clock.nanoTime();
+                    if (remaining <= 0) {
+                        drain.interrupt();
+                        break;
+                    }
+                    try {
+                        drain.join(Math.max(1, Math.min(remaining / 1_000_000, 10)));
+                    } catch (InterruptedException interruptedDuringJoin) {
+                        drain.interrupt();
+                        break;
+                    }
+                }
             }
-            try {
-                drain.join(Math.max(1, TimeUnit.NANOSECONDS.toMillis(remaining)));
-            } catch (InterruptedException interrupted) {
+        } finally {
+            if (interrupted) {
                 Thread.currentThread().interrupt();
             }
         }
@@ -626,6 +699,8 @@ public final class QualificationRunner implements AutoCloseable {
     private static final class RunBudget {
         final long deadlineNanos;
         final WorkBudget work;
+        /** Set when a child could not be confirmed dead; the run then stops starting later work. */
+        boolean unkillable;
 
         RunBudget(long deadlineNanos, WorkBudget work) {
             this.deadlineNanos = deadlineNanos;

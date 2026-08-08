@@ -261,6 +261,11 @@ final class RunnerDeadlineTest {
             return out.closed() && err.closed();
         }
 
+        /** Number of drain threads still blocked reading this child; zero = drains joined. */
+        int activeDrainReads() {
+            return out.readers() + err.readers();
+        }
+
         /** Blocking mode only: completes when the first waitFor starts parking. */
         void awaitParked() throws InterruptedException {
             assertTrue(parked.await(10, TimeUnit.SECONDS), "child waitFor never parked");
@@ -268,7 +273,7 @@ final class RunnerDeadlineTest {
     }
 
     /** Monotonic clock a test can advance; safe to share with scripted children. */
-    static final class MutableClock implements ReferenceImageStore.Clock {
+    static class MutableClock implements ReferenceImageStore.Clock {
         private long now;
 
         @Override public synchronized long nanoTime() {
@@ -280,25 +285,50 @@ final class RunnerDeadlineTest {
         }
     }
 
+    /**
+     * Clock that reports normal time for the first {@code normalCalls} reads and then jumps
+     * far past any deadline, so a test can prove a specific step re-checks the run deadline.
+     * The runner's per-entry call sequence is documented in each test that uses it; the jump
+     * fires on the next {@code nanoTime()} after the positive score, i.e. inside the
+     * deliberate-negative loop that must re-check the deadline before every transform/score.
+     */
+    static final class CallCountingClock extends MutableClock {
+        private final int normalCalls;
+        private int calls;
+
+        CallCountingClock(int normalCalls) {
+            this.normalCalls = normalCalls;
+        }
+
+        @Override public synchronized long nanoTime() {
+            calls++;
+            long base = super.nanoTime();
+            return calls > normalCalls ? base + Long.MAX_VALUE / 4 : base;
+        }
+    }
+
     /** Pipe end that blocks until the process exits or the runner closes it. */
     static final class ControllableInputStream extends InputStream {
         private boolean closed;
         private boolean eof;
+        private int readers;
 
         @Override
         public synchronized int read() {
-            while (!closed && !eof) {
-                try {
-                    wait();
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    return -1;
+            readers++;
+            try {
+                while (!closed && !eof) {
+                    try {
+                        wait();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        return -1;
+                    }
                 }
-            }
-            if (closed) {
                 return -1;
+            } finally {
+                readers--;
             }
-            return -1;
         }
 
         synchronized void eof() {
@@ -314,6 +344,11 @@ final class RunnerDeadlineTest {
 
         synchronized boolean closed() {
             return closed;
+        }
+
+        /** Readers currently blocked in read(); zero means every drain has terminated. */
+        synchronized int readers() {
+            return readers;
         }
     }
 
@@ -367,12 +402,14 @@ final class RunnerDeadlineTest {
 
     @Test
     @Timeout(30)
-    void nonExitingChildIsBoundedAndNeverOrphans() throws Exception {
+    void nonExitingChildFailsClosedAndStopsLaterWork() throws Exception {
         Fixture fixture = corpus();
         MutableClock clock = new MutableClock();
-        ScriptedProcess child = ScriptedProcess.scripted(clock,
+        ScriptedProcess unkillable = ScriptedProcess.scripted(clock,
                 ScriptedProcess.Behavior.NEVER_EXITS, 30 * SECOND);
-        ScriptedLauncher launcher = new ScriptedLauncher(List.of(child));
+        ScriptedProcess later = ScriptedProcess.scripted(clock,
+                ScriptedProcess.Behavior.EXITS_AFTER, SECOND);
+        ScriptedLauncher launcher = new ScriptedLauncher(List.of(unkillable, later));
         try (QualificationRunner runner = runner(fixture, clock, launcher,
                 Duration.ofSeconds(10), new WorkBudget(8, 1_000_000, 100))) {
             long started = System.nanoTime();
@@ -380,12 +417,19 @@ final class RunnerDeadlineTest {
             long elapsed = TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - started);
             assertTrue(elapsed < 10,
                     "teardown of an unkillable child must stay bounded (took " + elapsed + "s)");
+            assertEquals(1, report.results().size(),
+                    "an unkillable child must fail the run closed: no later entry may start");
             assertEquals(Verdict.SKIPPED_RENDER, report.results().get(0).verdict());
-            assertTrue(child.destroyed() && child.forciblyDestroyed(),
+            assertEquals(1, launcher.starts,
+                    "the runner must stop starting later work once a child cannot be killed");
+            assertTrue(unkillable.destroyed() && unkillable.forciblyDestroyed(),
                     "the full destroy -> wait -> force -> final wait sequence must run");
-            assertFalse(child.exited(), "an unkillable child is reported not exited");
-            assertTrue(child.streamsClosed(),
+            assertFalse(unkillable.exited(),
+                    "the child is genuinely unkillable and the runner must not pretend otherwise");
+            assertTrue(unkillable.streamsClosed(),
                     "the runner must close its pipe ends so the drains can join");
+            assertEquals(0, unkillable.activeDrainReads(),
+                    "no drain may remain blocked after the bounded teardown window");
         }
     }
 
@@ -424,7 +468,9 @@ final class RunnerDeadlineTest {
                 assertTrue(child.forciblyDestroyed(), "the interrupted child must be killed");
                 assertTrue(child.exited(), "the killed child must report exited");
                 assertTrue(child.streamsClosed(),
-                        "both stdio drains must have been closed and joined");
+                        "both stdio drains must have been closed");
+                assertEquals(0, child.activeDrainReads(),
+                        "both stdio drains must be confirmed joined even on the interrupt path");
             } finally {
                 executor.shutdownNow();
             }
@@ -518,6 +564,67 @@ final class RunnerDeadlineTest {
                     "no entry may start once the total deadline is spent");
             assertEquals(0, launcher.starts);
             assertEquals(0, report.scored());
+        }
+    }
+
+    // ------------------------------------------------------- negative-scoring deadline
+
+    /**
+     * The deliberate-negative loop must re-check the run deadline before every transform and
+     * score. Clock calls in the runner for one entry: 1 run deadline, 2 loop check, 3 render
+     * remaining, 4-5 scripted child waitFor, 6 drain-join remaining, 7 positive-score
+     * remaining; with {@code normalCalls = 7} the next read (the first negative's remaining
+     * check) jumps past the deadline, so the entry that rendered and scored successfully must
+     * still be skipped instead of PASSing with unmeasured negatives.
+     */
+    @Test
+    @Timeout(30)
+    void deadlineExpiryDuringNegativesSkipsTheEntry() throws Exception {
+        Fixture fixture = corpus();
+        CallCountingClock clock = new CallCountingClock(7);
+        ScriptedProcess child = ScriptedProcess.scripted(clock,
+                ScriptedProcess.Behavior.EXITS_AFTER, 30 * SECOND);
+        ScriptedLauncher launcher = new ScriptedLauncher(List.of(child));
+        try (QualificationRunner runner = runner(fixture, clock, launcher,
+                Duration.ofSeconds(50), new WorkBudget(8, 1_000_000, 100))) {
+            QualificationReport report = runner.run();
+            assertEquals(1, report.results().size());
+            assertEquals(Verdict.SKIPPED_RENDER, report.results().get(0).verdict(),
+                    "a deadline that expires inside the negative scoring must skip the entry");
+            assertTrue(child.exited(),
+                    "the render itself succeeded; only the post-render scoring was cut short");
+        }
+    }
+
+    /**
+     * Calibration must not commit a manifest after the deadline expired mid-run. Clock calls
+     * for one calibrate entry: 1 run deadline, 2-4 first render (remaining + waitFor pair),
+     * 5 drain-join remaining, 6 positive-score remaining, 7-9 second render (remaining +
+     * waitFor pair), 10 drain-join remaining; with {@code normalCalls = 10} the deadline
+     * fires inside the deliberate negatives, so calibrate fails loudly and the manifest is
+     * untouched.
+     */
+    @Test
+    @Timeout(30)
+    void calibrateDeadlineDuringNegativesCommitsNothing() throws Exception {
+        Fixture fixture = corpus();
+        CallCountingClock clock = new CallCountingClock(10);
+        ScriptedProcess first = ScriptedProcess.scripted(clock,
+                ScriptedProcess.Behavior.EXITS_AFTER, SECOND);
+        ScriptedProcess second = ScriptedProcess.scripted(clock,
+                ScriptedProcess.Behavior.EXITS_AFTER, SECOND);
+        ScriptedLauncher launcher = new ScriptedLauncher(List.of(first, second));
+        Path manifest = fixture.corpusDir().resolve("manifest.json");
+        byte[] before = Files.readAllBytes(manifest);
+        try (QualificationRunner runner = runner(fixture, clock, launcher,
+                Duration.ofSeconds(10), new WorkBudget(8, 1_000_000, 100))) {
+            DeadlineExceededException failure = assertThrows(
+                    DeadlineExceededException.class, runner::calibrate);
+            assertEquals(DeadlineExceededException.Kind.TIME, failure.kind());
+            assertEquals(2, launcher.starts,
+                    "both calibration renders complete before the negatives");
+            assertArrayEquals(before, Files.readAllBytes(manifest),
+                    "calibration must never commit a manifest after the deadline expired");
         }
     }
 }
