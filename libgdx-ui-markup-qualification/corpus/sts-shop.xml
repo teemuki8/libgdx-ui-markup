@@ -12,7 +12,7 @@
     </table>
     <row/>
     <table id="battlefield" width="1280" height="492" expand="true" fill="true" pad="0">
-      <table id="hero-zone" width="530" height="440" pad="18" align="center center">
+      <table id="hero-zone" width="430" height="440" pad="18" align="center center">
         <label id="hero-orb" class="accent-bar" text="●  ◌  ◌"/>
         <row/>
         <label id="hero-name" class="heading" text="THE DEFECT"/>
@@ -32,7 +32,7 @@
         <label id="hero-power" text="Block  12   Buffs  2   Orbs  3"/>
         <row/>
       </table>
-      <table id="card-zone" class="panel-alt" width="240" height="300" pad="18" pad-top="160" align="center top">
+      <table id="card-zone" class="panel-alt" width="180" height="245" pad="18" pad-top="110" align="center top">
         <label id="card-cost" class="title" text="0"/>
         <row/>
         <label id="card-name" class="title" text="Zap+"/>
@@ -45,7 +45,7 @@
         <row/>
         <label id="card-flavor" class="section" text="A spark in the dark."/>
       </table>
-      <table id="enemy-zone" width="510" height="440" pad="18" align="center center">
+      <table id="enemy-zone" width="670" height="440" pad="18" align="center center">
         <label id="enemy-name" class="heading" text="THE AWAKENED ONE"/>
         <row/>
         <label id="enemy-intent" class="title" text="7   ⚡"/>
