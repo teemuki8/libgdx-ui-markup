@@ -16,10 +16,19 @@ import java.net.InetAddress;
 import java.net.Socket;
 import java.net.URI;
 import java.net.UnknownHostException;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.SecureDirectoryStream;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.AclEntry;
+import java.nio.file.attribute.AclEntryPermission;
+import java.nio.file.attribute.AclEntryType;
 import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.UserPrincipal;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
@@ -27,6 +36,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Deque;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
@@ -1217,5 +1227,343 @@ final class ReferenceImageStoreTest {
                 + line.repeat(16) + "\r\n").getBytes(StandardCharsets.US_ASCII);
         assertThrows(IOException.class,
                 () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    // ---------------------------------------------------------------- strict line reader
+
+    @Test
+    void rejectsBareLfLineTerminator() {
+        byte[] raw = ("HTTP/1.1 200 OK\r\nX-F: a\nX-G: b\r\n\r\n")
+                .getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsBareCrInsideLine() {
+        byte[] raw = ("HTTP/1.1 200 OK\r\nX-F: a\rb\r\n\r\n")
+                .getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsBareCrAtEndOfLine() {
+        byte[] raw = ("HTTP/1.1 200 OK\r\nX-F: a\rX-G: b\r\n\r\n")
+                .getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsControlOctetInHeaderLine() {
+        byte[] raw = ("HTTP/1.1 200 OK\r\nX-F: a\u0001b\r\n\r\n")
+                .getBytes(StandardCharsets.ISO_8859_1);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsBareLfStatusLine() {
+        byte[] raw = "HTTP/1.1 200 OK\n\r\n".getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsBareCrStatusLine() {
+        byte[] raw = "HTTP/1.1 200 OK\rX\r\n".getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void acceptsHeaderLineAtExactCap() throws IOException {
+        String filler = "X: " + "a".repeat(ReferenceImageStore.MAX_HEADER_LINE - 5) + "\r\n";
+        ReferenceImageStore.Response parsed = parse(
+                "HTTP/1.1 200 OK\r\n" + filler + "Content-Length: 2", "hi");
+        assertArrayEquals("hi".getBytes(StandardCharsets.US_ASCII), parsed.body(),
+                "a header line of exactly the cap raw octets (CRLF included) must parse");
+    }
+
+    @Test
+    void rejectsHeaderLineOverCapByOne() {
+        String filler = "X: " + "a".repeat(ReferenceImageStore.MAX_HEADER_LINE - 4) + "\r\n";
+        byte[] raw = ("HTTP/1.1 200 OK\r\n" + filler + "\r\n")
+                .getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void acceptsHeadersAtExactTotalCap() throws IOException {
+        int target = ReferenceImageStore.MAX_HEADER_BYTES;
+        String status = "HTTP/1.1 200 OK\r\n"; // 17 raw octets
+        String blank = "\r\n"; // the header terminator, 2 raw octets
+        String contentLength = "Content-Length: 2\r\n"; // 19 raw octets
+        int fillerBudget = target - status.length() - blank.length() - contentLength.length();
+        int lineRaw = 2005; // "X: " + 2000 a's + CRLF
+        int lines = fillerBudget / lineRaw;
+        int remainder = fillerBudget - lines * lineRaw;
+        StringBuilder builder = new StringBuilder(status);
+        for (int i = 0; i < lines; i++) {
+            builder.append("X: ").append("a".repeat(lineRaw - 5)).append("\r\n");
+        }
+        builder.append("X: ").append("a".repeat(remainder - 5)).append("\r\n");
+        builder.append(contentLength).append(blank).append("hi");
+        ReferenceImageStore.Response parsed = ReferenceImageStore.parseResponse(
+                new ByteArrayInputStream(builder.toString().getBytes(StandardCharsets.ISO_8859_1)));
+        assertArrayEquals("hi".getBytes(StandardCharsets.US_ASCII), parsed.body(),
+                "headers totaling exactly the cap raw octets (CRLF included) must parse");
+    }
+
+    @Test
+    void rejectsHeadersOverTotalCapByOne() {
+        int target = ReferenceImageStore.MAX_HEADER_BYTES;
+        String status = "HTTP/1.1 200 OK\r\n";
+        String blank = "\r\n";
+        String contentLength = "Content-Length: 2\r\n";
+        int fillerBudget = target - status.length() - blank.length() - contentLength.length();
+        int lineRaw = 2005;
+        int lines = fillerBudget / lineRaw;
+        int remainder = fillerBudget - lines * lineRaw;
+        StringBuilder builder = new StringBuilder(status);
+        for (int i = 0; i < lines; i++) {
+            builder.append("X: ").append("a".repeat(lineRaw - 5)).append("\r\n");
+        }
+        builder.append("X: ").append("a".repeat(remainder - 4)).append("\r\n"); // one octet over
+        builder.append(contentLength).append(blank).append("hi");
+        assertThrows(IOException.class, () -> ReferenceImageStore.parseResponse(
+                new ByteArrayInputStream(builder.toString().getBytes(StandardCharsets.ISO_8859_1))));
+    }
+
+    @Test
+    void crlfOctetsCountTowardTotalHeaderCap() {
+        // Old accounting stripped CRs and counted one octet per line terminator; the new
+        // accounting counts every raw octet including CRLF. 16000 three-octet lines total
+        // 80000 raw octets (> cap) but only 64017 non-CR octets (< cap), so only raw counting
+        // rejects this response.
+        byte[] raw = ("HTTP/1.1 200 OK\r\n" + "abc\r\n".repeat(16000) + "\r\n")
+                .getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsBareLfChunkTerminator() {
+        byte[] raw = ("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                + "5\r\nhello\n0\r\n\r\n").getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsBareCrChunkTerminator() {
+        byte[] raw = ("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                + "5\r\nhello\rX\r\n0\r\n\r\n").getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    // ---------------------------------------------------------------- trust-chain policy
+
+    @Test
+    void posixTrustChainPolicyTable() {
+        record Case(String name, boolean directory, boolean sticky, boolean groupOrOtherWritable,
+                boolean ownerIsCurrentUser, boolean ownerIsRoot, boolean secureParent,
+                boolean secureAncestor) {
+        }
+        List<Case> cases = List.of(
+                new Case("private user dir", true, false, false, true, false, true, true),
+                new Case("sticky shared root owned by us", true, true, true, true, false, true,
+                        true),
+                new Case("sticky shared root owned by root", true, true, true, false, true, true,
+                        true),
+                new Case("root-owned non-writable ancestor", true, false, false, false, true,
+                        false, true),
+                new Case("world-writable non-sticky", true, false, true, true, false, false,
+                        false),
+                new Case("group-writable non-sticky", true, false, true, true, false, false,
+                        false),
+                new Case("untrusted-owner non-writable", true, false, false, false, false, false,
+                        false),
+                new Case("untrusted-owner sticky", true, true, true, false, false, false, false),
+                new Case("not a directory", false, false, false, true, false, false, false));
+        for (Case testCase : cases) {
+            ReferenceImageStore.DirectorySecurity facts = new ReferenceImageStore.DirectorySecurity(
+                    testCase.directory(), testCase.sticky(), testCase.groupOrOtherWritable(),
+                    testCase.ownerIsCurrentUser(), testCase.ownerIsRoot());
+            assertEquals(testCase.secureParent(), facts.secureParent(),
+                    "parent decision: " + testCase.name());
+            assertEquals(testCase.secureAncestor(), facts.secureAncestor(),
+                    "ancestor decision: " + testCase.name());
+        }
+    }
+
+    @Test
+    void attackerWritableAncestorIsRejected() throws IOException {
+        Path attackerWritable = Files.createDirectories(
+                tempDir.resolve("attacker-writable-ancestor"));
+        setMode(attackerWritable, allPermissions(), 0);
+        Path root = Files.createDirectories(attackerWritable.resolve("chain").resolve("root"));
+        setMode(root, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.OWNER_EXECUTE), 0);
+        try (ReferenceImageStore store =
+                store(root, silentTransport(), publicResolver(), ALLOWED_HOST)) {
+            assertFalse(store.sessionDir().toRealPath().startsWith(root.toRealPath()),
+                    "an attacker-writable ancestor must make the configured root untrusted");
+        }
+    }
+
+    @Test
+    void stickySharedAncestorIsAccepted() throws IOException {
+        Path shared = Files.createDirectories(tempDir.resolve("sticky-shared-ancestor"));
+        setMode(shared, allPermissions(), 01000);
+        Path root = Files.createDirectories(shared.resolve("chain").resolve("root"));
+        setMode(root, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.OWNER_EXECUTE), 0);
+        try (ReferenceImageStore store =
+                store(root, silentTransport(), publicResolver(), ALLOWED_HOST)) {
+            assertTrue(store.sessionDir().toRealPath().startsWith(root.toRealPath()),
+                    "a sticky shared ancestor with a private root must host the session");
+        }
+    }
+
+    @Test
+    void attackerWritableAncestorFailsClosedWhenFallbackUnsafe() throws IOException {
+        Path attackerWritable = Files.createDirectories(tempDir.resolve("bad-ancestor"));
+        setMode(attackerWritable, allPermissions(), 0);
+        Path root = Files.createDirectories(attackerWritable.resolve("root"));
+        setMode(root, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.OWNER_EXECUTE), 0);
+        Path unsafeTemp = Files.createDirectories(tempDir.resolve("unsafe-ancestor-temp"));
+        setMode(unsafeTemp, allPermissions(), 0);
+        ReferenceException failure = assertThrows(ReferenceException.class,
+                () -> ReferenceImageStore.secureParent(root, unsafeTemp));
+        assertEquals(ReferenceException.Kind.IO, failure.kind(),
+                "when every candidate parent chain is untrusted, the store must fail closed");
+    }
+
+    // ---------------------------------------------------------------- Windows ACL policy
+
+    @Test
+    void aclPolicyDeterministicTable() {
+        UserPrincipal owner = () -> "alice";
+        UserPrincipal currentUser = () -> "alice";
+        UserPrincipal mallory = () -> "mallory";
+        UserPrincipal system = () -> "NT AUTHORITY\\SYSTEM";
+        UserPrincipal administrators = () -> "BUILTIN\\Administrators";
+
+        // An owner-only ACL is private.
+        assertFalse(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
+                List.of(allowAll(owner)), owner, currentUser));
+        // SYSTEM and Administrators full control are trusted system principals.
+        assertFalse(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
+                List.of(allowAll(owner), allowAll(system)), owner, currentUser));
+        assertFalse(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
+                List.of(allowAll(owner), allowAll(administrators)), owner, currentUser));
+        // An untrusted principal granted DELETE_CHILD or write permissions can modify entries.
+        assertTrue(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
+                List.of(allowAll(owner), allow(mallory, AclEntryPermission.DELETE_CHILD)),
+                owner, currentUser));
+        assertTrue(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
+                List.of(allowAll(owner), allow(mallory, AclEntryPermission.WRITE_DATA)),
+                owner, currentUser));
+        assertTrue(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
+                List.of(allowAll(owner), allow(mallory, AclEntryPermission.DELETE)),
+                owner, currentUser));
+        // A DENY entry for an untrusted principal is harmless (more restrictive).
+        assertFalse(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
+                List.of(allowAll(owner), deny(mallory, AclEntryPermission.WRITE_DATA)),
+                owner, currentUser));
+        // Trusted principals: the current user and well-known system/administrator principals.
+        assertTrue(ReferenceImageStore.AclFilesystemPolicy.principalTrusted(owner, currentUser));
+        assertFalse(ReferenceImageStore.AclFilesystemPolicy.principalTrusted(mallory, currentUser));
+        assertTrue(ReferenceImageStore.AclFilesystemPolicy.principalTrusted(system, currentUser));
+        assertTrue(ReferenceImageStore.AclFilesystemPolicy.principalTrusted(
+                administrators, currentUser));
+    }
+
+    @Test
+    void aclOwnerOnlyAclGrantsOwnerEverything() {
+        UserPrincipal owner = () -> "alice";
+        List<AclEntry> acl = ReferenceImageStore.AclFilesystemPolicy.ownerOnlyAcl(owner);
+        assertEquals(1, acl.size(), "the private session ACL must grant only the owner");
+        assertEquals(AclEntryType.ALLOW, acl.get(0).type());
+        assertEquals(owner, acl.get(0).principal());
+        assertEquals(EnumSet.allOf(AclEntryPermission.class), acl.get(0).permissions());
+    }
+
+    // ---------------------------------------------------------------- retained SecureDirectoryStream
+
+    @Test
+    void retainsSecureDirectoryStreamOnSupportedProviders() throws IOException {
+        try (ReferenceImageStore store =
+                store(silentTransport(), publicResolver(), ALLOWED_HOST)) {
+            SecureDirectoryStream<Path> stream = store.retainedSessionStream();
+            if (stream == null) {
+                org.junit.jupiter.api.Assumptions.abort("SecureDirectoryStream unsupported");
+            }
+            try (SeekableByteChannel channel = stream.newByteChannel(Path.of("probe.bin"),
+                    Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE))) {
+                channel.write(ByteBuffer.wrap(new byte[]{1, 2, 3}));
+            }
+            assertArrayEquals(new byte[]{1, 2, 3},
+                    Files.readAllBytes(store.sessionDir().resolve("probe.bin")),
+                    "the retained stream must anchor the same directory as the session path");
+        }
+    }
+
+    @Test
+    void replacedSessionPathFailsLoudly() throws IOException {
+        FakeTransport transport = new FakeTransport(ok(PNG_2X2));
+        ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST);
+        Path session = store.sessionDir();
+        Path moved = session.resolveSibling(session.getFileName() + "-moved");
+        try {
+            Files.move(session, moved);
+            Files.createDirectories(session); // a different directory now sits at the path
+            ReferenceException failure = reject(() -> store.reference(
+                    canonicalEntry("https://" + ALLOWED_HOST + "/ref.png")));
+            assertEquals(ReferenceException.Kind.CACHE, failure.kind(),
+                    "a replaced session path must fail the identity revalidation");
+        } finally {
+            try {
+                store.close();
+            } catch (ReferenceException expected) {
+                // the replaced path makes anchored recursive cleanup impossible; the failed
+                // revalidation above is the behavior under test
+            }
+            deleteTreeQuietly(moved);
+            deleteTreeQuietly(session);
+        }
+    }
+
+    private static AclEntry allowAll(UserPrincipal principal) {
+        return AclEntry.newBuilder().setType(AclEntryType.ALLOW).setPrincipal(principal)
+                .setPermissions(EnumSet.allOf(AclEntryPermission.class)).build();
+    }
+
+    private static AclEntry allow(UserPrincipal principal, AclEntryPermission permission) {
+        return AclEntry.newBuilder().setType(AclEntryType.ALLOW).setPrincipal(principal)
+                .setPermissions(Set.of(permission)).build();
+    }
+
+    private static AclEntry deny(UserPrincipal principal, AclEntryPermission permission) {
+        return AclEntry.newBuilder().setType(AclEntryType.DENY).setPrincipal(principal)
+                .setPermissions(Set.of(permission)).build();
+    }
+
+    private static void deleteTreeQuietly(Path root) {
+        if (!Files.exists(root, LinkOption.NOFOLLOW_LINKS)) {
+            return;
+        }
+        try (var paths = Files.walk(root)) {
+            for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
+                Files.deleteIfExists(path);
+            }
+        } catch (IOException ignored) {
+            // best-effort test cleanup only
+        }
     }
 }
