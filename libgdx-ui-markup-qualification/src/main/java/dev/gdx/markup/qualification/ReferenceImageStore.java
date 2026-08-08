@@ -1,6 +1,7 @@
 package dev.gdx.markup.qualification;
 
 import java.awt.image.BufferedImage;
+import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -13,7 +14,6 @@ import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
@@ -25,12 +25,12 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ThreadLocalRandom;
 import javax.net.ssl.SNIHostName;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
@@ -64,8 +64,8 @@ public final class ReferenceImageStore implements AutoCloseable {
 
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(15);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(60);
-    private static final int MAX_HEADER_LINE = 16 * 1024;
-    private static final int MAX_HEADER_BYTES = 64 * 1024;
+    static final int MAX_HEADER_LINE = 16 * 1024;
+    static final int MAX_HEADER_BYTES = 64 * 1024;
     private static final Set<Integer> REDIRECT_STATUSES = Set.of(301, 302, 303, 307, 308);
     private static final Set<Integer> ABSENT_STATUSES = Set.of(404, 410);
     private static final Set<String> DEFAULT_ALLOWED_HOSTS =
@@ -99,6 +99,12 @@ public final class ReferenceImageStore implements AutoCloseable {
         InetAddress[] resolve(String host) throws UnknownHostException;
     }
 
+    /** Monotonic time source for the per-exchange deadline; injectable for deterministic tests. */
+    @FunctionalInterface
+    interface Clock {
+        long nanoTime();
+    }
+
     /** A reference whose bytes were authenticated and decoded once into a bounded image. */
     public record ReferenceImage(BufferedImage image) {
         public ReferenceImage {
@@ -110,23 +116,30 @@ public final class ReferenceImageStore implements AutoCloseable {
     private final Transport transport;
     private final HostResolver resolver;
     private final Set<String> allowedHosts;
+    private final Clock clock;
 
     /** Creates a store with the default pinned-TLS transport, DNS resolution, and host allowlist. */
     public ReferenceImageStore(Path cacheDir) {
-        this(cacheDir, null, null, null);
+        this(cacheDir, null, null, null, System::nanoTime);
     }
 
     /**
      * Creates a store over injected seams (transport, resolver, host allowlist); package-private
-     * so deterministic tests never touch the network. The cache lives in a fresh, owner-only,
-     * randomly named session directory under {@code cacheDir}.
+     * so deterministic tests never touch the network.
      */
     ReferenceImageStore(Path cacheDir, Transport transport, HostResolver resolver,
             Set<String> allowedHosts) {
+        this(cacheDir, transport, resolver, allowedHosts, System::nanoTime);
+    }
+
+    /** Package-private seam with an injected clock for deterministic deadline tests. */
+    ReferenceImageStore(Path cacheDir, Transport transport, HostResolver resolver,
+            Set<String> allowedHosts, Clock clock) {
         this.cacheDir = createSessionDir(cacheDir);
         this.transport = transport != null ? transport : this::httpsGet;
         this.resolver = resolver != null ? resolver : this::resolveAll;
         this.allowedHosts = allowedHosts != null ? allowedHosts : DEFAULT_ALLOWED_HOSTS;
+        this.clock = clock;
     }
 
     /**
@@ -457,68 +470,28 @@ public final class ReferenceImageStore implements AutoCloseable {
         int b1 = b[1] & 0xFF;
         int b2 = b[2] & 0xFF;
         int b3 = b[3] & 0xFF;
-        boolean allZero = true;
-        for (byte value : b) {
-            if (value != 0) {
-                allZero = false;
-                break;
-            }
+        // Positive gate: only 2000::/3 global unicast is eligible; everything else (loopback,
+        // link/site-local, ULA, multicast, IPv4-mapped, NAT64 including local-use 64:ff9b:1::/48,
+        // discard, and all unallocated/reserved space such as 4000::/1) fails.
+        if ((b0 & 0xE0) != 0x20) {
+            return false;
         }
-        if (allZero) {
-            return false; // ::
+        // IANA special-purpose and non-global registrations inside 2000::/3; conservative
+        // rejection: the whole 2001::/23 IETF protocol-assignment block is refused (covers
+        // Teredo 2001::/32, benchmarking 2001:2::/48, AMT 2001:3::/32, AS112 2001:4:112::/48,
+        // ORCHID 2001:10::/28, ORCHIDv2 2001:20::/28, and the rest).
+        if (b1 == 0x01 && b2 <= 1) {
+            return false;
         }
-        boolean loopback = b0 == 0 && b[15] == 1;
-        for (int i = 1; loopback && i < 15; i++) {
-            if (b[i] != 0) {
-                loopback = false;
-            }
+        if (b1 == 0x01 && b2 == 0x0D && b3 == 0xB8) {
+            return false; // documentation 2001:db8::/32
         }
-        if (loopback) {
-            return false; // ::1
-        }
-        if (b0 == 0 && b1 == 0 && b2 == 0 && b3 == 0 && b[4] == 0 && b[5] == 0 && b[6] == 0
-                && b[7] == 0 && b[8] == 0 && b[9] == 0 && (b[10] & 0xFF) == 0xFF
-                && (b[11] & 0xFF) == 0xFF) {
-            return false; // IPv4-mapped ::ffff:0:0/96
-        }
-        if (b1 == 0x64 && b2 == 0xFF && b3 == 0x9B && b[4] == 0 && b[5] == 0 && b[6] == 0
-                && b[7] == 0 && b[8] == 0 && b[9] == 0 && b[10] == 0 && b[11] == 0) {
-            return false; // NAT64 well-known prefix 64:ff9b::/96
-        }
-        if (b0 == 0x01 && b1 == 0 && b2 == 0 && b3 == 0) {
-            return false; // discard-only 100::/64
-        }
-        if (b0 == 0xFF) {
-            return false; // multicast ff00::/8
-        }
-        if ((b0 & 0xFE) == 0xFC) {
-            return false; // unique-local fc00::/7
-        }
-        if (b0 == 0xFE && (b1 & 0xC0) == 0x80) {
-            return false; // link-local fe80::/10
-        }
-        if (b0 == 0xFE && (b1 & 0xC0) == 0xC0) {
-            return false; // site-local fec0::/10
-        }
-        if (b0 == 0x20 && b1 == 0x02) {
+        if (b1 == 0x02) {
             return false; // 6to4 2002::/16
         }
-        if (b0 == 0x20 && b1 == 0x01) {
-            if (b2 == 0 && b3 == 0) {
-                return false; // Teredo 2001::/32
-            }
-            if (b2 == 0 && b3 == 2) {
-                return false; // benchmarking 2001:2::/48
-            }
-            if (b2 == 0 && (b3 & 0xF0) == 0x10) {
-                return false; // ORCHID 2001:10::/28
-            }
-            if (b2 == 0 && (b3 & 0xF0) == 0x20) {
-                return false; // ORCHIDv2 2001:20::/28
-            }
-            if (b2 == 0x0D && b3 == 0xB8) {
-                return false; // documentation 2001:db8::/32
-            }
+        if (b0 == 0x26 && b1 == 0x20 && b2 == 0x00 && b3 == 0x4F && b[4] == (byte) 0x80
+                && b[5] == 0) {
+            return false; // direct-delegation AS112 anycast 2620:4f:8000::/48
         }
         if (b0 == 0x3F && (b1 & 0xF0) == 0xF0) {
             return false; // documentation 3fff::/20
@@ -553,14 +526,19 @@ public final class ReferenceImageStore implements AutoCloseable {
 
     // ---------------------------------------------------------- pinned TLS transport
 
-    /** Connects to the approved addresses in order, never resolving the host itself. */
+    /**
+     * Connects to the approved addresses in order, never resolving the host itself. One
+     * absolute monotonic deadline covers connect, TLS handshake, headers, and body across
+     * address retries; each blocking read re-derives the remaining budget.
+     */
     private Response httpsGet(URI uri, List<InetAddress> approved) throws IOException {
+        long deadline = clock.nanoTime() + REQUEST_TIMEOUT.toNanos();
         int port = uri.getPort() == -1 ? 443 : uri.getPort();
         String host = uri.getHost();
         IOException lastFailure = null;
         for (InetAddress address : approved) {
             try {
-                return tlsExchange(uri, host, address, port);
+                return tlsExchange(uri, host, address, port, deadline);
             } catch (IOException failure) {
                 lastFailure = failure;
             }
@@ -570,8 +548,8 @@ public final class ReferenceImageStore implements AutoCloseable {
     }
 
     /** One HTTPS exchange over a socket connected to the pinned address with TLS identity. */
-    private Response tlsExchange(URI uri, String host, InetAddress address, int port)
-            throws IOException {
+    private Response tlsExchange(URI uri, String host, InetAddress address, int port,
+            long deadline) throws IOException {
         SSLContext context;
         try {
             context = SSLContext.getDefault();
@@ -580,8 +558,10 @@ public final class ReferenceImageStore implements AutoCloseable {
         }
         Socket socket = new Socket();
         try {
-            socket.connect(new InetSocketAddress(address, port), (int) CONNECT_TIMEOUT.toMillis());
-            socket.setSoTimeout((int) REQUEST_TIMEOUT.toMillis());
+            long remaining = remainingMillis(deadline);
+            socket.connect(new InetSocketAddress(address, port),
+                    (int) Math.min(CONNECT_TIMEOUT.toMillis(), remaining));
+            socket.setSoTimeout(remainingMillis(deadline));
             SSLSocket ssl = (SSLSocket) context.getSocketFactory()
                     .createSocket(socket, host, port, true);
             try {
@@ -591,8 +571,9 @@ public final class ReferenceImageStore implements AutoCloseable {
                     parameters.setServerNames(List.of(new SNIHostName(host)));
                 }
                 ssl.setSSLParameters(parameters);
+                ssl.setSoTimeout(remainingMillis(deadline));
                 ssl.startHandshake();
-                return exchange(ssl, uri, host, port);
+                return exchange(ssl, uri, host, port, deadline);
             } finally {
                 ssl.close();
             }
@@ -601,8 +582,16 @@ public final class ReferenceImageStore implements AutoCloseable {
         }
     }
 
-    /** Writes a bounded HTTP/1.1 request and reads the bounded status, headers, and body. */
-    private static Response exchange(SSLSocket ssl, URI uri, String host, int port)
+    private int remainingMillis(long deadline) throws IOException {
+        long remaining = deadline - clock.nanoTime();
+        if (remaining <= 0) {
+            throw new IOException("exchange deadline exceeded");
+        }
+        return (int) Math.min(Integer.MAX_VALUE, Math.max(1, remaining / 1_000_000));
+    }
+
+    /** Writes a bounded HTTP/1.1 request and parses the bounded response under the deadline. */
+    private Response exchange(SSLSocket ssl, URI uri, String host, int port, long deadline)
             throws IOException {
         String request = "GET " + rawPathAndQuery(uri) + " HTTP/1.1\r\n"
                 + "Host: " + host + (port == 443 ? "" : ":" + port) + "\r\n"
@@ -612,17 +601,29 @@ public final class ReferenceImageStore implements AutoCloseable {
         OutputStream out = ssl.getOutputStream();
         out.write(request.getBytes(StandardCharsets.US_ASCII));
         out.flush();
+        InputStream in = new DeadlineInputStream(
+                new BufferedInputStream(ssl.getInputStream()), ssl, clock, deadline);
+        return parseResponse(in);
+    }
 
-        InputStream in = ssl.getInputStream();
+    /**
+     * Parses one HTTP/1.1 response: status line, case-insensitive headers, and a body that is
+     * either Content-Length bounded, read to EOF, or a compliant chunked stream. Conflicting or
+     * malformed Content-Length values, Transfer-Encoding combined with Content-Length, and any
+     * transfer-coding chain other than a single terminal {@code chunked} are rejected, so
+     * request-smuggling framing cannot pass. Package-private for deterministic framing tests.
+     */
+    static Response parseResponse(InputStream in) throws IOException {
         ByteArrayOutputStream headerBytes = new ByteArrayOutputStream();
         String statusLine = readHeaderLine(in, headerBytes);
         if (statusLine == null) {
-            throw new IOException("empty HTTP response from " + host);
+            throw new IOException("empty HTTP response");
         }
         int status = parseStatus(statusLine);
         String contentType = "";
         String location = "";
-        long contentLength = -1;
+        List<String> contentLengths = new ArrayList<>();
+        List<String> transferEncodings = new ArrayList<>();
         String line;
         while ((line = readHeaderLine(in, headerBytes)) != null && !line.isEmpty()) {
             int colon = line.indexOf(':');
@@ -634,27 +635,99 @@ public final class ReferenceImageStore implements AutoCloseable {
             switch (name) {
                 case "content-type" -> contentType = value;
                 case "location" -> location = value;
-                case "content-length" -> {
-                    try {
-                        contentLength = Long.parseLong(value);
-                    } catch (NumberFormatException malformed) {
-                        // treat an unparseable content-length as absent and read to EOF
-                    }
-                }
+                case "content-length" -> contentLengths.add(value);
+                case "transfer-encoding" -> transferEncodings.add(value);
                 default -> { }
             }
         }
         byte[] body;
-        if (contentLength >= 0) {
-            if (contentLength > MAX_BYTES) {
-                throw new IOException("declared content-length " + contentLength
-                        + " exceeds the " + MAX_BYTES + " byte cap");
+        if (!transferEncodings.isEmpty()) {
+            if (!contentLengths.isEmpty()) {
+                throw new IOException("Transfer-Encoding and Content-Length both present");
             }
-            body = readExactly(in, (int) contentLength);
+            // Accept only a single terminal "chunked" coding with no other codings; anything
+            // else (gzip chains, duplicate TE fields, non-terminal chunked) is unsupported.
+            String combined = String.join(",", transferEncodings);
+            if (!combined.trim().equalsIgnoreCase("chunked")) {
+                throw new IOException("unsupported Transfer-Encoding: " + combined);
+            }
+            body = readChunkedBody(in);
         } else {
-            body = readBounded(in);
+            long contentLength = -1;
+            for (String value : contentLengths) {
+                long parsed;
+                try {
+                    parsed = Long.parseLong(value);
+                } catch (NumberFormatException failure) {
+                    throw new IOException("malformed Content-Length: " + value, failure);
+                }
+                if (contentLength != -1 && parsed != contentLength) {
+                    throw new IOException("conflicting Content-Length values");
+                }
+                contentLength = parsed;
+            }
+            if (contentLength >= 0) {
+                if (contentLength > MAX_BYTES) {
+                    throw new IOException("declared content-length " + contentLength
+                            + " exceeds the " + MAX_BYTES + " byte cap");
+                }
+                body = readExactly(in, (int) contentLength);
+            } else {
+                body = readBounded(in);
+            }
         }
         return new Response(status, contentType, location, body);
+    }
+
+    /**
+     * Reads a chunked transfer body: hex chunk sizes (with optional chunk extensions), data,
+     * CRLF terminators, and a bounded trailer section, with a total size cap of
+     * {@code MAX_BYTES}. Canonical references never use chunked; the decoder exists so an
+     * unexpected chunked response is still parsed under the same framing bounds instead of
+     * being misread.
+     */
+    private static byte[] readChunkedBody(InputStream in) throws IOException {
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        while (true) {
+            String sizeLine = readBoundedLine(in, MAX_HEADER_LINE);
+            if (sizeLine == null) {
+                throw new IOException("truncated chunked body");
+            }
+            int semicolon = sizeLine.indexOf(';');
+            String sizeToken = (semicolon < 0 ? sizeLine : sizeLine.substring(0, semicolon))
+                    .trim();
+            long chunkSize;
+            try {
+                chunkSize = Long.parseLong(sizeToken, 16);
+            } catch (NumberFormatException failure) {
+                throw new IOException("malformed chunk size: " + sizeLine, failure);
+            }
+            if (chunkSize < 0 || body.size() + chunkSize > MAX_BYTES) {
+                throw new IOException("chunked body exceeds the " + MAX_BYTES + " byte cap");
+            }
+            if (chunkSize == 0) {
+                ByteArrayOutputStream trailerBytes = new ByteArrayOutputStream();
+                String trailer;
+                while ((trailer = readHeaderLine(in, trailerBytes)) != null
+                        && !trailer.isEmpty()) {
+                    // trailers are discarded but bounded by the same header caps
+                }
+                return body.toByteArray();
+            }
+            body.write(readExactly(in, (int) chunkSize));
+            expectChunkTerminator(in);
+        }
+    }
+
+    private static void expectChunkTerminator(InputStream in) throws IOException {
+        int first = in.read();
+        int second = in.read();
+        if (first == '\n') {
+            return; // bare LF tolerated
+        }
+        if (first != '\r' || second != '\n') {
+            throw new IOException("malformed chunk terminator");
+        }
     }
 
     private static String rawPathAndQuery(URI uri) {
@@ -706,23 +779,35 @@ public final class ReferenceImageStore implements AutoCloseable {
             throw new IOException("response headers exceed the " + MAX_HEADER_BYTES
                     + " byte bound");
         }
+        String line = readBoundedLine(in, MAX_HEADER_LINE);
+        if (line == null) {
+            if (headerBytes.size() == 0) {
+                return null; // clean EOF before any header
+            }
+            throw new IOException("truncated HTTP response headers");
+        }
+        headerBytes.write(line.getBytes(StandardCharsets.ISO_8859_1));
+        headerBytes.write('\n');
+        return line;
+    }
+
+    /** Reads one CRLF/LF-terminated line of at most {@code maxLine} bytes; null on clean EOF. */
+    private static String readBoundedLine(InputStream in, int maxLine) throws IOException {
         ByteArrayOutputStream line = new ByteArrayOutputStream();
         while (true) {
             int next = in.read();
             if (next < 0) {
-                if (line.size() == 0 && headerBytes.size() == 0) {
-                    return null; // clean EOF before any header
+                if (line.size() == 0) {
+                    return null;
                 }
-                throw new IOException("truncated HTTP response headers");
+                throw new IOException("truncated HTTP line");
             }
             line.write(next);
-            if (line.size() > MAX_HEADER_LINE) {
-                throw new IOException("HTTP header line exceeds the " + MAX_HEADER_LINE
-                        + " byte bound");
+            if (line.size() > maxLine) {
+                throw new IOException("HTTP line exceeds the " + maxLine + " byte bound");
             }
             if (next == '\n') {
                 String value = line.toString(StandardCharsets.ISO_8859_1);
-                headerBytes.write(line.toByteArray());
                 return value.substring(0, value.length() - 1).replace("\r", "");
             }
         }
@@ -765,36 +850,127 @@ public final class ReferenceImageStore implements AutoCloseable {
         return InetAddress.getAllByName(host);
     }
 
-    /** Creates a fresh, owner-only, randomly named session directory under {@code root}. */
-    private static Path createSessionDir(Path root) {
+    /**
+     * Creates a fresh, owner-only, randomly named session directory. The parent is the
+     * configured cache root only when it is already a real directory (never a pre-planted
+     * symlink at a predictable path, never a file); otherwise the validated OS temp directory
+     * is used. The session's real path is verified to stay inside the parent and to be a real
+     * directory (no-follow identity).
+     */
+    private static Path createSessionDir(Path configuredRoot) {
         try {
-            Files.createDirectories(root);
-            Path realRoot = root.toRealPath();
-            for (int attempt = 0; ; attempt++) {
-                Path session = root.resolve("session-" + Long.toHexString(System.nanoTime())
-                        + "-" + Integer.toHexString(ThreadLocalRandom.current().nextInt()));
-                try {
-                    Files.createDirectory(session,
-                            PosixFilePermissions.asFileAttribute(OWNER_ONLY));
-                    if (!session.toRealPath().startsWith(realRoot)) {
-                        throw new IOException("session dir escapes cache root via symlink: "
-                                + session);
-                    }
-                    return session;
-                } catch (FileAlreadyExistsException collision) {
-                    if (attempt > 8) {
-                        throw collision;
-                    }
-                }
+            Path parent = secureParent(configuredRoot);
+            Path session = Files.createTempDirectory(parent, "libgdx-qualification-",
+                    PosixFilePermissions.asFileAttribute(OWNER_ONLY));
+            Path realParent = parent.toRealPath();
+            if (!Files.isDirectory(session, LinkOption.NOFOLLOW_LINKS)
+                    || !session.toRealPath().startsWith(realParent)) {
+                throw new IOException("session dir identity check failed under " + parent);
             }
+            return session;
         } catch (IOException failure) {
             throw new ReferenceException(ReferenceException.Kind.IO,
-                    "cannot create private cache session under " + root, failure);
+                    "cannot create private cache session under " + configuredRoot, failure);
         }
+    }
+
+    /**
+     * The session parent: the configured cache root once it exists as a real directory (a
+     * symlink or a regular file at that path is refused), falling back to the validated OS
+     * temp directory so a planted root can never redirect the session.
+     */
+    private static Path secureParent(Path configuredRoot) {
+        try {
+            Files.createDirectories(configuredRoot);
+        } catch (IOException ignored) {
+            // fall through to the OS temp
+        }
+        if (Files.isDirectory(configuredRoot, LinkOption.NOFOLLOW_LINKS)) {
+            return configuredRoot;
+        }
+        Path osTemp = Path.of(System.getProperty("java.io.tmpdir"));
+        if (Files.isDirectory(osTemp, LinkOption.NOFOLLOW_LINKS)) {
+            return osTemp;
+        }
+        throw new ReferenceException(ReferenceException.Kind.IO,
+                "no secure cache parent: configured root and OS temp are both unusable");
     }
 
     @Override
     public void close() {
-        // Every connection is request-scoped and closed per exchange; nothing to release.
+        List<IOException> failures = new ArrayList<>();
+        deleteRecursively(cacheDir, failures);
+        if (failures.isEmpty()) {
+            return;
+        }
+        IOException first = failures.get(0);
+        for (int i = 1; i < failures.size(); i++) {
+            first.addSuppressed(failures.get(i));
+        }
+        throw new ReferenceException(ReferenceException.Kind.IO,
+                "failed to clean the session cache " + cacheDir, first);
+    }
+
+    /** Deletes the session tree without following symlinks, aggregating every failure. */
+    private static void deleteRecursively(Path root, List<IOException> failures) {
+        if (!Files.exists(root, LinkOption.NOFOLLOW_LINKS)) {
+            return;
+        }
+        try (var paths = Files.walk(root)) {
+            for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
+                try {
+                    Files.deleteIfExists(path);
+                } catch (IOException failure) {
+                    failures.add(failure);
+                }
+            }
+        } catch (IOException failure) {
+            failures.add(failure);
+        }
+    }
+
+    /**
+     * Enforces the per-exchange deadline on every blocking read by re-deriving the remaining
+     * budget and re-arming the socket read timeout, so a slow trickle cannot extend an exchange
+     * past its absolute deadline. Package-private for deterministic tests.
+     */
+    static final class DeadlineInputStream extends InputStream {
+        private final InputStream delegate;
+        private final Socket socket;
+        private final Clock clock;
+        private final long deadlineNanos;
+
+        DeadlineInputStream(InputStream delegate, Socket socket, Clock clock, long deadlineNanos) {
+            this.delegate = delegate;
+            this.socket = socket;
+            this.clock = clock;
+            this.deadlineNanos = deadlineNanos;
+        }
+
+        @Override
+        public int read() throws IOException {
+            armTimeout();
+            return delegate.read();
+        }
+
+        @Override
+        public int read(byte[] buffer, int offset, int length) throws IOException {
+            armTimeout();
+            return delegate.read(buffer, offset, length);
+        }
+
+        @Override
+        public void close() throws IOException {
+            delegate.close();
+        }
+
+        private void armTimeout() throws IOException {
+            long remaining = deadlineNanos - clock.nanoTime();
+            if (remaining <= 0) {
+                throw new IOException("exchange deadline exceeded");
+            }
+            socket.setSoTimeout((int) Math.min(Integer.MAX_VALUE,
+                    Math.max(1, remaining / 1_000_000)));
+        }
     }
 }

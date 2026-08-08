@@ -2,16 +2,21 @@ package dev.gdx.markup.qualification;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.InetAddress;
+import java.net.Socket;
 import java.net.URI;
 import java.net.UnknownHostException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
@@ -20,6 +25,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HexFormat;
@@ -118,8 +124,12 @@ final class ReferenceImageStoreTest {
 
     private ReferenceImageStore store(ReferenceImageStore.Transport transport,
             FakeResolver resolver, String... allowedHosts) {
-        return new ReferenceImageStore(tempDir.resolve("cache"), transport, resolver,
-                Set.of(allowedHosts));
+        return store(tempDir.resolve("cache"), transport, resolver, allowedHosts);
+    }
+
+    private ReferenceImageStore store(Path root, ReferenceImageStore.Transport transport,
+            FakeResolver resolver, String... allowedHosts) {
+        return new ReferenceImageStore(root, transport, resolver, Set.of(allowedHosts));
     }
 
     private FakeResolver publicResolver() {
@@ -471,9 +481,18 @@ final class ReferenceImageStoreTest {
                 new Case("3fff::1", false),
                 new Case("64:ff9b::1", false),
                 new Case("::ffff:93.184.216.34", false),
+                new Case("64:ff9b:1::1", false),
                 new Case("100::1", false),
+                new Case("2001:1::1", false),
+                new Case("2001:3::1", false),
+                new Case("2001:4:112::1", false),
+                new Case("2620:4f:8000::1", false),
+                new Case("4000::1", false),
+                new Case("5f00::1", false),
                 new Case("2606:4700::1111", true),
-                new Case("2001:4860:4860::8888", true));
+                new Case("2001:4860:4860::8888", true),
+                new Case("2a00:1450:4001:824::200e", true),
+                new Case("2400:cb00:2049:1::c629:d7a2", true));
         for (Case testCase : cases) {
             assertEquals(testCase.globallyRoutable(),
                     ReferenceImageStore.isGloballyRoutable(literal(testCase.literal())),
@@ -774,6 +793,238 @@ final class ReferenceImageStoreTest {
             Files.createSymbolicLink(link, target);
         } catch (IOException | UnsupportedOperationException unavailable) {
             org.junit.jupiter.api.Assumptions.abort("symbolic links unavailable: " + unavailable);
+        }
+    }
+
+    // ---------------------------------------------------------------- HTTP framing
+
+    private static byte[] response(String statusAndHeaders, String body) {
+        return (statusAndHeaders + "\r\n\r\n" + body).getBytes(StandardCharsets.ISO_8859_1);
+    }
+
+    private static ReferenceImageStore.Response parse(String statusAndHeaders, String body)
+            throws IOException {
+        return ReferenceImageStore.parseResponse(
+                new ByteArrayInputStream(response(statusAndHeaders, body)));
+    }
+
+    @Test
+    void parsesContentLengthResponse() throws IOException {
+        ReferenceImageStore.Response parsed = parse(
+                "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 5", "hello");
+        assertEquals(200, parsed.statusCode());
+        assertEquals("image/png", parsed.contentType());
+        assertArrayEquals("hello".getBytes(StandardCharsets.US_ASCII), parsed.body());
+    }
+
+    @Test
+    void parsesChunkedResponseBody() throws IOException {
+        byte[] raw = ("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                + "5\r\nhello\r\n6;ext=1\r\n world\r\n0\r\nX-Trailer: t\r\n\r\n")
+                .getBytes(StandardCharsets.US_ASCII);
+        ReferenceImageStore.Response parsed =
+                ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw));
+        assertArrayEquals("hello world".getBytes(StandardCharsets.US_ASCII), parsed.body());
+    }
+
+    @Test
+    void rejectsTransferEncodingWithContentLength() {
+        byte[] raw = ("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n"
+                + "5\r\nhello\r\n0\r\n\r\n").getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsConflictingContentLengths() {
+        byte[] raw = ("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello")
+                .getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsMalformedContentLength() {
+        byte[] raw = ("HTTP/1.1 200 OK\r\nContent-Length: banana\r\n\r\nhello")
+                .getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsUnsupportedTransferEncodingChain() {
+        byte[] raw = ("HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n")
+                .getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsDuplicateTransferEncodingFields() {
+        byte[] raw = ("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
+                + "Transfer-Encoding: chunked\r\n\r\n").getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsOversizedChunkSizeLine() {
+        String huge = "F".repeat(ReferenceImageStore.MAX_HEADER_LINE + 1);
+        byte[] raw = ("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" + huge
+                + "\r\n0\r\n\r\n").getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsMalformedChunkSize() {
+        byte[] raw = ("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n0\r\n\r\n")
+                .getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsTruncatedChunkedBody() {
+        byte[] raw = ("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhel")
+                .getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsOversizedHeaderLine() {
+        byte[] raw = ("HTTP/1.1 200 OK\r\nX-Filler: "
+                + "a".repeat(ReferenceImageStore.MAX_HEADER_LINE) + "\r\n\r\n")
+                .getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void headerNamesAreCaseInsensitive() throws IOException {
+        ReferenceImageStore.Response parsed = parse(
+                "HTTP/1.1 200 OK\r\nCONTENT-TYPE: image/png\r\nLOCATION: /x.png", "");
+        assertEquals("image/png", parsed.contentType());
+        assertEquals("/x.png", parsed.location());
+    }
+
+    @Test
+    void readsBodyToEofWithoutLength() throws IOException {
+        ReferenceImageStore.Response parsed = parse(
+                "HTTP/1.1 200 OK\r\nContent-Type: image/png", "payload");
+        assertArrayEquals("payload".getBytes(StandardCharsets.US_ASCII), parsed.body());
+    }
+
+    @Test
+    void rejectsContentLengthOverCap() {
+        byte[] raw = ("HTTP/1.1 200 OK\r\nContent-Length: " + (ReferenceImageStore.MAX_BYTES + 1)
+                + "\r\n\r\n").getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsMalformedStatusLine() {
+        byte[] raw = "BOGUS\r\n\r\n".getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    // ---------------------------------------------------------------- deadline
+
+    @Test
+    void deadlineInputStreamAbortsWhenBudgetExhausted() throws IOException {
+        try (Socket socket = new Socket()) {
+            ReferenceImageStore.Clock expired = () -> 2_000_000_000L;
+            try (InputStream in = new ReferenceImageStore.DeadlineInputStream(
+                    new ByteArrayInputStream(new byte[]{1, 2, 3}), socket, expired,
+                    1_000_000_000L)) {
+                IOException failure = assertThrows(IOException.class, in::read);
+                assertTrue(failure.getMessage().contains("deadline"),
+                        "an exhausted budget must abort the exchange before any byte is read");
+            }
+        }
+    }
+
+    @Test
+    void deadlineInputStreamReadsWithinBudget() throws IOException {
+        try (Socket socket = new Socket()) {
+            ReferenceImageStore.Clock fixed = () -> 500_000_000L;
+            try (InputStream in = new ReferenceImageStore.DeadlineInputStream(
+                    new ByteArrayInputStream(new byte[]{42}), socket, fixed, 1_000_000_000L)) {
+                assertEquals(42, in.read());
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- session root and cleanup
+
+    @Test
+    void sessionFallsBackToOsTempWhenConfiguredRootIsSymlink() throws IOException {
+        Path symlinkRoot = tempDir.resolve("cache-symlink");
+        Path target = Files.createDirectories(tempDir.resolve("cache-target"));
+        createSymlinkOrAbort(symlinkRoot, target);
+        try (ReferenceImageStore store =
+                store(symlinkRoot, silentTransport(), publicResolver(), ALLOWED_HOST)) {
+            Path osTemp = Path.of(System.getProperty("java.io.tmpdir")).toRealPath();
+            assertTrue(store.sessionDir().toRealPath().startsWith(osTemp),
+                    "a symlinked configured root must not host the session");
+            assertFalse(store.sessionDir().toRealPath().startsWith(target.toRealPath()),
+                    "the session must never be created through the planted symlink");
+        }
+    }
+
+    @Test
+    void sessionFallsBackToOsTempWhenConfiguredRootIsFile() throws IOException {
+        Path rootFile = tempDir.resolve("cache-file");
+        Files.writeString(rootFile, "not a directory");
+        try (ReferenceImageStore store =
+                store(rootFile, silentTransport(), publicResolver(), ALLOWED_HOST)) {
+            Path osTemp = Path.of(System.getProperty("java.io.tmpdir")).toRealPath();
+            assertTrue(store.sessionDir().toRealPath().startsWith(osTemp),
+                    "a non-directory configured root must not host the session");
+        }
+    }
+
+    @Test
+    void closeDeletesSessionRecursively() throws IOException {
+        Path session;
+        try (ReferenceImageStore store =
+                store(silentTransport(), publicResolver(), ALLOWED_HOST)) {
+            session = store.sessionDir();
+            Files.writeString(session.resolve("ref.png"), "x");
+            Files.createDirectories(session.resolve("sub"));
+            Files.writeString(session.resolve("sub").resolve("other.bin"), "y");
+            assertTrue(Files.exists(session));
+        }
+        assertFalse(Files.exists(session), "close must delete the whole session tree");
+    }
+
+    @Test
+    void closeAggregatesCleanupFailures() throws IOException {
+        ReferenceImageStore store = store(silentTransport(), publicResolver(), ALLOWED_HOST);
+        Path session = store.sessionDir();
+        Files.writeString(session.resolve("ref.png"), "x");
+        try {
+            try {
+                // 0500: the owner can read and list but cannot delete the children.
+                Files.setPosixFilePermissions(session, Set.of(PosixFilePermission.OWNER_READ,
+                        PosixFilePermission.OWNER_EXECUTE));
+            } catch (UnsupportedOperationException unsupported) {
+                org.junit.jupiter.api.Assumptions.abort(
+                        "POSIX permissions unavailable: " + unsupported);
+            }
+            ReferenceException failure = assertThrows(ReferenceException.class, store::close);
+            assertEquals(ReferenceException.Kind.IO, failure.kind());
+        } finally {
+            Files.setPosixFilePermissions(session, Set.of(PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE));
+            try (var paths = Files.walk(session)) {
+                for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
+                    Files.deleteIfExists(path);
+                }
+            }
         }
     }
 }
