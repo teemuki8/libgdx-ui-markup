@@ -49,10 +49,6 @@ object PreviewProcessLauncher {
         return arguments
     }
 
-    /** Launches the preview for one markup file; callers stream stdout for status lines. */
-    fun launch(distribution: Path, ui: Path, css: Path?): Process =
-        ProcessBuilder(buildCommand(distribution, ui, css)).start()
-
     /** Returns the sibling {@code .css} file, or {@code null} when the preview cannot run. */
     fun siblingCss(ui: Path): Path? {
         val sibling = ui.resolveSibling(ui.fileName.toString()

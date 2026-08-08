@@ -1,19 +1,15 @@
 package dev.gdx.markup.idea
 
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
 import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.FlowLayout
-import java.io.BufferedReader
 import java.io.IOException
-import java.io.InputStreamReader
-import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicLong
 import javax.swing.JButton
 import javax.swing.JLabel
 import javax.swing.JPanel
@@ -24,16 +20,38 @@ import javax.swing.SwingUtilities
  * "Markup Preview" tool window: launches the preview process for the XML file open in the
  * editor, streams bounded {@code markup-status} lines to a status label, and offers
  * Launch / Reload / Watch. All process and file work happens off the EDT; only the status
- * label updates on it.
+ * label updates on it. The child process is owned by [owner], which the tool-window factory
+ * registers with the project's `Disposer`; [dispose] stops the watcher so project close
+ * leaves no watcher, child, or reader thread behind.
  */
 class MarkupPreviewPanel(private val project: Project, private val toolWindow: ToolWindow) :
-    JPanel(BorderLayout()) {
+    JPanel(BorderLayout()), Disposable {
     private val status = JLabel("not launched", JLabel.LEFT)
     private val launchButton = JButton("Launch")
     private val reloadButton = JButton("Reload").apply { isEnabled = false }
     private val watchToggle = JToggleButton("Watch")
     private val debouncer = WatchDebouncer(300_000_000L)
-    private val generation = AtomicLong()
+
+    /**
+     * Owns the preview child process for this panel. Created by the panel (it knows the status
+     * consumers) and registered with the project by [MarkupPreviewToolWindowFactory].
+     */
+    val owner: PreviewProcessOwner = PreviewProcessOwner(
+        onStatus = { parsed ->
+            SwingUtilities.invokeLater { showStatus(parsed) }
+        },
+        onProse = {
+            // non-status stdout (LWJGL noise etc.) is not shown
+        },
+        onStderr = { line ->
+            SwingUtilities.invokeLater { setStatus(line.take(MAX_STATUS_LENGTH), false) }
+        },
+        onExit = { cause ->
+            if (cause == ExitCause.SELF) {
+                SwingUtilities.invokeLater { setStatus("preview exited", false) }
+            }
+        },
+    )
 
     init {
         preferredSize = Dimension(360, 220)
@@ -73,32 +91,9 @@ class MarkupPreviewPanel(private val project: Project, private val toolWindow: T
             setStatus("no sibling .css file for ${ui.fileName}", false)
             return
         }
-        stopProcess()
-        val current = generation.incrementAndGet()
         setStatus("launching ${ui.fileName}…", false)
-        try {
-            val process = PreviewProcessLauncher.launch(distribution, ui, css)
-            activeProcess = process
-            reloadButton.isEnabled = true
-            Thread.ofVirtual().name("markup-status-reader").start {
-                try {
-                    BufferedReader(InputStreamReader(
-                        process.inputStream, StandardCharsets.UTF_8)).useLines { lines ->
-                        for (line in lines) {
-                            if (generation.get() != current) {
-                                return@useLines
-                            }
-                            val parsed = MarkupStatusLineParser.parse(line) ?: continue
-                            SwingUtilities.invokeLater { showStatus(parsed) }
-                        }
-                    }
-                } catch (ignored: IOException) {
-                    // process died; the watcher or user relaunches
-                }
-            }
-        } catch (failure: IOException) {
-            setStatus("failed to launch preview: ${failure.message}", false)
-        }
+        owner.replace(PreviewProcessLauncher.buildCommand(distribution, ui, css))
+        reloadButton.isEnabled = true
     }
 
     private fun showStatus(parsed: MarkupStatusLine) {
@@ -166,21 +161,9 @@ class MarkupPreviewPanel(private val project: Project, private val toolWindow: T
         watcherThread = null
     }
 
-    private var activeProcess: Process? = null
-
-    private fun stopProcess() {
-        val process = activeProcess ?: return
-        activeProcess = null
-        try {
-            process.outputStream.close()
-        } catch (ignored: IOException) {
-            // stream already closed
-        }
-        if (process.isAlive) {
-            if (!process.waitFor(2, TimeUnit.SECONDS)) {
-                process.destroy()
-            }
-        }
+    /** Stops the file watcher; the process owner is disposed through its own registration. */
+    override fun dispose() {
+        stopWatcher()
     }
 
     private companion object {
