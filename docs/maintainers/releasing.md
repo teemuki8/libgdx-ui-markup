@@ -111,25 +111,34 @@ re-checked against the committed keyring and trust policy:
    The task set is the full CI/release resolution surface from Task 2: settings and project
    plugin graphs (`help`), every resolvable configuration in every module (`resolveAndLockAll`),
    the IDEA plugin build and its unit tests, the preview distribution, Javadocs, and the release
-   publication tooling. `--export-keys` imports any new signer keys into the committed keyring;
-   the committed keyring and file-exact trust policy stay in force for the whole bootstrap, so
-   nothing new is trusted without a signature from a known key. If the bootstrap fails on
-   keyserver access, import the new keys from a keyserver manually into
+   publication tooling.
+
+   `--write-verification-metadata` is an observation/bootstrap mode, not a certification: it
+   records whatever the resolution observes — checksums, trust scoping (possibly group-wide,
+   regex, or coordinate-wide), and signer keys (`--export-keys` imports newly observed keys
+   into the committed keyring). It does NOT preserve normal fail-closed trust and does NOT
+   validate provenance during the run; an artifact or key observed in this mode is recorded,
+   not certified. The generated output is therefore UNTRUSTED until the independent review in
+   step 3 completes — never commit based only on a successful generation. If the bootstrap
+   fails on keyserver access, import the new keys from a keyserver manually into
    `gradle/verification-keyring.gpg` and re-run. If it fails during toolchain resolution
    (the intellij-platform plugin reads `JvmVendorSpec.IBM_SEMERU`, which Gradle 9.6 removed),
    point toolchain detection at existing JDK installations with the system property
    `-Dorg.gradle.java.installations.paths=<jdk21-home>,<jdk25-home>` (use `-D`, not `-P` —
    the project-property form is deprecated in Gradle 9.6).
-3. Review the generated diff: every new coordinate, checksum, and signer key must come from the
-   intended upgrade and a trusted publisher, with each key scoped to its exact
-   group/module/version/file entries — no wildcard trust, no `trusted-artifacts`, no
-   `ignored-keys`. **Never commit before this provenance and key/file-scope review.** The
-   generator may emit group-wide `<trusting group="..."/>` entries for keys it already knows;
-   narrow each one to file-exact entries for exactly the artifacts the bootstrap observed, and
-   record a matching checksum component for every trusted file (the committed metadata keeps
-   `trusting` a strict subset of checksummed components — an invariant CI-side audits assume).
-   The bootstrap also completes coverage for candidate metadata the locked resolution never
-   materializes (conflict-resolution losers such as `junit-jupiter-engine-5.10.1` in the IDEA
+3. Review the generated diff. The bootstrap output is untrusted until this review passes; for
+   every new coordinate, checksum, and signer key, independently confirm: (a) provenance — the
+   artifact comes from the publisher-controlled repository or an attributable mirror (re-fetch
+   from an independent channel and compare the checksum); (b) signer identity — the key
+   belongs to the publisher, the fingerprint is correct, and it is scoped to exactly the
+   group/module/version/file entries it signs; (c) checksum coverage — every trusted file has a
+   recorded checksum, keeping `trusting` a strict subset of checksummed components (an
+   invariant CI-side audits assume); (d) no wildcard trust — narrow any group-wide, regex, or
+   coordinate-wide `<trusting>` entries the generator emitted to file-exact entries for exactly
+   the artifacts the bootstrap observed; and (e) no `trusted-artifacts` or `ignored-keys`
+   bypasses. **Never commit based only on a successful generation.** The bootstrap also
+   completes coverage for candidate metadata the locked resolution never materializes
+   (conflict-resolution losers such as `junit-jupiter-engine-5.10.1` in the IDEA
    test-runtime configuration); include those file-exact entries so a later `--write-locks`
    run works out of the box.
 4. Commit the lockfiles, `gradle/verification-metadata.xml`, and keyring changes together so the
