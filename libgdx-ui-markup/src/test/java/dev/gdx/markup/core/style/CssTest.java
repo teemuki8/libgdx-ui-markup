@@ -323,6 +323,21 @@ final class CssTest {
     }
 
     @Test
+    void overlongSelectorWithEdgeControlCharactersIsTooLarge() {
+        // String.strip() keeps ISO controls that are not whitespace (verified: NUL survives
+        // strip), so the pre-pass must count them: a 258-char part with edge NULs is over the
+        // limit and must fail TOO_LARGE, not fall through to a split-time STYLE_ERROR.
+        String edgeOverlong = "\u0000" + "x".repeat(CssParser.MAX_SELECTOR_LENGTH) + "\u0000";
+        MarkupException failure = assertThrows(MarkupException.class,
+                () -> parser.parse(edgeOverlong + " { color: red; }"));
+        assertEquals(MarkupException.Kind.TOO_LARGE, failure.kind(),
+                "edge control characters count toward the selector length");
+        assertEquals(1, failure.line());
+        assertEquals(1, failure.column());
+        assertTrue(failure.getMessage().contains("selector"));
+    }
+
+    @Test
     void excessiveCommaGroupIsTooLarge() {
         String group = String.join(",", Collections.nCopies(
                 CssParser.MAX_SELECTORS_PER_GROUP + 1, "button"));

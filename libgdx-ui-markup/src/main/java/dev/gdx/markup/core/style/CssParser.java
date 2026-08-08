@@ -225,7 +225,9 @@ public final class CssParser {
      * One pass over the comma-separated selector text that counts parts and validates each
      * trimmed part's length against {@link #MAX_SELECTOR_LENGTH} without allocating split
      * collections, so an overlong selector is rejected before {@code split} runs. Trimming
-     * mirrors {@link String#strip()} (whitespace plus ISO control characters).
+     * matches {@link String#strip()} exactly: only {@link Character#isWhitespace} characters
+     * are removed (ISO controls that are not whitespace, such as NUL, survive strip and count
+     * toward the length).
      */
     private static int validateSelectorParts(String text, int line, int column) {
         int partStart = 0;
@@ -235,13 +237,11 @@ public final class CssParser {
         while (index <= length) {
             if (index == length || text.charAt(index) == ',') {
                 int start = partStart;
-                while (start < index && (Character.isWhitespace(text.charAt(start))
-                        || Character.isISOControl(text.charAt(start)))) {
+                while (start < index && Character.isWhitespace(text.charAt(start))) {
                     start++;
                 }
                 int end = index;
-                while (end > start && (Character.isWhitespace(text.charAt(end - 1))
-                        || Character.isISOControl(text.charAt(end - 1)))) {
+                while (end > start && Character.isWhitespace(text.charAt(end - 1))) {
                     end--;
                 }
                 if (end - start > MAX_SELECTOR_LENGTH) {
@@ -447,15 +447,15 @@ public final class CssParser {
 
         /** Returns the index of the next {@code target}, skipping comments/whitespace; -1 at end. */
         int indexOfSkippingComments(char target) {
-            return scanTo(target, '\0');
+            return scanTo(target, false, '\0');
         }
 
         /** Returns the index of the next of {@code first}/{@code second}; -1 at end. */
         int indexOfSkippingAnyOf(char first, char second) {
-            return scanTo(first, second);
+            return scanTo(first, true, second);
         }
 
-        private int scanTo(char first, char second) {
+        private int scanTo(char first, boolean matchSecond, char second) {
             while (!atEnd()) {
                 char c = source.charAt(position);
                 if (c == '\n') {
@@ -471,7 +471,7 @@ public final class CssParser {
                         position++;
                         column++;
                     }
-                } else if (c == first || c == second) {
+                } else if (c == first || (matchSecond && c == second)) {
                     return position;
                 } else {
                     position++;
