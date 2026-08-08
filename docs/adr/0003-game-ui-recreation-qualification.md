@@ -52,11 +52,15 @@ real game UI screenshots.
   and the dialect's layout attributes against real, recognizable game UIs.
 - Copyrighted screenshots never enter the repository; provenance and license notes live in the
   manifest next to the pinned URLs.
-- The four entries (palisade skirmish ~0.32, Hades boon panel ~0.40, Slay the Spire shop
-  ~0.34, Battle for Wesnoth gameplay ~0.19 dilated-Dice) establish the baselines. The full
-  pipeline — resolve reference, render, measure, gate, and re-calibrate — runs unattended;
-  the only committed inputs are the corpus manifest, the recreation markup, and the calibrated
-  thresholds.
+- The four entries (palisade skirmish ~0.251, Hades boon panel ~0.369, Slay the Spire shop
+  ~0.333, Battle for Wesnoth gameplay ~0.192 dilated-Dice, thresholds 0.163/0.240/0.216/0.125)
+  establish the baselines. Baselines are rendering-contract dependent: the deterministic
+  screenshot work (fixed clear color, top-left normalized upright output) changed the
+  recreation renderings, so on 2026-08-08 the corpus was re-calibrated (palisade 0.205→0.163,
+  hades 0.258→0.240, sts 0.218→0.216, wesnoth 0.121→0.125) with the strict gate passing twice.
+  The full pipeline — resolve reference, render, measure, gate, and re-calibrate — runs
+  unattended; the only committed inputs are the corpus manifest, the recreation markup, and
+  the calibrated thresholds.
 - The qualification test task declares the corpus directory as an input, so recreation edits
   and threshold changes always re-trigger the test locally instead of Gradle serving a stale
   up-to-date result.
