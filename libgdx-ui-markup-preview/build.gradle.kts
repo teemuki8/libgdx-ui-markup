@@ -2,18 +2,6 @@ plugins {
     application
 }
 
-// The platform command builder (PreviewJvmCommand) is shared source: the preview module
-// compiles it from src/shared/java at Java 25 (it ships in the preview distribution), and
-// the IDEA module compiles the same file with its own Java 21 toolchain. It must stay
-// Java-21-compatible and dependency-free.
-sourceSets {
-    main {
-        java.srcDir("src/shared/java")
-    }
-}
-
-val previewIsMac = System.getProperty("os.name", "").lowercase().contains("mac")
-
 dependencies {
     implementation(project(":libgdx-ui-markup"))
     implementation(project(":libgdx-ui-markup-harness"))
@@ -32,15 +20,49 @@ dependencies {
 
 application {
     mainClass.set("dev.gdx.markup.preview.PreviewApp")
-    // macOS preview/GL children need -XstartOnFirstThread before the classpath/main; the
-    // Gradle-launched preview and the installDist scripts are production launch sites, so
-    // they carry the same platform flag the centralized builder injects everywhere else.
-    applicationDefaultJvmArgs = listOf("--enable-native-access=ALL-UNNAMED") +
-        if (previewIsMac) listOf("-XstartOnFirstThread") else emptyList()
+    applicationDefaultJvmArgs = listOf("--enable-native-access=ALL-UNNAMED")
 }
 
 tasks.named<JavaExec>("run") {
     workingDir = rootProject.projectDir
+    // Dev-only launch executes on the build host; macOS hosts need the first-thread flag.
+    if (System.getProperty("os.name", "").lowercase().contains("mac")) {
+        jvmArgs("-XstartOnFirstThread")
+    }
+}
+
+// The macOS-only -XstartOnFirstThread flag must be selected at RUNTIME by the generated Unix
+// launcher (a distribution built on Linux can run on macOS), and must NEVER appear in the
+// Windows launcher. The Gradle script template has no conditional option support, so patch
+// the generated Unix script right after DEFAULT_JVM_OPTS; the script already sets a
+// `darwin` flag from `uname` earlier.
+val unixLauncherFile = layout.buildDirectory.file("scripts/libgdx-ui-markup-preview")
+tasks.named("startScripts") {
+    val macBlock = """
+        if [ "${'$'}darwin" = "true" ]; then
+            DEFAULT_JVM_OPTS="${'$'}DEFAULT_JVM_OPTS -XstartOnFirstThread"
+        fi
+    """.trimIndent()
+    doLast {
+        val marker = "DEFAULT_JVM_OPTS='\"--enable-native-access=ALL-UNNAMED\"'"
+        val script = unixLauncherFile.get().asFile
+        val patched = script.readText()
+        require(patched.contains(marker)) {
+            "unexpected start script template; the DEFAULT_JVM_OPTS marker moved: $marker"
+        }
+        if (!patched.contains("-XstartOnFirstThread")) {
+            script.writeText(patched.replace(marker, marker + "\n" + macBlock))
+        }
+    }
+}
+
+tasks.named<Test>("test") {
+    // Script-content tests read the generated launchers.
+    dependsOn(tasks.named("startScripts"))
+    systemProperty("preview.unixScript",
+        layout.buildDirectory.file("scripts/libgdx-ui-markup-preview").get().asFile.absolutePath)
+    systemProperty("preview.windowsScript",
+        layout.buildDirectory.file("scripts/libgdx-ui-markup-preview.bat").get().asFile.absolutePath)
 }
 
 tasks.named<Sync>("installDist") {

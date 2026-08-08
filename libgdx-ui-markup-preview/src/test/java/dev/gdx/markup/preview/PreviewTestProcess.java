@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -54,11 +55,44 @@ final class PreviewTestProcess implements AutoCloseable {
     }
 
     /**
+     * Extra JVM flags the child requires on the current platform before any other option.
+     * macOS forbids GLFW/AppKit window creation unless the main thread is the process's first
+     * thread, so every child (including the {@code gl-probe}) must run with
+     * {@code -XstartOnFirstThread} there; other platforms need nothing extra. The same
+     * platform-flag contract is pinned by the production launcher
+     * ({@code PreviewProcessLauncher.platformJvmFlags}).
+     */
+    static List<String> childJvmFlags(String osName) {
+        if (osName != null && osName.toLowerCase(Locale.ROOT).contains("mac")) {
+            return List.of("-XstartOnFirstThread");
+        }
+        return List.of();
+    }
+
+    /**
+     * Assembles the child JVM command: {@code java <platform-flags> <jvmFlags> -cp
+     * <classpath> <mainClass> <programArgs...>}. Platform flags (macOS
+     * {@code -XstartOnFirstThread} only) are inserted before {@code -cp} and the main class,
+     * in the deterministic position the JVM requires. Package-visible for deterministic
+     * command-order tests.
+     */
+    static List<String> command(String javaBin, List<String> jvmFlags, String classpath,
+            String mainClass, List<String> programArgs, String osName) {
+        List<String> command = new ArrayList<>();
+        command.add(javaBin);
+        command.addAll(childJvmFlags(osName));
+        command.addAll(jvmFlags);
+        command.add("-cp");
+        command.add(classpath);
+        command.add(mainClass);
+        command.addAll(programArgs);
+        return command;
+    }
+
+    /**
      * Launches one child scenario JVM on the current test classpath ({@code java.home},
-     * {@code java.class.path}) and display environment. The command is built by the shared
-     * {@link PreviewJvmCommand} so the GL probe and every scenario child receive the
-     * same platform JVM flags (e.g. macOS {@code -XstartOnFirstThread}) in the same
-     * deterministic position.
+     * {@code java.class.path}) and display environment, with the platform JVM flags (e.g.
+     * macOS {@code -XstartOnFirstThread}) before the classpath and the main class.
      */
     static PreviewTestProcess launch(String scenario, Path ui, Path css, Path png,
             Duration deadline) throws IOException {
@@ -76,8 +110,8 @@ final class PreviewTestProcess implements AutoCloseable {
             programArgs.add("--png");
             programArgs.add(png.toString());
         }
-        List<String> command = PreviewJvmCommand.build(
-                PreviewJvmCommand.javaBin(),
+        List<String> command = command(
+                Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                 List.of("--enable-native-access=ALL-UNNAMED"),
                 System.getProperty("java.class.path"),
                 PreviewTestChild.class.getName(),

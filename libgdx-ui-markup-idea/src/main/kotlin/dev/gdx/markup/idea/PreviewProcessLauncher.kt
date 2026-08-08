@@ -33,13 +33,9 @@ object PreviewProcessLauncher {
     /**
      * Command construction with an explicit OS name so the macOS
      * {@code -XstartOnFirstThread} placement is testable deterministically on any host.
-     * The command is assembled by the shared {@code PreviewJvmCommand} — the single platform
-     * command builder also used by the preview test/GL-probe child launcher — invoked here
-     * through its stable static API (the shared Java source cannot be linked directly: the
-     * IDEA module compiles at Java 21 against the JBR while the preview module compiles at
-     * Java 25, so Kotlin's Java-source linking does not apply; the class ships on this
-     * module's runtime classpath from the same shared source compiled with this module's
-     * toolchain).
+     * The macOS-only flag is selected at construction time and placed before the classpath
+     * and the main class; the same platform-flag contract is pinned by the preview test
+     * helper ({@code PreviewTestProcess}) so the GL probe and the production launch agree.
      */
     internal fun buildCommand(distribution: Path, ui: Path, css: Path?, osName: String): List<String> {
         val java = Path.of(
@@ -47,31 +43,61 @@ object PreviewProcessLauncher {
         // The classpath wildcard is JVM syntax, not a filesystem path: Path.resolve("*")
         // is illegal on Windows, so the glob is appended as a plain string.
         val classpath = distribution.resolve("lib").toString() + File.separatorChar + "*"
-        val arguments = mutableListOf(
+        val programArgs = mutableListOf(
             "--ui",
             ui.toAbsolutePath().toString(),
         )
         if (css != null) {
-            arguments += "--css"
-            arguments += css.toAbsolutePath().toString()
+            programArgs += "--css"
+            programArgs += css.toAbsolutePath().toString()
         }
-        val builder = Class.forName("dev.gdx.markup.preview.PreviewJvmCommand")
-        val build = builder.getMethod(
-            "build",
-            String::class.java, List::class.java, String::class.java,
-            String::class.java, List::class.java, String::class.java,
-        )
-        @Suppress("UNCHECKED_CAST")
-        return build.invoke(
-            null,
+        return buildCommand(
             java,
             listOf("--enable-native-access=ALL-UNNAMED"),
             classpath,
             MAIN_CLASS,
-            arguments,
+            programArgs,
             osName,
-        ) as List<String>
+        )
     }
+
+    /**
+     * Assembles the child JVM command: {@code java <platform-flags> <jvmFlags> -cp
+     * <classpath> <mainClass> <programArgs...>}. Platform flags (macOS
+     * {@code -XstartOnFirstThread} only) are inserted before {@code -cp} and the main class,
+     * in the deterministic position the JVM requires.
+     */
+    internal fun buildCommand(
+        java: String,
+        jvmFlags: List<String>,
+        classpath: String,
+        mainClass: String,
+        programArgs: List<String>,
+        osName: String,
+    ): List<String> {
+        val command = mutableListOf<String>()
+        command += java
+        command += platformJvmFlags(osName)
+        command += jvmFlags
+        command += "-cp"
+        command += classpath
+        command += mainClass
+        command += programArgs
+        return command
+    }
+
+    /**
+     * Extra JVM flags a preview/GL child requires on {@code osName} before any other option.
+     * macOS forbids GLFW/AppKit window creation unless the main thread is the process's first
+     * thread, so every preview child must run with {@code -XstartOnFirstThread} there; other
+     * platforms need nothing extra.
+     */
+    internal fun platformJvmFlags(osName: String?): List<String> =
+        if (osName != null && osName.lowercase().contains("mac")) {
+            listOf("-XstartOnFirstThread")
+        } else {
+            emptyList()
+        }
 
     /** Returns the sibling {@code .css} file, or {@code null} when the preview cannot run. */
     fun siblingCss(ui: Path): Path? {
