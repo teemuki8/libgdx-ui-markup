@@ -6,9 +6,10 @@ import java.util.Objects;
 /**
  * Typed diagnostic for the authenticated remote-reference pipeline. Follows the
  * {@code MarkupException.Kind} convention: callers branch on {@link #kind()}, never on message
- * text. Policy, identity, cache, decode, and transport failures raise this exception so the
- * qualification fails loudly instead of silently skipping; {@code Optional.empty} from
- * {@link ReferenceImageStore#reference} is reserved for references that are explicitly absent.
+ * text. Policy, identity, cache, decode, transport, and close-during-fetch failures raise
+ * this exception so the qualification fails loudly instead of silently skipping;
+ * {@code Optional.empty} from {@link ReferenceImageStore#reference} is reserved for references
+ * that are explicitly absent.
  */
 public final class ReferenceException extends RuntimeException {
     @Serial private static final long serialVersionUID = 1L;
@@ -17,17 +18,19 @@ public final class ReferenceException extends RuntimeException {
     public enum Kind {
         /** Target URL shape, host allowlist, port, or resolved address policy violation. */
         UNSAFE_TARGET,
-        /** Payload or cache bytes do not match the declared digest, length, media type, or
-         *  header dimensions. */
+        /** Payload bytes do not match the declared digest, length, media type, or header
+         *  dimensions. */
         IDENTITY_MISMATCH,
         /** The image header or pixel data cannot be decoded. */
         DECODE,
-        /** The session cache file is forged, a symlink, or unreadable. */
+        /** An in-memory cache entry failed its identity or invariant re-check on a hit. */
         CACHE,
         /** Transport-level failure: connection, TLS, timeout, or interrupted fetch. */
         IO,
         /** The server responded with an unexpected status (not 200 and not 404/410). */
         UNEXPECTED_STATUS,
+        /** The store was closed while a fetch was in progress; no result is delivered. */
+        CLOSED,
     }
 
     private final Kind kind;

@@ -168,10 +168,63 @@ final class ReferenceImageStoreTest {
         return new FakeTransport();
     }
 
+    /**
+     * Scripted transport whose exchanges block until {@link #release()} (or {@link #close()},
+     * which aborts in-flight exchanges the same way the store's close does). Concurrent tests
+     * use it to deterministically park every caller before the fetch completes.
+     */
+    private static final class LatchedTransport implements ReferenceImageStore.Transport {
+        private final Deque<ReferenceImageStore.Response> script;
+        private final CountDownLatch release = new CountDownLatch(1);
+        private final List<URI> requested = Collections.synchronizedList(new ArrayList<>());
+
+        LatchedTransport(ReferenceImageStore.Response... responses) {
+            this.script = new ArrayDeque<>(List.of(responses));
+        }
+
+        List<URI> requested() {
+            return requested;
+        }
+
+        int requestCount() {
+            return requested.size();
+        }
+
+        void release() {
+            release.countDown();
+        }
+
+        @Override
+        public ReferenceImageStore.Response get(URI uri, List<InetAddress> approved)
+                throws IOException {
+            requested.add(uri);
+            try {
+                release.await();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IOException("interrupted", interrupted);
+            }
+            ReferenceImageStore.Response response;
+            synchronized (script) {
+                response = script.pollFirst();
+            }
+            if (response == null) {
+                throw new AssertionError("unexpected request to " + uri);
+            }
+            return response;
+        }
+
+        @Override
+        public void close() {
+            release.countDown(); // abort in-flight exchanges
+        }
+    }
+
     private static final class FakeTransport implements ReferenceImageStore.Transport {
         private final List<URI> requested = new ArrayList<>();
         private final List<List<InetAddress>> approved = new ArrayList<>();
         private final Deque<ReferenceImageStore.Response> script = new ArrayDeque<>();
+        private boolean closed;
 
         FakeTransport(ReferenceImageStore.Response... responses) {
             for (ReferenceImageStore.Response response : responses) {
@@ -187,8 +240,13 @@ final class ReferenceImageStoreTest {
             return approved.get(request);
         }
 
+        boolean closed() {
+            return closed;
+        }
+
         @Override
-        public ReferenceImageStore.Response get(URI uri, List<InetAddress> pinned) {
+        public synchronized ReferenceImageStore.Response get(URI uri,
+                List<InetAddress> pinned) {
             requested.add(uri);
             approved.add(List.copyOf(pinned));
             ReferenceImageStore.Response response = script.pollFirst();
@@ -196,6 +254,11 @@ final class ReferenceImageStoreTest {
                 throw new AssertionError("unexpected request to " + uri);
             }
             return response;
+        }
+
+        @Override
+        public void close() {
+            closed = true;
         }
     }
 
@@ -271,20 +334,43 @@ final class ReferenceImageStoreTest {
     }
 
     @Test
-    void sameIdentityAtDifferentUrlsSharesOneFetch() {
+    void sameIdentityAtDifferentUrlsDoesNotShare() {
         String urlA = "https://" + ALLOWED_HOST + "/a.png";
         String urlB = "https://" + ALLOWED_HOST + "/b.png";
-        FakeTransport transport = new FakeTransport(ok(PNG_2X2));
+        FakeTransport transport = new FakeTransport(ok(PNG_2X2), ok(PNG_2X2));
         try (ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST)) {
             ReferenceImageStore.ReferenceImage imageA =
                     store.reference(canonicalEntry(urlA)).orElseThrow();
             ReferenceImageStore.ReferenceImage imageB =
                     store.reference(canonicalEntry(urlB)).orElseThrow();
+            assertEquals(2, transport.requested().size(),
+                    "different URLs must never share a cache slot, even with identical "
+                            + "content identity");
+            assertTrue(imageA != imageB,
+                    "each URL must be fetched, verified, and decoded independently");
+            assertEquals(2, store.cachedEntryCount(),
+                    "each URL's identity is its own cache key");
+        }
+    }
+
+    @Test
+    void unsafeUrlCannotHitAnotherUrlsCache() {
+        String safeUrl = "https://" + ALLOWED_HOST + "/safe.png";
+        String unsafeUrl = "http://evil.example.com/unsafe.png";
+        FakeTransport transport = new FakeTransport(ok(PNG_2X2));
+        try (ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST)) {
+            assertTrue(store.reference(canonicalEntry(safeUrl)).isPresent());
+            assertEquals(1, transport.requested().size());
+            // An entry that reuses the cached content identity but declares an unsafe URL
+            // must not hit the safe entry's slot and must be refused before any request.
+            ReferenceException failure = reject(() -> store.reference(canonicalEntry(unsafeUrl)));
+            assertEquals(ReferenceException.Kind.UNSAFE_TARGET, failure.kind(),
+                    "an unsafe source URL must be refused, never served from another URL's "
+                            + "cached entry even with identical content identity");
             assertEquals(1, transport.requested().size(),
-                    "identical authenticated identities must share one verified fetch");
-            assertSame(imageA, imageB,
-                    "the content-addressed cache must serve the same immutable image");
-            assertEquals(1, store.cachedEntryCount());
+                    "the unsafe URL must be rejected before any request is issued");
+            assertEquals(1, store.cachedEntryCount(),
+                    "the safe entry stays cached and untouched");
         }
     }
 
@@ -306,6 +392,40 @@ final class ReferenceImageStoreTest {
                     "the aliased identity must be fetched and verified independently");
             assertEquals(1, store.cachedEntryCount(),
                     "only the verified identity may remain cached");
+        }
+    }
+
+    @Test
+    void concurrentDifferentUrlsDoNotJoin() throws Exception {
+        String urlA = "https://" + ALLOWED_HOST + "/a.png";
+        String urlB = "https://" + ALLOWED_HOST + "/b.png";
+        FakeTransport transport = new FakeTransport(ok(PNG_2X2), ok(PNG_2X2));
+        try (ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST)) {
+            CountDownLatch start = new CountDownLatch(1);
+            CountDownLatch done = new CountDownLatch(2);
+            List<ReferenceImageStore.ReferenceImage> results =
+                    Collections.synchronizedList(new ArrayList<>());
+            List<Throwable> failures = Collections.synchronizedList(new ArrayList<>());
+            for (String url : List.of(urlA, urlB)) {
+                CorpusEntry entry = canonicalEntry(url);
+                Thread.ofVirtual().start(() -> {
+                    try {
+                        start.await();
+                        results.add(store.reference(entry).orElseThrow());
+                    } catch (Throwable failure) {
+                        failures.add(failure);
+                    } finally {
+                        done.countDown();
+                    }
+                });
+            }
+            start.countDown();
+            assertTrue(done.await(10, TimeUnit.SECONDS));
+            assertTrue(failures.isEmpty(), "concurrent fetches must not fail: " + failures);
+            assertEquals(2, transport.requested().size(),
+                    "different URLs must never join each other's in-flight fetch");
+            assertEquals(2, results.size());
+            assertEquals(2, store.cachedEntryCount());
         }
     }
 
@@ -903,39 +1023,185 @@ final class ReferenceImageStoreTest {
     @Test
     void concurrentSameReferenceFetchesExactlyOnce() throws Exception {
         String url = "https://" + ALLOWED_HOST + "/ref.png";
-        FakeTransport transport = new FakeTransport(ok(PNG_2X2));
+        int threads = 8;
+        LatchedTransport transport = new LatchedTransport(ok(PNG_2X2));
         try (ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST)) {
-            int threads = 8;
-            CountDownLatch start = new CountDownLatch(1);
-            CountDownLatch done = new CountDownLatch(threads);
+            List<Thread> workers = new ArrayList<>();
             List<ReferenceImageStore.ReferenceImage> results =
                     Collections.synchronizedList(new ArrayList<>());
             List<Throwable> failures = Collections.synchronizedList(new ArrayList<>());
             for (int i = 0; i < threads; i++) {
-                Thread.ofVirtual().start(() -> {
+                workers.add(Thread.ofVirtual().start(() -> {
                     try {
-                        start.await();
                         results.add(store.reference(canonicalEntry(url)).orElseThrow());
                     } catch (Throwable failure) {
                         failures.add(failure);
-                    } finally {
-                        done.countDown();
                     }
-                });
+                }));
             }
-            start.countDown();
-            assertTrue(done.await(10, TimeUnit.SECONDS),
-                    "every concurrent caller must finish");
+            awaitAllParked(workers); // exactly one owner in the transport, the rest in join
+            transport.release();
+            for (Thread worker : workers) {
+                worker.join(10_000);
+            }
             assertTrue(failures.isEmpty(), "concurrent callers must not fail: " + failures);
             assertEquals(threads, results.size());
             for (ReferenceImageStore.ReferenceImage image : results) {
                 assertSame(results.get(0), image,
                         "every concurrent caller must observe the same immutable image");
             }
-            assertEquals(1, transport.requested().size(),
+            assertEquals(1, transport.requestCount(),
                     "concurrent same-identity calls must share exactly one fetch");
             assertEquals(1, store.cachedEntryCount());
         }
+    }
+
+    @Test
+    void concurrentSameReference404IsShared() throws Exception {
+        String url = "https://" + ALLOWED_HOST + "/missing.png";
+        int threads = 4;
+        LatchedTransport transport = new LatchedTransport(
+                new ReferenceImageStore.Response(404, "text/html", "", new byte[0]));
+        try (ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST)) {
+            List<Thread> workers = new ArrayList<>();
+            List<Boolean> empties = Collections.synchronizedList(new ArrayList<>());
+            List<Throwable> failures = Collections.synchronizedList(new ArrayList<>());
+            for (int i = 0; i < threads; i++) {
+                workers.add(Thread.ofVirtual().start(() -> {
+                    try {
+                        empties.add(store.reference(canonicalEntry(url)).isEmpty());
+                    } catch (Throwable failure) {
+                        failures.add(failure);
+                    }
+                }));
+            }
+            awaitAllParked(workers);
+            transport.release();
+            for (Thread worker : workers) {
+                worker.join(10_000);
+            }
+            assertTrue(failures.isEmpty(), "concurrent 404 callers must not fail: " + failures);
+            assertEquals(threads, empties.size());
+            for (boolean empty : empties) {
+                assertTrue(empty, "every concurrent caller must observe the identical "
+                        + "absent result");
+            }
+            assertEquals(1, transport.requestCount(),
+                    "the shared absent result must be fetched exactly once");
+        }
+    }
+
+    @Test
+    void concurrentSameReferenceFailureIsShared() throws Exception {
+        String url = "https://" + ALLOWED_HOST + "/ref.png";
+        CorpusEntry forged = new CorpusEntry("ref", url, null, "MIT", "ref.xml", 0.2, 2, 2,
+                "0".repeat(64), PNG_2X2.length, "image/png");
+        int threads = 4;
+        LatchedTransport transport = new LatchedTransport(ok(PNG_2X2));
+        try (ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST)) {
+            List<Thread> workers = new ArrayList<>();
+            List<ReferenceException.Kind> kinds = Collections.synchronizedList(new ArrayList<>());
+            for (int i = 0; i < threads; i++) {
+                workers.add(Thread.ofVirtual().start(() -> {
+                    try {
+                        store.reference(forged);
+                        kinds.add(null); // an unexpected success is a test failure
+                    } catch (ReferenceException failure) {
+                        kinds.add(failure.kind());
+                    } catch (Throwable unexpected) {
+                        kinds.add(ReferenceException.Kind.IO);
+                    }
+                }));
+            }
+            awaitAllParked(workers);
+            transport.release();
+            for (Thread worker : workers) {
+                worker.join(10_000);
+            }
+            assertEquals(threads, kinds.size());
+            for (ReferenceException.Kind kind : kinds) {
+                assertEquals(ReferenceException.Kind.IDENTITY_MISMATCH, kind,
+                        "every concurrent caller must observe the identical typed failure");
+            }
+            assertEquals(1, transport.requestCount(),
+                    "the shared typed failure must be fetched exactly once");
+        }
+    }
+
+    @Test
+    void closeDuringInFlightFetchTerminatesWithClosedAndDrains() throws Exception {
+        String url = "https://" + ALLOWED_HOST + "/ref.png";
+        LatchedTransport latched = new LatchedTransport(ok(PNG_2X2));
+        ReferenceImageStore store = store(latched, publicResolver(), ALLOWED_HOST);
+        CorpusEntry entry = canonicalEntry(url);
+        java.util.concurrent.atomic.AtomicReference<Throwable> ownerOutcome =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<Throwable> waiterOutcome =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        List<Thread> workers = new ArrayList<>();
+        workers.add(Thread.ofVirtual().start(() -> {
+            try {
+                if (store.reference(entry).isPresent()) {
+                    ownerOutcome.set(new AssertionError("unexpected valid result after close"));
+                } else {
+                    ownerOutcome.set(new AssertionError("unexpected absent result after close"));
+                }
+            } catch (Throwable failure) {
+                ownerOutcome.set(failure);
+            }
+        }));
+        workers.add(Thread.ofVirtual().start(() -> {
+            try {
+                if (store.reference(entry).isPresent()) {
+                    waiterOutcome.set(new AssertionError("unexpected valid result after close"));
+                } else {
+                    waiterOutcome.set(new AssertionError("unexpected absent result after close"));
+                }
+            } catch (Throwable failure) {
+                waiterOutcome.set(failure);
+            }
+        }));
+        awaitAllParked(workers); // owner in the transport, waiter joined the in-flight future
+        store.close();
+        for (Thread worker : workers) {
+            worker.join(10_000);
+        }
+        assertClosedOutcome(ownerOutcome.get(), "the fetch owner");
+        assertClosedOutcome(waiterOutcome.get(), "a waiter that joined the in-flight fetch");
+        assertEquals(0, store.cachedEntryCount(),
+                "close must admit nothing from the aborted fetch");
+        assertThrows(IllegalStateException.class, () -> store.reference(entry),
+                "no active work may remain after close returns");
+        assertTrue(workers.stream().noneMatch(Thread::isAlive),
+                "both threads must have ended before close returned");
+    }
+
+    /** Waits until every worker is parked (owner in the transport, waiters in the join). */
+    private static void awaitAllParked(List<Thread> workers) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            long parked = 0;
+            for (Thread worker : workers) {
+                Thread.State state = worker.getState();
+                if (state == Thread.State.WAITING || state == Thread.State.TIMED_WAITING) {
+                    parked++;
+                }
+            }
+            if (parked == workers.size()) {
+                return;
+            }
+            Thread.onSpinWait();
+        }
+        org.junit.jupiter.api.Assertions.fail("not all workers parked in the fetch before "
+                + "release: " + workers.stream().map(Thread::getState).toList());
+    }
+
+    private static void assertClosedOutcome(Throwable outcome, String role) {
+        assertTrue(outcome instanceof ReferenceException,
+                role + " must end with a typed failure, got: " + outcome);
+        assertEquals(ReferenceException.Kind.CLOSED,
+                ((ReferenceException) outcome).kind(),
+                role + " must end with CLOSED, never deliver a post-close result");
     }
 
     @Test
@@ -968,6 +1234,7 @@ final class ReferenceImageStoreTest {
         store.reference(canonicalEntry(url)).orElseThrow();
         assertEquals(1, store.cachedEntryCount());
         store.close();
+        assertTrue(transport.closed(), "close must abort the transport");
         assertEquals(0, store.cachedEntryCount(), "close must clear every owned reference");
         assertEquals(0, store.cachedEncodedBytes());
         assertEquals(0, store.cachedDecodedPixels());

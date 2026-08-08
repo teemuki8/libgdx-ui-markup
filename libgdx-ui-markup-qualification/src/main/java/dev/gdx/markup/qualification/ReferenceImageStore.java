@@ -17,6 +17,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -29,6 +30,8 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
 import javax.net.ssl.SNIHostName;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
@@ -48,16 +51,22 @@ import javax.net.ssl.SSLSocket;
  * {@link ReferenceImage} that exposes no mutable {@code BufferedImage} or array.
  *
  * <p>Verified references are retained in a bounded content-addressed cache keyed by the
- * complete expected identity ({@link CacheKey}: digest, byte length, media type, and header
- * dimensions — never the URL). The cache is limited by an explicit maximum entry count plus
- * cumulative encoded bytes and cumulative decoded pixels, all with overflow-safe admission;
- * when admitting would exceed a budget the least recently used entry is evicted first, and an
- * entry that alone exceeds every budget is still served but never retained. Cache hits
- * re-check the requested identity against the cached key and image invariants and return the
- * same immutable image, so a hit can never be confused with another identity or mutated.
- * Concurrent requests for the same identity share one verified fetch. The cache lives only
- * for the store's lifetime: {@link #close()} clears every owned reference, and the owning
- * {@link QualificationRunner} always closes the store.
+ * complete expected identity ({@link CacheKey}: canonical declared source URL, digest, byte
+ * length, media type, and header dimensions), so entries at different URLs can never alias or
+ * share a slot even with identical content identity. The cache is limited by an explicit
+ * maximum entry count plus cumulative encoded bytes and cumulative decoded pixels, all with
+ * overflow-safe admission; when admitting would exceed a budget the least recently used entry
+ * is evicted first, and an entry that alone exceeds every budget is still served but never
+ * retained. Cache hits re-check the requested identity against the cached key and image
+ * invariants and return the same immutable image, so a hit can never be confused with another
+ * identity or mutated. Concurrent requests for the same identity share one verified fetch.
+ *
+ * <p>The cache lives only for the store's lifetime and {@link #close()} owns every in-flight
+ * fetch: it marks the store closed, terminally completes all pending waiters with a typed
+ * {@link ReferenceException.Kind#CLOSED} failure, aborts the transport (the default pinned
+ * transport tracks and closes its active sockets), and waits on a monotonic bounded condition
+ * until no active fetch owner remains — no post-close decode, admission, or result can be
+ * delivered. The owning {@link QualificationRunner} always closes the store.
  *
  * <p>HTTP framing is parsed byte-for-byte: every raw octet including the CRLF terminators
  * counts toward the per-line and total header bounds before normalization, lines must be
@@ -85,6 +94,8 @@ public final class ReferenceImageStore implements AutoCloseable {
 
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(15);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(60);
+    /** Monotonic bound for close() to wait for in-flight fetch owners to drain. */
+    private static final Duration CLOSE_DRAIN_TIMEOUT = Duration.ofSeconds(30);
     static final int MAX_HEADER_LINE = 16 * 1024;
     static final int MAX_HEADER_BYTES = 64 * 1024;
     private static final Set<Integer> REDIRECT_STATUSES = Set.of(301, 302, 303, 307, 308);
@@ -106,11 +117,14 @@ public final class ReferenceImageStore implements AutoCloseable {
     /**
      * Transport seam: performs one GET against an already-approved resolved address. The
      * transport must connect only to {@code approved} addresses and must never resolve the
-     * hostname itself.
+     * hostname itself, and it must abort every in-flight exchange when {@link #close()} is
+     * called so the store's close can drain active fetches promptly.
      */
-    @FunctionalInterface
     public interface Transport {
         Response get(URI uri, List<InetAddress> approved) throws IOException;
+
+        /** Aborts every in-flight exchange; idempotent and never throws. */
+        void close();
     }
 
     /** Resolves a hostname to addresses; injectable so tests avoid real DNS. */
@@ -132,16 +146,18 @@ public final class ReferenceImageStore implements AutoCloseable {
     }
 
     /**
-     * The complete expected identity of a remote reference: the digest, byte length, media
-     * type, and header dimensions declared by the manifest. The cache is content-addressed by
-     * this key — never by URL — so two entries with the same authenticated identity share one
-     * verified fetch while entries with the same URL but different identities can never alias.
+     * The complete expected identity of a remote reference: the canonical declared source URL
+     * plus the digest, byte length, media type, and header dimensions declared by the
+     * manifest. The cache is keyed by this whole identity — never by content alone — so two
+     * entries with the same authenticated bytes at different URLs can never alias or join
+     * each other's slot or fetch, and an unsafe URL can never hit another URL's cached entry.
      */
-    record CacheKey(String sha256, long bytes, String mediaType, int width, int height) {
+    record CacheKey(String sourceUrl, String sha256, long bytes, String mediaType, int width,
+            int height) {
 
         static CacheKey of(CorpusEntry entry) {
-            return new CacheKey(entry.sha256(), entry.bytes(), entry.mediaType(),
-                    entry.referenceWidth(), entry.referenceHeight());
+            return new CacheKey(entry.sourceUrl(), entry.sha256(), entry.bytes(),
+                    entry.mediaType(), entry.referenceWidth(), entry.referenceHeight());
         }
     }
 
@@ -188,9 +204,11 @@ public final class ReferenceImageStore implements AutoCloseable {
             return height;
         }
 
-        /** ARGB pixel value at ({@code x}, {@code y}); read-only, bounds-checked. */
+        /** ARGB pixel value at ({@code x}, {@code y}); read-only, bounds-checked per coordinate. */
         public int rgb(int x, int y) {
-            return argb[Objects.checkIndex(y * width + x, argb.length)];
+            Objects.checkIndex(x, width);
+            Objects.checkIndex(y, height);
+            return argb[y * width + x];
         }
     }
 
@@ -215,14 +233,16 @@ public final class ReferenceImageStore implements AutoCloseable {
     private final Clock clock;
     private final CacheLimits limits;
     /** Guards every cache and lifecycle field; access-order map gives least-recently-used order. */
-    private final Object lock = new Object();
-    private final Map<CacheKey, CachedEntry> cache =
-            new LinkedHashMap<>(16, 0.75f, true);
+    private final ReentrantLock lock = new ReentrantLock();
+    private final Condition ownersIdle = lock.newCondition();
+    private final Map<CacheKey, CachedEntry> cache = new LinkedHashMap<>(16, 0.75f, true);
     private final Map<CacheKey, CompletableFuture<Optional<ReferenceImage>>> inFlight =
             new java.util.HashMap<>();
     private long cacheEncodedBytes;
     private long cacheDecodedPixels;
-    private boolean closed;
+    /** Number of threads currently executing a fetch (owner path); drained by close(). */
+    private int activeOwners;
+    private volatile boolean closed;
 
     /** Creates a store with the default pinned-TLS transport, DNS resolution, and host allowlist. */
     public ReferenceImageStore() {
@@ -240,7 +260,7 @@ public final class ReferenceImageStore implements AutoCloseable {
     /** Package-private seam with injected clock and cache budgets for deterministic tests. */
     ReferenceImageStore(Transport transport, HostResolver resolver, Set<String> allowedHosts,
             Clock clock, CacheLimits limits) {
-        this.transport = transport != null ? transport : this::httpsGet;
+        this.transport = transport != null ? transport : new PinnedTlsTransport();
         this.resolver = resolver != null ? resolver : this::resolveAll;
         this.allowedHosts = allowedHosts != null ? allowedHosts : DEFAULT_ALLOWED_HOSTS;
         this.clock = clock;
@@ -252,14 +272,16 @@ public final class ReferenceImageStore implements AutoCloseable {
      * serving verified hits from the bounded in-memory cache. Empty only when the reference is
      * explicitly absent (HTTP 404/410). Policy, identity, cache, decode, and transport
      * failures raise {@link ReferenceException}; using the store after {@link #close()}
-     * raises {@link IllegalStateException}.
+     * raises {@link IllegalStateException}, and a fetch in flight when {@code close()} runs
+     * fails with {@link ReferenceException.Kind#CLOSED} instead of delivering a result.
      */
     public Optional<ReferenceImage> reference(CorpusEntry entry) {
         Objects.requireNonNull(entry, "entry");
         CacheKey key = CacheKey.of(entry);
         CompletableFuture<Optional<ReferenceImage>> pending;
         boolean shared = false;
-        synchronized (lock) {
+        lock.lock();
+        try {
             if (closed) {
                 throw new IllegalStateException("reference store is closed");
             }
@@ -275,7 +297,10 @@ public final class ReferenceImageStore implements AutoCloseable {
             } else {
                 pending = new CompletableFuture<>();
                 inFlight.put(key, pending);
+                activeOwners++;
             }
+        } finally {
+            lock.unlock();
         }
         if (shared) {
             return await(pending);
@@ -285,24 +310,49 @@ public final class ReferenceImageStore implements AutoCloseable {
 
     private Optional<ReferenceImage> fetchAndComplete(CacheKey key, CorpusEntry entry,
             CompletableFuture<Optional<ReferenceImage>> pending) {
-        Optional<ReferenceImage> result;
         try {
-            result = fetchVerifiedEntry(entry);
-        } catch (RuntimeException | Error failure) {
-            synchronized (lock) {
+            Optional<ReferenceImage> result;
+            try {
+                result = fetchVerifiedEntry(entry);
+            } catch (RuntimeException | Error failure) {
+                // Complete the pending future BEFORE removing it from the in-flight map, so a
+                // concurrent caller that already grabbed it joins this completed outcome
+                // instead of starting a second fetch. close() owns the lock, so it cannot
+                // interleave between the completion and the removal.
+                lock.lock();
+                try {
+                    pending.completeExceptionally(failure);
+                    inFlight.remove(key);
+                } finally {
+                    lock.unlock();
+                }
+                throw failure;
+            }
+            lock.lock();
+            try {
+                if (closed) {
+                    // close() already terminally completed this pending with CLOSED; do not
+                    // deliver a post-close result and do not admit anything.
+                    inFlight.remove(key);
+                    throw new ReferenceException(ReferenceException.Kind.CLOSED,
+                            "reference store closed before the result was delivered");
+                }
+                if (result.isPresent()) {
+                    admit(key, result.orElseThrow());
+                }
+                // Complete the pending future BEFORE removing it from the in-flight map, so a
+                // concurrent caller that already grabbed it joins this completed outcome
+                // instead of starting a second fetch. close() owns the lock, so it cannot
+                // interleave between the completion and the removal.
+                pending.complete(result);
                 inFlight.remove(key);
+            } finally {
+                lock.unlock();
             }
-            pending.completeExceptionally(failure);
-            throw failure;
+            return result;
+        } finally {
+            endActiveOwner();
         }
-        synchronized (lock) {
-            if (!closed && result.isPresent()) {
-                admit(key, result.orElseThrow());
-            }
-            inFlight.remove(key);
-        }
-        pending.complete(result);
-        return result;
     }
 
     /** Joins a shared in-flight fetch, unwrapping the original typed failure. */
@@ -386,41 +436,115 @@ public final class ReferenceImageStore implements AutoCloseable {
 
     /** Number of retained cache entries (package-private for tests). */
     int cachedEntryCount() {
-        synchronized (lock) {
+        lock.lock();
+        try {
             return cache.size();
+        } finally {
+            lock.unlock();
         }
     }
 
     /** Cumulative encoded bytes of the retained cache (package-private for tests). */
     long cachedEncodedBytes() {
-        synchronized (lock) {
+        lock.lock();
+        try {
             return cacheEncodedBytes;
+        } finally {
+            lock.unlock();
         }
     }
 
     /** Cumulative decoded pixels of the retained cache (package-private for tests). */
     long cachedDecodedPixels() {
-        synchronized (lock) {
+        lock.lock();
+        try {
             return cacheDecodedPixels;
+        } finally {
+            lock.unlock();
         }
     }
 
     /**
-     * Clears every owned reference so the retained bytes and pixels become garbage. Idempotent;
-     * the owning {@link QualificationRunner} always closes the store. Images already handed
-     * out remain readable because they are immutable and detached from the cache.
+     * Clears every owned reference and owns every in-flight fetch. Marks the store closed,
+     * terminally completes all pending waiters with a typed {@link ReferenceException.Kind#CLOSED}
+     * failure, aborts the transport (the default pinned transport closes its active sockets),
+     * and waits on a monotonic bounded condition until no active fetch owner remains, so no
+     * post-close decode, admission, or result can be delivered. Idempotent; close failures
+     * (transport abort, drain timeout, interrupt) are aggregated into a single typed
+     * {@code ReferenceException(IO)} with suppressed causes. Images already handed out remain
+     * readable because they are immutable and detached from the cache.
      */
     @Override
     public void close() {
-        synchronized (lock) {
+        List<IOException> failures = new ArrayList<>();
+        List<CompletableFuture<Optional<ReferenceImage>>> pending;
+        lock.lock();
+        try {
             if (closed) {
                 return;
             }
             closed = true;
-            cache.clear();
+            pending = new ArrayList<>(inFlight.values());
             inFlight.clear();
+            cache.clear();
             cacheEncodedBytes = 0;
             cacheDecodedPixels = 0;
+        } finally {
+            lock.unlock();
+        }
+        ReferenceException closedFailure = new ReferenceException(ReferenceException.Kind.CLOSED,
+                "reference store closed; in-flight fetches are terminated");
+        for (CompletableFuture<Optional<ReferenceImage>> future : pending) {
+            future.completeExceptionally(closedFailure);
+        }
+        try {
+            transport.close();
+        } catch (RuntimeException failure) {
+            failures.add(new IOException("transport abort failed", failure));
+        }
+        lock.lock();
+        try {
+            long deadline = clock.nanoTime() + CLOSE_DRAIN_TIMEOUT.toNanos();
+            while (activeOwners > 0) {
+                long remaining = deadline - clock.nanoTime();
+                if (remaining <= 0) {
+                    failures.add(new IOException(activeOwners
+                            + " active fetch(es) did not drain within the "
+                            + CLOSE_DRAIN_TIMEOUT.getSeconds() + "s close deadline"));
+                    break;
+                }
+                try {
+                    ownersIdle.awaitNanos(remaining);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    failures.add(new IOException("interrupted while draining active fetches",
+                            interrupted));
+                    break;
+                }
+            }
+        } finally {
+            lock.unlock();
+        }
+        if (failures.isEmpty()) {
+            return;
+        }
+        IOException first = failures.get(0);
+        for (int i = 1; i < failures.size(); i++) {
+            first.addSuppressed(failures.get(i));
+        }
+        throw new ReferenceException(ReferenceException.Kind.IO,
+                "failed to close the reference store", first);
+    }
+
+    private void endActiveOwner() {
+        lock.lock();
+        try {
+            activeOwners--;
+            if (activeOwners == 0) {
+                ownersIdle.signalAll();
+            }
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -429,13 +553,29 @@ public final class ReferenceImageStore implements AutoCloseable {
         try {
             body = fetchVerified(entry);
         } catch (IOException failure) {
+            if (closed) {
+                throw new ReferenceException(ReferenceException.Kind.CLOSED,
+                        "reference store closed during the fetch of " + entry.sourceUrl(),
+                        failure);
+            }
             throw new ReferenceException(ReferenceException.Kind.IO,
                     "cannot fetch " + entry.sourceUrl(), failure);
         }
+        // The network phase is over: refuse to allocate or verify anything after close.
+        ensureOpen("after the network phase, before verify and decode");
         if (body == null) {
             return Optional.empty();
         }
-        return Optional.of(decodeVerified(body, entry, entry.sourceUrl()));
+        ReferenceImage image = decodeVerified(body, entry, entry.sourceUrl());
+        ensureOpen("after decode, before returning the result");
+        return Optional.of(image);
+    }
+
+    private void ensureOpen(String context) {
+        if (closed) {
+            throw new ReferenceException(ReferenceException.Kind.CLOSED,
+                    "reference store closed " + context);
+        }
     }
 
     /**
@@ -721,24 +861,64 @@ public final class ReferenceImageStore implements AutoCloseable {
     // ---------------------------------------------------------- pinned TLS transport
 
     /**
-     * Connects to the approved addresses in order, never resolving the host itself. One
-     * absolute monotonic deadline covers connect, TLS handshake, headers, and body across
-     * address retries; each blocking read re-derives the remaining budget.
+     * Default cancellation-capable transport. Connects to the approved addresses in order,
+     * never resolving the host itself; one absolute monotonic deadline covers connect, TLS
+     * handshake, headers, and body across address retries, and each blocking read re-derives
+     * the remaining budget. Every socket is tracked so {@link #close()} can abort in-flight
+     * exchanges promptly, which lets the store's close drain active fetches within its
+     * bounded deadline.
      */
-    private Response httpsGet(URI uri, List<InetAddress> approved) throws IOException {
-        long deadline = clock.nanoTime() + REQUEST_TIMEOUT.toNanos();
-        int port = uri.getPort() == -1 ? 443 : uri.getPort();
-        String host = uri.getHost();
-        IOException lastFailure = null;
-        for (InetAddress address : approved) {
-            try {
-                return tlsExchange(uri, host, address, port, deadline);
-            } catch (IOException failure) {
-                lastFailure = failure;
+    private final class PinnedTlsTransport implements Transport {
+        private final Object transportLock = new Object();
+        private final Set<Socket> activeSockets = new HashSet<>();
+        private boolean aborted;
+
+        @Override
+        public Response get(URI uri, List<InetAddress> approved) throws IOException {
+            long deadline = clock.nanoTime() + REQUEST_TIMEOUT.toNanos();
+            int port = uri.getPort() == -1 ? 443 : uri.getPort();
+            String host = uri.getHost();
+            IOException lastFailure = null;
+            for (InetAddress address : approved) {
+                try {
+                    return tlsExchange(uri, host, address, port, deadline);
+                } catch (IOException failure) {
+                    lastFailure = failure;
+                }
+            }
+            throw lastFailure != null ? lastFailure : new IOException("no approved address for "
+                    + host);
+        }
+
+        @Override
+        public void close() {
+            synchronized (transportLock) {
+                aborted = true;
+                for (Socket socket : activeSockets) {
+                    try {
+                        socket.close();
+                    } catch (IOException ignored) {
+                        // the exchange is already observing a closed socket
+                    }
+                }
             }
         }
-        throw lastFailure != null ? lastFailure : new IOException("no approved address for "
-                + host);
+
+        /** Tracks a new socket unless the transport has already been aborted by close. */
+        void register(Socket socket) throws IOException {
+            synchronized (transportLock) {
+                if (aborted) {
+                    throw new IOException("transport aborted by store close");
+                }
+                activeSockets.add(socket);
+            }
+        }
+
+        void unregister(Socket socket) {
+            synchronized (transportLock) {
+                activeSockets.remove(socket);
+            }
+        }
     }
 
     /** One HTTPS exchange over a socket connected to the pinned address with TLS identity. */
@@ -751,6 +931,7 @@ public final class ReferenceImageStore implements AutoCloseable {
             throw new IOException("default TLS context unavailable", impossible);
         }
         Socket socket = new Socket();
+        ((PinnedTlsTransport) transport).register(socket);
         try {
             long remaining = remainingMillis(deadline);
             socket.connect(new InetSocketAddress(address, port),
@@ -771,6 +952,7 @@ public final class ReferenceImageStore implements AutoCloseable {
                 ssl.close();
             }
         } finally {
+            ((PinnedTlsTransport) transport).unregister(socket);
             socket.close();
         }
     }
