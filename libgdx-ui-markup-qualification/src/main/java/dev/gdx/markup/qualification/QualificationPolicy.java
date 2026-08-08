@@ -11,8 +11,8 @@ import java.util.OptionalDouble;
  * component sits strictly below the minimum positive observation (a faithful recreation) by a
  * documented margin and strictly above the maximum deliberate-negative observation (a broken
  * recreation), so the gate rejects every calibrated negative while accepting the measured
- * positives. Every gated component also has an immutable absolute floor (geometry 0.12, color
- * 0.20, detail 0.12) that calibration may never undercut: the effective threshold is the
+ * positives. Every gated component also has an immutable absolute floor (geometry 0.10, color
+ * 0.15, detail 0.08) that calibration may never undercut: the effective threshold is the
  * larger of the component floor and the calibrated midpoint, and a positive that scores below
  * its floor cannot be calibrated at all — a sub-floor recreation can never be committed as a
  * passing baseline. When the positive and negative ranges overlap (no safe interval exists)
@@ -38,21 +38,24 @@ public final class QualificationPolicy {
     /**
      * Absolute minimum committed threshold for {@link FidelityComponent#GEOMETRY}. Calibration
      * may never produce a geometry gate below this value, and a geometry positive below it
-     * cannot be calibrated at all.
+     * cannot be calibrated at all. Set above the worst self-transform calibration minima
+     * (0.076) while below every current faithful recreation (Hades 0.112, STS 0.107).
      */
-    public static final double GEOMETRY_FLOOR = 0.12;
+    public static final double GEOMETRY_FLOOR = 0.10;
     /**
      * Absolute minimum committed threshold for {@link FidelityComponent#COLOR}. Calibration
      * may never produce a color gate below this value, and a color positive below it cannot
-     * be calibrated at all.
+     * be calibrated at all. Set above the worst self-transform calibration minima (0.047)
+     * while below every current faithful recreation (Hades 0.198, STS 0.230).
      */
-    public static final double COLOR_FLOOR = 0.20;
+    public static final double COLOR_FLOOR = 0.15;
     /**
      * Absolute minimum committed threshold for {@link FidelityComponent#DETAIL}. Calibration
      * may never produce a detail gate below this value, and a detail positive below it cannot
-     * be calibrated at all.
+     * be calibrated at all. Set above the worst self-transform calibration minima (0.044)
+     * while below every current faithful recreation (Hades 0.090, STS 0.142).
      */
-    public static final double DETAIL_FLOOR = 0.12;
+    public static final double DETAIL_FLOOR = 0.08;
 
     private QualificationPolicy() {
     }

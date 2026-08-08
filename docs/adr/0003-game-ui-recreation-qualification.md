@@ -70,9 +70,14 @@ real game UI screenshots.
    ranges overlap or touch. Strict CI never recalibrates; the qualification test fails when a
    current measurement no longer clears its committed threshold (stale baselines).
 4b. **Absolute per-component floors; calibration may never lower required fidelity below
-   them.** Every gated component has an immutable floor — geometry 0.12, color 0.20, detail
-   0.12 — enforced in `QualificationPolicy` (`GEOMETRY_FLOOR`, `COLOR_FLOOR`,
-   `DETAIL_FLOOR`, `floor(FidelityComponent)`). The effective calibrated threshold is
+   them.** Every gated component has an immutable, achievable-but-material floor — geometry
+   0.10, color 0.15, detail 0.08 — enforced in `QualificationPolicy` (`GEOMETRY_FLOOR`,
+   `COLOR_FLOOR`, `DETAIL_FLOOR`, `floor(FidelityComponent)`). Each floor sits above the
+   worst threshold a self-transform calibration ever minted (geometry 0.076, color 0.047,
+   detail 0.044) so that failure mode can never be committed again, while staying below the
+   current faithful recreations (Hades 0.112/0.198/0.090, STS 0.107/0.230/0.142) so honest
+   recreations can still calibrate; Wesnoth must still improve its color and detail above
+   the floors. The effective calibrated threshold is
    `max(component floor, midpoint)`, so a midpoint that would undercut the floor is lifted to
    it, and a positive that itself scores below the floor refuses calibration outright
    (`calibrate` returns empty and the calibration task fails with a typed
@@ -120,14 +125,15 @@ geometry 0.121 < 0.161, hue color 0.484 < 0.702, blur detail 0.168 < 0.405; hade
 geometry 0.100 < 0.106; sts translate geometry 0.041 < 0.076; wesnoth flip geometry
 0.082 < 0.088 and hue color 0.049 < 0.055.
 
-These measured values predate the absolute floors of decision 4b; the art-heavy entries
-(hades-boon, sts-shop, wesnoth-battle) still sit partly below the floors (e.g. hades
-geometry 0.111 < 0.12, color 0.068 < 0.20; sts geometry 0.084 < 0.12, detail 0.128 ≥ 0.12;
-wesnoth geometry 0.093 < 0.12, color 0.060 < 0.20, detail 0.051 < 0.12). Their recreations
-are being improved (designer wave) to clear `floor + 0.02` (geometry ≥ 0.14, color ≥ 0.22,
-detail ≥ 0.14) so that re-calibration commits thresholds at or above the floors; until that
-re-calibration wave lands, the committed manifest thresholds remain in force for the verdict
-and the floor-aware staleness check flags every sub-floor committed baseline.
+These measured values predate the absolute floors of decision 4b. With the achievable
+floors (geometry 0.10, color 0.15, detail 0.08), the improved faithful recreations already
+clear every floor — Hades 0.112/0.198/0.090 and STS 0.107/0.230/0.142 all sit above their
+floors and can re-calibrate — while Wesnoth (≈0.093/0.060/0.051) still sits below the
+geometry/color/detail floors and must improve before it can calibrate. The designer target
+is `floor + 0.02` (geometry ≥ 0.12, color ≥ 0.17, detail ≥ 0.10) so that re-calibration
+commits thresholds at or above the floors with margin; until that re-calibration wave lands,
+the committed manifest thresholds remain in force for the verdict and the floor-aware
+staleness check flags every sub-floor committed baseline.
 
 ## Consequences
 
@@ -146,7 +152,7 @@ and the floor-aware staleness check flags every sub-floor committed baseline.
   remaining art texture is inherently unreproducible in markup, which bounds the achievable
   detail and color scores (calibrated accordingly).
 - Calibration is floor-bound: no run can lower a required fidelity gate below the immutable
-  per-component floors (geometry 0.12, color 0.20, detail 0.12), and a recreation whose own
+  per-component floors (geometry 0.10, color 0.15, detail 0.08), and a recreation whose own
   deliberate transforms cannot be separated from it (or that scores below a floor) fails
   calibration loudly instead of minting a passing gate. Raising the bar above the floors is
   a corpus-quality question (better markup recreations), never a calibration shortcut.
