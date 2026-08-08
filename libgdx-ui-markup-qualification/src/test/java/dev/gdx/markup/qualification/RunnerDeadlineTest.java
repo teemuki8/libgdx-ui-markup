@@ -149,6 +149,7 @@ final class RunnerDeadlineTest {
         private boolean destroyed;
         private boolean forciblyDestroyed;
         private boolean exited;
+        private boolean released;
         private long spawnedAt = -1;
 
         private ScriptedProcess(MutableClock clock, boolean blocking, Behavior behavior,
@@ -169,6 +170,9 @@ final class RunnerDeadlineTest {
         }
 
         private long currentDeadAt() {
+            if (released) {
+                return clock.nanoTime();
+            }
             if (behavior == Behavior.NEVER_EXITS) {
                 return Long.MAX_VALUE;
             }
@@ -183,6 +187,11 @@ final class RunnerDeadlineTest {
                 return clock.nanoTime();
             }
             return base;
+        }
+
+        /** Makes a NEVER_EXITS child killable, so the runner's close() can confirm it. */
+        synchronized void release() {
+            released = true;
         }
 
         @Override
@@ -403,7 +412,7 @@ final class RunnerDeadlineTest {
 
     @Test
     @Timeout(30)
-    void nonExitingChildFailsClosedAndStopsLaterWork() throws Exception {
+    void unkillableChildFailsFatallyAndStaysOwnedUntilCloseConfirms() throws Exception {
         Fixture fixture = corpus();
         MutableClock clock = new MutableClock();
         ScriptedProcess unkillable = ScriptedProcess.scripted(clock,
@@ -414,23 +423,57 @@ final class RunnerDeadlineTest {
         try (QualificationRunner runner = runner(fixture, clock, launcher,
                 Duration.ofSeconds(10), new WorkBudget(8, 1_000_000, 100))) {
             long started = System.nanoTime();
-            QualificationReport report = runner.run();
+            UnkillableChildException fatal = assertThrows(UnkillableChildException.class,
+                    runner::run);
             long elapsed = TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - started);
             assertTrue(elapsed < 10,
                     "teardown of an unkillable child must stay bounded (took " + elapsed + "s)");
-            assertEquals(1, report.results().size(),
-                    "an unkillable child must fail the run closed: no later entry may start");
-            assertEquals(Verdict.SKIPPED_RENDER, report.results().get(0).verdict());
+            assertEquals("entry0", fatal.entryId());
             assertEquals(1, launcher.starts,
-                    "the runner must stop starting later work once a child cannot be killed");
+                    "the fatal run must not start later work");
             assertTrue(unkillable.destroyed() && unkillable.forciblyDestroyed(),
                     "the full destroy -> wait -> force -> final wait sequence must run");
             assertFalse(unkillable.exited(),
-                    "the child is genuinely unkillable and the runner must not pretend otherwise");
+                    "the unkillable child is still owned by the runner when run() returns");
             assertTrue(unkillable.streamsClosed(),
                     "the runner must close its pipe ends so the drains can join");
             assertEquals(0, unkillable.activeDrainReads(),
                     "no drain may remain blocked after the bounded teardown window");
+            // The child stays owned by the runner; make the seam killable so close() can
+            // confirm termination before the try-with-resources releases the runner.
+            unkillable.release();
+        }
+        assertTrue(unkillable.exited(),
+                "close() must retry force-destroy and confirm the retained child is terminal");
+    }
+
+    @Test
+    @Timeout(30)
+    void closeFailsLoudlyWhenTheRetainedChildStillWillNotDie() throws Exception {
+        Fixture fixture = corpus();
+        MutableClock clock = new MutableClock();
+        ScriptedProcess unkillable = ScriptedProcess.scripted(clock,
+                ScriptedProcess.Behavior.NEVER_EXITS, 30 * SECOND);
+        ScriptedLauncher launcher = new ScriptedLauncher(List.of(unkillable));
+        QualificationRunner runner = runner(fixture, clock, launcher, Duration.ofSeconds(10),
+                new WorkBudget(8, 1_000_000, 100));
+        try {
+            UnkillableChildException fatal = assertThrows(UnkillableChildException.class,
+                    runner::run);
+            assertFalse(unkillable.exited(),
+                    "the run must fail fatally while the child is still owned");
+            ReferenceException closeFailure = assertThrows(ReferenceException.class,
+                    runner::close);
+            assertEquals(ReferenceException.Kind.IO, closeFailure.kind());
+            assertTrue(closeFailure.getMessage().contains("close"),
+                    "the close failure must name the unresolved owned work: "
+                            + closeFailure.getMessage());
+            assertFalse(unkillable.exited(),
+                    "a child that was never made killable stays alive and close must not "
+                            + "return success while owned work is alive");
+        } finally {
+            // Leave the runner in a closable state for the test teardown.
+            runner.close();
         }
     }
 
@@ -573,12 +616,37 @@ final class RunnerDeadlineTest {
                 caller.interrupt();
             });
             long deadline = clock.nanoTime() + Duration.ofHours(1).toNanos();
-            runner.joinDrains(List.of(stubborn), deadline);
+            List<Thread> live = runner.joinDrains(List.of(stubborn), deadline);
+            assertTrue(live.isEmpty(),
+                    "the cancelled drain terminates and is confirmed, not retained");
             assertTrue(Thread.interrupted(),
                     "an interrupt that arrives during the drain join must be restored");
             assertFalse(stubborn.isAlive(),
                     "the wedged drain must be cancelled and confirmed terminal");
             interrupter.join();
+        }
+    }
+
+    @Test
+    @Timeout(30)
+    void joinDrainsRetainsDrainsItCannotConfirmWithinTheDeadline() throws Exception {
+        Fixture fixture = corpus();
+        ScriptedLauncher launcher = new ScriptedLauncher(List.of());
+        // A drain that deliberately ignores cancellation, so the bounded join can never
+        // confirm it; it must be returned as live instead of silently dropped.
+        Thread wedged = Thread.ofPlatform().daemon().name("wedged-drain").start(() -> {
+            while (true) {
+                LockSupport.park();
+                Thread.interrupted();   // ignore cancellation on purpose
+            }
+        });
+        try (QualificationRunner runner = runner(fixture, System::nanoTime, launcher, HOUR,
+                new WorkBudget(8, 1_000_000, 100))) {
+            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(200);
+            List<Thread> live = runner.joinDrains(List.of(wedged), deadline);
+            assertEquals(List.of(wedged), live,
+                    "a drain that refuses to end must be retained for close(), not dropped "
+                            + "alive at the deadline");
         }
     }
 
