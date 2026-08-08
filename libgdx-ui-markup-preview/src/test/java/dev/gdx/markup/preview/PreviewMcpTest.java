@@ -150,6 +150,44 @@ final class PreviewMcpTest {
                             + stderr);
             assertTrue(stderr.contains("failed to close MCP server"),
                     "the TERMINAL status carries the server close failure; stderr: " + stderr);
+            assertTrue(stderr.contains("injected-runtime-owner-close-failure"),
+                    "the TERMINAL status carries the actual injected runtime-owner cause text, "
+                            + "not only the generic wrapper; stderr: " + stderr);
+            assertTrue(stderr.contains("injected-server-close-failure"),
+                    "the TERMINAL status carries the actual injected server cause text, not "
+                            + "only the generic wrapper; stderr: " + stderr);
+        }
+        assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
+    }
+
+    @Test
+    @Timeout(120)
+    void terminalCauseChainIsNestedCycleSafeAndBounded() throws Exception {
+        Path ui = tempDir.resolve("mcp-cause-chain.xml");
+        Path css = tempDir.resolve("mcp-cause-chain.css");
+        Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
+        try (PreviewTestProcess child = PreviewTestProcess.launch(
+                "mcp-cause-chain", ui, css, null, Duration.ofSeconds(60))) {
+            int exit = child.await();
+            assertEquals(0, exit, "child exit code; stderr: " + child.stderr());
+            assertTrue(child.stdout().contains("preview-child: mcp-cause-chain ok"),
+                    "child ok line; stdout: " + child.stdout() + " stderr: " + child.stderr());
+            String stderr = child.stderr();
+            assertTrue(stderr.contains("\"kind\":\"TERMINAL\""),
+                    "the terminal state publishes a typed TERMINAL status; stderr: " + stderr);
+            assertTrue(stderr.contains("injected-root-cause"),
+                    "the TERMINAL status carries the root cause text; stderr: " + stderr);
+            assertTrue(stderr.contains("injected-mid-cause"),
+                    "the TERMINAL status carries the nested mid cause text; stderr: " + stderr);
+            assertTrue(stderr.contains("injected-deepest-cause"),
+                    "the TERMINAL status carries the deepest nested cause text through the "
+                            + "wrapper chain (getCause() traversal, not only suppressed); stderr: "
+                            + stderr);
+            assertEquals(1, countOccurrences(stderr, "injected-deepest-cause"),
+                    "the cyclic cause chain terminates and prints each cause exactly once "
+                            + "(cycle-safe, bounded); stderr: " + stderr);
+            assertTrue(stderr.length() < 8192,
+                    "the terminal output stays bounded; stderr length: " + stderr.length());
         }
         assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
     }

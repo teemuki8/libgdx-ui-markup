@@ -144,6 +144,7 @@ public final class PreviewTestChild {
                 case "restore-failure" -> runRestoreFailure(ui, css);
                 case "mcp-cleanup-failure" -> runMcpCleanupFailure(ui, css);
                 case "mcp-close-failure" -> runMcpCloseFailure(ui, css);
+                case "mcp-cause-chain" -> runMcpCauseChain(ui, css);
                 default -> fail("unknown scenario " + scenario);
             }
         } catch (Throwable failure) {
@@ -894,6 +895,83 @@ public final class PreviewTestChild {
                         app.rebuild();
                         assertSame(good, app.skin(), "rebuilds stop in the terminal state");
                         assertTrue(app.errorOverlayVisible(), "the terminal overlay persists");
+                        app.render();
+                        Gdx.app.exit();
+                    }
+                } catch (Throwable thrown) {
+                    fail(messageOf(thrown));
+                }
+            }
+
+            @Override public void dispose() {
+                app.dispose();
+            }
+        });
+    }
+
+    /**
+     * A nested and cyclic cause chain in the terminal cleanup: the injected runtime-owner close
+     * failure is wrapped by {@code closeOwned} as the cause of a generic "failed to close …"
+     * exception, and the injected failure itself chains root → mid → deepest → root (a cycle).
+     * The typed TERMINAL status must carry the deepest injected cause text through every
+     * wrapper level (not only the generic wrappers), must terminate (identity-based cycle
+     * detection) instead of overflowing the stack, and must stay bounded; the terminal state
+     * still renders and the last-good scene stays on screen.
+     */
+    private static void runMcpCauseChain(Path ui, Path css) {
+        writeFixture(ui, css, ENTITY_UI_A);
+        PreviewApp app = new PreviewApp(CliOptions.parse(new String[]{
+                "--ui", ui.toString(), "--css", css.toString(), "--mcp"}));
+        launch(new ApplicationAdapter() {
+            private int frame;
+            private Skin good;
+            private PreviewMcp mcpRef;
+
+            @Override public void create() {
+                app.create();
+            }
+
+            @Override public void render() {
+                try {
+                    frame++;
+                    if (frame == 1) {
+                        app.render();
+                        good = app.skin();
+                        mcpRef = app.mcp();
+                        assertNotNull(mcpRef, "the preview runs with --mcp");
+                        assertNotNull(mcpRef.runtimeSource(), "attachRuntime returns a live owner");
+                        assertEquals(List.of("user"), mcpRef.runtimeSource().registeredEntities());
+                        assertFrameHasOnly("user", app);
+                    } else if (frame == 2) {
+                        // A nested cause chain that cycles back on itself: root → mid → deepest
+                        // → root. closeOwned wraps the injected root as the cause of "failed to
+                        // close runtime registration"; only a getCause()-traversing, cycle-safe,
+                        // bounded terminal message can surface "injected-deepest-cause".
+                        IllegalStateException deepest =
+                                new IllegalStateException("injected-deepest-cause");
+                        IllegalStateException mid =
+                                new IllegalStateException("injected-mid-cause", deepest);
+                        IllegalStateException root =
+                                new IllegalStateException("injected-root-cause", mid);
+                        deepest.initCause(root); // cycle: root -> mid -> deepest -> root
+                        mcpRef.lastGoodRegistrar = (runtime, document, built, session) -> {
+                            throw new IllegalStateException("injected-restore-failure");
+                        };
+                        mcpRef.componentCloser = component -> {
+                            if (component == mcpRef.runtimeSource()) {
+                                throw root;
+                            }
+                            component.close(); // real close for the remaining owned components
+                        };
+                        writeUi(ui, COLLIDING_BAD_UI);
+                        app.rebuild(); // terminal; enterTerminal closes mcp with the cyclic root
+                        assertTrue(app.errorOverlayVisible(), "the terminal overlay is visible");
+                        assertNull(app.mcp(), "the MCP session is detached in the terminal state");
+                        assertSame(good, app.skin(), "the last-good skin stays on screen");
+                        assertTrue(app.stageContains("user"),
+                                "the last-good scene stays on screen");
+                        // The terminal state still renders: a cyclic cause traversal must not
+                        // overflow the stack or emit unbounded output.
                         app.render();
                         Gdx.app.exit();
                     }

@@ -32,7 +32,9 @@ import java.nio.file.StandardWatchEventKinds;
 import java.nio.file.WatchEvent;
 import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -245,50 +247,98 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
     }
 
     /**
-     * Builds the bounded terminal message from the primary failure and every suppressed
-     * cleanup failure at any depth (candidate close, retirement, reinstatement), so the typed
-     * TERMINAL status and overlay carry the restore cause.
+     * Builds the bounded terminal message from the primary failure and every linked cause at
+     * any depth — the direct {@link Throwable#getCause()} chain and the suppressed tree,
+     * recursively — so the typed TERMINAL status and overlay carry the actual injected cause
+     * text (component-close, candidate-close, retirement, reinstatement), not only the generic
+     * wrappers. The walk is deterministic (cause chain before suppressed, depth-first), bounded
+     * to the status string limit (append-level, so a single huge message cannot blow the
+     * builder), and cycle-safe (identity-based visited set, so a cyclic cause graph terminates
+     * instead of overflowing).
      */
     private static String terminalMessage(Throwable failure) {
         StringBuilder message = new StringBuilder();
         appendFailure(message, failure);
-        appendSuppressed(message, failure);
-        if (message.length() > MarkupStatus.MAX_STRING_LENGTH) {
-            message.setLength(MarkupStatus.MAX_STRING_LENGTH);
-        }
-        return message.toString();
-    }
-
-    private static void appendSuppressed(StringBuilder message, Throwable failure) {
-        for (Throwable suppressed : failure.getSuppressed()) {
-            appendCause(message, suppressed);
-        }
-    }
-
-    /** Appends one failure plus its whole suppressed tree as {@code "; cleanup failed: …"}. */
-    private static void appendCause(StringBuilder message, Throwable failure) {
-        message.append("; cleanup failed: ");
-        appendFailure(message, failure);
-        appendSuppressed(message, failure);
-    }
-
-    private static void appendFailure(StringBuilder message, Throwable failure) {
-        String text = failure.getMessage() == null
-                ? failure.getClass().getSimpleName() : failure.getMessage();
-        message.append(text);
+        appendLinked(message, failure, visitedWith(failure));
+        return MarkupStatus.bound(message.toString());
     }
 
     /**
-     * Appends one terminal-cleanup failure (and its suppressed causes) to the already-published
-     * terminal message, bounded to the status string limit.
+     * Appends every linked cause of {@code failure}: the direct cause chain first, then each
+     * suppressed failure, each throwable at most once (identity-based visited set, breaking
+     * cycles), stopping as soon as the message reaches the status string limit.
+     */
+    private static void appendLinked(StringBuilder message, Throwable failure,
+            Set<Throwable> visited) {
+        if (message.length() >= MarkupStatus.MAX_STRING_LENGTH) {
+            return; // bounded: no more room for another cause
+        }
+        Throwable cause = failure.getCause();
+        if (cause != null && visited.add(cause)) {
+            appendCause(message, cause);
+            appendLinked(message, cause, visited);
+        }
+        for (Throwable suppressed : failure.getSuppressed()) {
+            if (message.length() >= MarkupStatus.MAX_STRING_LENGTH) {
+                return;
+            }
+            if (visited.add(suppressed)) {
+                appendCause(message, suppressed);
+                appendLinked(message, suppressed, visited);
+            }
+        }
+    }
+
+    /** A fresh identity-keyed visited set, seeded with the root so a cycle back to it stops. */
+    private static Set<Throwable> visitedWith(Throwable root) {
+        Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+        visited.add(root);
+        return visited;
+    }
+
+    /** Appends one linked failure as {@code "; cleanup failed: …"}, only when it fully fits. */
+    private static void appendCause(StringBuilder message, Throwable failure) {
+        if (message.length() + CLEANUP_MARKER.length() > MarkupStatus.MAX_STRING_LENGTH) {
+            return; // bounded: the marker would overflow the status string limit
+        }
+        message.append(CLEANUP_MARKER);
+        appendFailure(message, failure);
+    }
+
+    /** The separator between the wrapper and each linked cause in terminal messages. */
+    private static final String CLEANUP_MARKER = "; cleanup failed: ";
+
+    /** Appends the failure's message or class name, never exceeding the status string limit
+     * and never splitting a surrogate pair at the cut. */
+    private static void appendFailure(StringBuilder message, Throwable failure) {
+        String text = failure.getMessage() == null
+                ? failure.getClass().getSimpleName() : failure.getMessage();
+        int remaining = MarkupStatus.MAX_STRING_LENGTH - message.length();
+        if (remaining <= 0) {
+            return;
+        }
+        if (text.length() > remaining) {
+            int cut = remaining;
+            if (Character.isHighSurrogate(text.charAt(cut - 1))
+                    && Character.isLowSurrogate(text.charAt(cut))) {
+                cut--; // never split a surrogate pair at the cut
+            }
+            message.append(text, 0, cut);
+        } else {
+            message.append(text);
+        }
+    }
+
+    /**
+     * Appends one terminal-cleanup failure (and its linked causes) to the already-published
+     * terminal message, bounded to the status string limit and surrogate-safe through
+     * {@link MarkupStatus#bound}.
      */
     private static String appendCleanupCause(String message, Throwable cleanup) {
         StringBuilder builder = new StringBuilder(message);
         appendCause(builder, cleanup);
-        if (builder.length() > MarkupStatus.MAX_STRING_LENGTH) {
-            builder.setLength(MarkupStatus.MAX_STRING_LENGTH);
-        }
-        return builder.toString();
+        appendLinked(builder, cleanup, visitedWith(cleanup));
+        return MarkupStatus.bound(builder.toString());
     }
 
     /**

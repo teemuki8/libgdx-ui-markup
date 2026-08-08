@@ -121,9 +121,10 @@ public record MarkupStatus(
     /**
      * Truncates a value to {@link #MAX_STRING_LENGTH} UTF-16 units, backing off by one unit
      * when the cut would split a surrogate pair so the result never ends in a dangling
-     * high or low surrogate.
+     * high or low surrogate. Package-visible so the preview's terminal-message builder applies
+     * the exact same surrogate-safe bound as the wire fields.
      */
-    private static String bound(String value) {
+    static String bound(String value) {
         if (value == null || value.length() <= MAX_STRING_LENGTH) {
             return value;
         }
