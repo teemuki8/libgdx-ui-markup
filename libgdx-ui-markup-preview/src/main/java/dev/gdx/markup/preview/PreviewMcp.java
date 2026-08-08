@@ -15,6 +15,7 @@ import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.wait.WaitEngine;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3FrameFence;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3ScreenCapture;
+import dev.gdx.uiharness.mcp.ArtifactReference;
 import dev.gdx.uiharness.mcp.HarnessMcpServer;
 import dev.gdx.uiharness.protocol.CapabilitySet;
 import dev.gdx.uiharness.protocol.HarnessProtocolService;
@@ -27,7 +28,10 @@ import io.github.teemuki8.libgdx.agent.runtime.core.AgentRuntimeException;
 import io.github.teemuki8.libgdx.agent.runtime.core.RuntimeErrorCode;
 import io.github.teemuki8.libgdx.agent.runtime.core.SessionId;
 import io.github.teemuki8.libgdx.agent.runtime.core.UiFrameCorrelation;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -68,46 +72,122 @@ final class PreviewMcp implements AutoCloseable {
     private boolean runtimeLost;
 
     PreviewMcp(Stage stage) {
+        this(stage, TmpDirArtifactPublisher::new,
+                (protocol, artifacts) -> HarnessMcpServer.open(
+                        protocol, artifacts, System.in, System.out),
+                AutoCloseable::close);
+    }
+
+    /**
+     * Test seam constructor: injectable artifact/server factories and an acquired-resource
+     * closer so tests can prove staged ownership — every component acquired before an
+     * initialization failure is closed, with cleanup failures suppressed onto the primary.
+     */
+    PreviewMcp(Stage stage, ArtifactsFactory artifactsFactory, McpServerFactory serverFactory,
+            ComponentCloser closer) {
         this.stage = Objects.requireNonNull(stage, "stage");
-        clock = new ControlledStageClock(stage, FIXED_STEP);
-        scheduler = new RenderThreadScheduler(128);
-        session = new Scene2dSession(stage);
-        sink = new HarnessSemanticSink(session.semantics(), CORRELATION_TOKEN);
-        fence = new Lwjgl3FrameFence(64);
-        Lwjgl3ScreenCapture capture = new Lwjgl3ScreenCapture(fence, session::snapshot);
-        WaitEngine waits = new WaitEngine(this::snapshotForWait,
-                new StrictResolution(), clock, clock);
-        runtime = AgentRuntime.builder().sessionId(SessionId.of(PreviewApp.SESSION_ID)).build();
-        runtime.start();
-        CapabilitySet capabilities =
-                new CapabilitySet(List.of("snapshot", "query", "action", "wait", "screenshot",
-                        "ui_runtime_compare"));
-        Scene2dHarness harness = new Scene2dHarness(stage, stage, session, scheduler, clock,
-                clock::revision, clock::frame);
-        RuntimeObservationSource runtimeObservation =
-                new AgentRuntimeObservationSource(runtime, PreviewApp.SESSION_ID);
-        RuntimeComparator runtimeComparator = new RuntimeComparator(runtimeObservation);
-        HarnessProtocolService.RuntimeCompareCoordinator runtimeCoordinator =
-                (locator, deadline) -> scheduler.submit(
-                        () -> runtimeComparator.compare(
-                                session.snapshot(clock.revision(), clock.frame()),
-                                locator.toCore(), new StrictResolution()),
-                        deadline);
-        HarnessProtocolService.Session protocolSession = new HarnessProtocolService.Session(
-                harness, new StrictResolution(), waits, capture, capabilities,
-                HarnessProtocolService.TraceController.unsupported(),
-                Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
-                Optional.empty(), Optional.empty(), Optional.of(runtimeCoordinator));
-        HarnessProtocolService protocol = new HarnessProtocolService(
-                Map.of(PreviewApp.SESSION_ID, protocolSession), clock,
-                Executors.newThreadPerTaskExecutor(
-                        Thread.ofVirtual().name("markup-protocol-", 0).factory()));
-        artifacts = new TmpDirArtifactPublisher();
-        server = HarnessMcpServer.open(protocol, artifacts, System.in, System.out);
-        terminator = Thread.ofPlatform().name("markup-mcp-terminator").daemon().start(() -> {
-            server.awaitTermination();
-            Gdx.app.postRunnable(Gdx.app::exit);
-        });
+        this.componentCloser = Objects.requireNonNull(closer, "closer");
+        List<AutoCloseable> acquired = new ArrayList<>();
+        try {
+            ControlledStageClock clock = new ControlledStageClock(stage, FIXED_STEP);
+            acquired.add(clock);
+            this.clock = clock;
+            RenderThreadScheduler scheduler = new RenderThreadScheduler(128);
+            acquired.add(scheduler);
+            this.scheduler = scheduler;
+            Scene2dSession session = new Scene2dSession(stage);
+            acquired.add(session);
+            this.session = session;
+            sink = new HarnessSemanticSink(session.semantics(), CORRELATION_TOKEN);
+            Lwjgl3FrameFence fence = new Lwjgl3FrameFence(64);
+            acquired.add(fence);
+            this.fence = fence;
+            Lwjgl3ScreenCapture capture = new Lwjgl3ScreenCapture(fence, session::snapshot);
+            acquired.add(capture);
+            WaitEngine waits = new WaitEngine(this::snapshotForWait,
+                    new StrictResolution(), clock, clock);
+            acquired.add(waits);
+            AgentRuntime runtime = AgentRuntime.builder()
+                    .sessionId(SessionId.of(PreviewApp.SESSION_ID)).build();
+            runtime.start();
+            acquired.add(runtime);
+            this.runtime = runtime;
+            CapabilitySet capabilities =
+                    new CapabilitySet(List.of("snapshot", "query", "action", "wait", "screenshot",
+                            "ui_runtime_compare"));
+            Scene2dHarness harness = new Scene2dHarness(stage, stage, session, scheduler, clock,
+                    clock::revision, clock::frame);
+            acquired.add(harness);
+            RuntimeObservationSource runtimeObservation =
+                    new AgentRuntimeObservationSource(runtime, PreviewApp.SESSION_ID);
+            RuntimeComparator runtimeComparator = new RuntimeComparator(runtimeObservation);
+            HarnessProtocolService.RuntimeCompareCoordinator runtimeCoordinator =
+                    (locator, deadline) -> scheduler.submit(
+                            () -> runtimeComparator.compare(
+                                    session.snapshot(clock.revision(), clock.frame()),
+                                    locator.toCore(), new StrictResolution()),
+                            deadline);
+            HarnessProtocolService.Session protocolSession = new HarnessProtocolService.Session(
+                    harness, new StrictResolution(), waits, capture, capabilities,
+                    HarnessProtocolService.TraceController.unsupported(),
+                    Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                    Optional.empty(), Optional.empty(), Optional.of(runtimeCoordinator));
+            HarnessProtocolService protocol = new HarnessProtocolService(
+                    Map.of(PreviewApp.SESSION_ID, protocolSession), clock,
+                    Executors.newThreadPerTaskExecutor(
+                            Thread.ofVirtual().name("markup-protocol-", 0).factory()));
+            TmpDirArtifactPublisher artifacts = artifactsFactory.create();
+            acquired.add(artifacts);
+            this.artifacts = artifacts;
+            HarnessMcpServer server = serverFactory.open(protocol, artifacts);
+            acquired.add(server);
+            this.server = server;
+            terminator = Thread.ofPlatform().name("markup-mcp-terminator").daemon().start(() -> {
+                server.awaitTermination();
+                Gdx.app.postRunnable(Gdx.app::exit);
+            });
+        } catch (RuntimeException | Error failure) {
+            // Staged ownership: every component acquired before the failure is closed (each
+            // best-effort), and any cleanup failure is suppressed onto the primary failure.
+            RuntimeException cleanup = closeAcquired(acquired);
+            if (cleanup != null) {
+                failure.addSuppressed(cleanup);
+            }
+            throw failure;
+        }
+    }
+
+    /** Closes every acquired component (in acquisition order; each close is best-effort) and
+     * returns the aggregated cleanup failure, or {@code null} when all closes succeeded. */
+    private RuntimeException closeAcquired(List<AutoCloseable> acquired) {
+        RuntimeException primary = null;
+        for (AutoCloseable component : acquired) {
+            try {
+                componentCloser.close(component);
+            } catch (Exception failure) {
+                RuntimeException wrapped = new IllegalStateException(
+                        "failed to close acquired component", failure);
+                if (primary == null) {
+                    primary = wrapped;
+                } else {
+                    primary.addSuppressed(wrapped);
+                }
+            }
+        }
+        return primary;
+    }
+
+    /** Test seam: creates the artifact publisher (injectable to prove staged cleanup). */
+    @FunctionalInterface
+    interface ArtifactsFactory {
+        TmpDirArtifactPublisher create();
+    }
+
+    /** Test seam: opens the MCP server (injectable to prove staged cleanup). */
+    @FunctionalInterface
+    interface McpServerFactory {
+        HarnessMcpServer open(HarnessProtocolService protocol,
+                ArtifactReference.Publisher artifacts);
     }
 
     /** Returns the semantic sink bridging markup metadata into the harness facade. */

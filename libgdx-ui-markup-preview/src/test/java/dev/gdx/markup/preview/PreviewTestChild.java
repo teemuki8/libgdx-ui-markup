@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.badlogic.gdx.ApplicationAdapter;
@@ -13,6 +14,7 @@ import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.backends.lwjgl3.Lwjgl3Application;
 import com.badlogic.gdx.backends.lwjgl3.Lwjgl3ApplicationConfiguration;
 import com.badlogic.gdx.graphics.GL20;
+import com.badlogic.gdx.scenes.scene2d.Stage;
 import com.badlogic.gdx.scenes.scene2d.ui.Skin;
 import dev.gdx.markup.runtime.MarkupRuntimeSource;
 import dev.gdx.uiharness.mcp.HarnessMcpServer;
@@ -145,6 +147,7 @@ public final class PreviewTestChild {
                 case "mcp-cleanup-failure" -> runMcpCleanupFailure(ui, css);
                 case "mcp-close-failure" -> runMcpCloseFailure(ui, css);
                 case "mcp-cause-chain" -> runMcpCauseChain(ui, css);
+                case "mcp-init-failure" -> runMcpInitFailure(ui, css);
                 default -> fail("unknown scenario " + scenario);
             }
         } catch (Throwable failure) {
@@ -982,6 +985,100 @@ public final class PreviewTestChild {
 
             @Override public void dispose() {
                 app.dispose();
+            }
+        });
+    }
+
+    /**
+     * Staged constructor ownership: when the MCP server (or the artifact publisher) fails to
+     * initialize, every component already acquired — publisher, server, session, scheduler,
+     * clock, runtime, harness, fence, capture, waits — must be closed best-effort and any
+     * cleanup failure aggregated (suppressed) onto the primary initialization failure. The
+     * injected closer records every close, so the child can prove no acquired resource leaks
+     * and that a successful close after a failed server open still removes the publisher's
+     * session directory.
+     */
+    private static void runMcpInitFailure(Path ui, Path css) {
+        writeFixture(ui, css, ENTITY_UI_A);
+        launch(new ApplicationAdapter() {
+            private int frame;
+            private Stage probe;
+
+            @Override public void create() {
+                probe = new Stage();
+            }
+
+            @Override public void render() {
+                try {
+                    frame++;
+                    if (frame == 1) {
+                        java.util.concurrent.atomic.AtomicReference<TmpDirArtifactPublisher>
+                                created = new java.util.concurrent.atomic.AtomicReference<>();
+                        java.util.concurrent.atomic.AtomicInteger closes =
+                                new java.util.concurrent.atomic.AtomicInteger();
+                        // Server-open failure after the publisher was acquired: the constructor
+                        // must close every acquired component (including the publisher, whose
+                        // session directory is deleted) and rethrow the primary failure with
+                        // the cleanup aggregated.
+                        RuntimeException serverFailure = assertThrows(RuntimeException.class,
+                                () -> new PreviewMcp(probe,
+                                        () -> {
+                                            TmpDirArtifactPublisher publisher =
+                                                    new TmpDirArtifactPublisher();
+                                            created.set(publisher);
+                                            return publisher;
+                                        },
+                                        (protocol, artifacts) -> {
+                                            throw new IllegalStateException(
+                                                    "injected-server-open-failure");
+                                        },
+                                        component -> {
+                                            closes.incrementAndGet();
+                                            component.close();
+                                        }));
+                        assertTrue(serverFailure.getMessage() != null
+                                        && serverFailure.getMessage()
+                                                .contains("injected-server-open-failure"),
+                                "the primary server-open failure propagates: "
+                                        + serverFailure.getMessage());
+                        assertNotNull(created.get(), "the publisher was acquired");
+                        assertFalse(Files.exists(created.get().sessionDir()),
+                                "the acquired publisher's session directory is removed "
+                                        + "during staged constructor cleanup");
+                        assertTrue(closes.get() >= 9,
+                                "every acquired component close was attempted: " + closes.get());
+                        // Artifact-publisher failure: nothing is acquired past the publisher,
+                        // and the failure propagates (the publisher constructor itself removes
+                        // its directory — proven in the unit tests).
+                        RuntimeException publisherFailure = assertThrows(RuntimeException.class,
+                                () -> new PreviewMcp(probe,
+                                        () -> {
+                                            throw new IllegalStateException(
+                                                    "injected-artifact-init-failure");
+                                        },
+                                        (protocol, artifacts) -> {
+                                            throw new AssertionError("server must not open");
+                                        },
+                                        component -> {
+                                            closes.incrementAndGet();
+                                            component.close();
+                                        }));
+                        assertTrue(publisherFailure.getMessage() != null
+                                        && publisherFailure.getMessage()
+                                                .contains("injected-artifact-init-failure"),
+                                "the artifact-init failure propagates: "
+                                        + publisherFailure.getMessage());
+                        Gdx.app.exit();
+                    }
+                } catch (Throwable thrown) {
+                    fail(messageOf(thrown));
+                }
+            }
+
+            @Override public void dispose() {
+                if (probe != null) {
+                    probe.dispose();
+                }
             }
         });
     }

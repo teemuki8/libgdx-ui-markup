@@ -340,19 +340,24 @@ final class MarkupHarnessEndToEndTest {
     private static byte[] readBack(MarkupMcpClient.Artifact artifact) throws Exception {
         String sha256 = artifact.sha256();
         assertNotNull(sha256);
-        Path root = Path.of(System.getProperty("java.io.tmpdir"),
-                "gdx-ui-markup-artifacts");
-        assertTrue(Files.isDirectory(root), "artifact root exists: " + root);
-        Path payload;
-        try (Stream<Path> walk = Files.walk(root, 2)) {
-            payload = walk
+        Path osTemp = Path.of(System.getProperty("java.io.tmpdir"));
+        try (Stream<Path> sessions = Files.list(osTemp)) {
+            Path payload = sessions
+                    .filter(path -> path.getFileName().toString().startsWith("gdx-markup-"))
+                    .flatMap(session -> {
+                        try {
+                            return Files.list(session);
+                        } catch (java.io.IOException failure) {
+                            throw new java.io.UncheckedIOException(failure);
+                        }
+                    })
                     .filter(path -> path.getFileName().toString().equals(sha256))
                     .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
                     .findFirst()
                     .orElseThrow(() -> new AssertionError(
-                            "artifact persisted by digest under " + root));
+                            "artifact persisted by digest under " + osTemp));
+            return Files.readAllBytes(payload);
         }
-        return Files.readAllBytes(payload);
     }
 
     private static boolean isPng(byte[] bytes) {
