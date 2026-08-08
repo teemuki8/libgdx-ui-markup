@@ -10,6 +10,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.badlogic.gdx.graphics.Color;
+import com.badlogic.gdx.graphics.Pixmap;
+import com.badlogic.gdx.graphics.Texture;
 import com.badlogic.gdx.scenes.scene2d.Actor;
 import com.badlogic.gdx.scenes.scene2d.Group;
 import com.badlogic.gdx.scenes.scene2d.ui.CheckBox;
@@ -666,6 +668,102 @@ final class MarkupBuilderTest {
                             built.root().getChildren().get(1);
             assertEquals(2, list.getItems().size);
         });
+    }
+
+    @Test
+    void defaultSkinDisposesUploadPixmapOnceAndSkinOwnsTexture() throws Exception {
+        GdxTestHost.run(() -> {
+            List<TrackingPixmap> pixmaps = new ArrayList<>();
+            List<TrackingTexture> textures = new ArrayList<>();
+            List<Skin> skins = new ArrayList<>();
+            for (int round = 0; round < 2; round++) {
+                TrackingPixmap pixmap = new TrackingPixmap();
+                pixmaps.add(pixmap);
+                Skin skin = DefaultSkin.create(() -> pixmap, pixel -> {
+                    TrackingTexture texture = new TrackingTexture(pixel);
+                    textures.add(texture);
+                    return texture;
+                });
+                skins.add(skin);
+                assertEquals(1, pixmap.disposeCount,
+                        "the uploaded pixmap is disposed exactly once after upload");
+                assertTrue(pixmap.isDisposed(), "the uploaded pixmap is disposed after upload");
+                TrackingTexture texture = textures.get(round);
+                assertSame(texture, skin.get("pixel", TrackingTexture.class),
+                        "the pixel texture is registered with the skin");
+                assertEquals(0, texture.disposeCount,
+                        "create() keeps the texture alive; only the pixmap is disposed");
+            }
+            for (int i = 0; i < skins.size(); i++) {
+                skins.get(i).dispose();
+                TrackingTexture texture = textures.get(i);
+                assertEquals(1, texture.disposeCount,
+                        "skin disposal owns the texture and disposes it exactly once");
+                assertEquals(1, pixmaps.get(i).disposeCount,
+                        "the pixmap is not retained in the skin and is never double-disposed");
+            }
+        });
+    }
+
+    @Test
+    void defaultSkinFailurePathDisposesPixmapExactlyOnce() throws Exception {
+        GdxTestHost.run(() -> {
+            RuntimeException uploadFailure = new RuntimeException("simulated upload failure");
+            TrackingPixmap pixmap = new TrackingPixmap();
+            RuntimeException failure = assertThrows(RuntimeException.class, () ->
+                    DefaultSkin.create(() -> pixmap, pixel -> {
+                        throw uploadFailure;
+                    }));
+            assertSame(uploadFailure, failure, "the construction failure propagates to the caller");
+            assertEquals(1, pixmap.disposeCount,
+                    "a failed texture construction still disposes the pixmap exactly once");
+            assertTrue(pixmap.isDisposed(), "the pixmap is disposed on the failure path");
+
+            TrackingPixmap first = new TrackingPixmap();
+            TrackingPixmap second = new TrackingPixmap();
+            assertThrows(RuntimeException.class, () ->
+                    DefaultSkin.create(() -> first, pixel -> {
+                        throw uploadFailure;
+                    }));
+            assertThrows(RuntimeException.class, () ->
+                    DefaultSkin.create(() -> second, pixel -> {
+                        throw uploadFailure;
+                    }));
+            assertEquals(1, first.disposeCount, "repeated failure leaks no pixmap");
+            assertEquals(1, second.disposeCount, "repeated failure leaks no pixmap");
+        });
+    }
+
+    /** Counts {@link Pixmap#dispose()} calls so ownership tests can assert exactly-once disposal. */
+    private static final class TrackingPixmap extends Pixmap {
+        int disposeCount;
+
+        TrackingPixmap() {
+            super(1, 1, Pixmap.Format.RGBA8888);
+            setColor(Color.WHITE);
+            fill();
+        }
+
+        @Override
+        public void dispose() {
+            disposeCount++;
+            super.dispose();
+        }
+    }
+
+    /** Counts {@link Texture#dispose()} calls; uploads a real texture from the given pixmap. */
+    private static final class TrackingTexture extends Texture {
+        int disposeCount;
+
+        TrackingTexture(Pixmap pixmap) {
+            super(pixmap);
+        }
+
+        @Override
+        public void dispose() {
+            disposeCount++;
+            super.dispose();
+        }
     }
 
     private static Map<String, String> invalidPad() {

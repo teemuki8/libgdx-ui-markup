@@ -45,8 +45,23 @@ public final class DefaultSkin {
 
     /** Builds a fresh skin; call on the render thread and dispose when done. */
     public static Skin create() {
+        return create(DefaultSkin::createPixel, pixmap -> new Texture(pixmap));
+    }
+
+    /**
+     * Package-visible ownership seam: the render-thread tests inject tracking pixel/texture
+     * factories to observe disposal. Production callers use {@link #create()}.
+     */
+    static Skin create(PixmapFactory pixels, TextureFactory textures) {
         Skin skin = new Skin();
-        Texture pixelTexture = new Texture(createPixel());
+        Pixmap pixmap = pixels.create();
+        Texture pixelTexture;
+        try {
+            // Texture(Pixmap) copies the pixels during construction; the Pixmap is never retained.
+            pixelTexture = textures.create(pixmap);
+        } finally {
+            pixmap.dispose();
+        }
         pixelTexture.setFilter(Texture.TextureFilter.Nearest, Texture.TextureFilter.Nearest);
         BitmapFont font = new BitmapFont();
         font.getData().markupEnabled = false;
@@ -58,6 +73,18 @@ public final class DefaultSkin {
         addDrawables(skin, pixel);
         addStyles(skin, font, pixel);
         return skin;
+    }
+
+    /** Pixel source for the skin's 1&times;1 upload. */
+    @FunctionalInterface
+    interface PixmapFactory {
+        Pixmap create();
+    }
+
+    /** Texture uploader; the pixel is uploaded during construction. */
+    @FunctionalInterface
+    interface TextureFactory {
+        Texture create(Pixmap pixmap);
     }
 
     private static Pixmap createPixel() {
