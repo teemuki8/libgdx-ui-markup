@@ -19,14 +19,18 @@ import com.badlogic.gdx.scenes.scene2d.ui.Window;
 import com.badlogic.gdx.scenes.scene2d.utils.Drawable;
 import com.badlogic.gdx.utils.Align;
 import dev.gdx.markup.core.style.CssDocument;
+import dev.gdx.markup.core.style.CssRule;
 import dev.gdx.markup.core.style.CssStyleResolver;
 import dev.gdx.markup.core.style.ResolvedStyle;
+import dev.gdx.markup.core.style.Selector;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Builds a Scene2D actor tree from a parsed markup document and stylesheet on the render thread.
@@ -44,6 +48,7 @@ public final class MarkupBuilder {
     private final SemanticSink sink;
     private final MarkupRegistry registry;
     private final CssStyleResolver resolver;
+    private final Set<String> taglessPseudoStates;
     private final int maxElements;
     private final int maxDepth;
 
@@ -55,8 +60,26 @@ public final class MarkupBuilder {
         this.sink = Objects.requireNonNull(sink, "sink");
         this.registry = Objects.requireNonNull(registry, "registry");
         this.resolver = new CssStyleResolver(css);
+        this.taglessPseudoStates = taglessPseudoStates(css);
         this.maxElements = maxElements;
         this.maxDepth = maxDepth;
+    }
+
+    /**
+     * The pseudo-states used by class-only/id-only selectors in this stylesheet. Tag selectors
+     * (and {@code tag.class}) compile into skin styles, so only tagless pseudo rules need
+     * per-actor application; resolving every state for every actor would multiply cascade work.
+     */
+    private static Set<String> taglessPseudoStates(CssDocument css) {
+        Set<String> states = new HashSet<>();
+        for (CssRule rule : css.rules()) {
+            for (Selector selector : rule.selectors()) {
+                if (selector.tag() == null && selector.pseudo() != null) {
+                    states.add(selector.pseudo());
+                }
+            }
+        }
+        return Set.copyOf(states);
     }
 
     /**
@@ -542,53 +565,111 @@ public final class MarkupBuilder {
             }
         }
 
-        /** Applies class-only/id-only CSS style overrides directly to the actor's style. */
+        /**
+         * Applies class-only/id-only CSS style overrides directly to the actor's style. The
+         * base variant mutates a clone of the actor's style; every tagless pseudo variant in
+         * this stylesheet mutates the same clone through the shared pseudo-to-field mapping, so
+         * the derived style is assigned only to this actor and the shared skin style is never
+         * touched.
+         */
         private void applyCssOverrides(Element element, Actor actor, Table cellTable) {
-            ResolvedStyle style = resolveStyle(element, null);
-            if (actor instanceof Table table && style.has("background")) {
-                table.setBackground(requireDrawable(element, style.get("background")));
-            }
-            if (!style.has("font-color") && !style.has("color") && !style.has("font")
-                    && !style.has("background") && !style.has("text-align")) {
-                return;
+            ResolvedStyle base = resolveStyle(element, null);
+            if (actor instanceof Table table && base.has("background")) {
+                table.setBackground(requireDrawable(element, base.get("background")));
             }
             Object copied = null;
-            if (style.has("font-color") || style.has("color")) {
-                Object styleObject = widgetStyle(actor);
-                if (styleObject != null) {
-                    copied = SkinStyleCompiler.copyOf(styleObject);
-                    SkinStyleCompiler.setColor(copied, color(element, style));
-                }
+            if (hasStateStyle(base)) {
+                copied = applyStateStyle(element, actor, base, null, copied);
             }
-            if (style.has("font")) {
-                Object styleObject = copied != null ? copied : widgetStyle(actor);
-                if (styleObject != null) {
-                    if (copied == null) {
-                        copied = SkinStyleCompiler.copyOf(styleObject);
+            if (needsTaglessPseudoStyles(element)) {
+                for (String pseudo : taglessPseudoStates) {
+                    ResolvedStyle variant = resolveStyle(element, pseudo);
+                    if (hasStateStyle(variant)) {
+                        copied = applyStateStyle(element, actor, variant, pseudo, copied);
                     }
-                    SkinStyleCompiler.setFont(copied, requireFont(element, style.get("font")));
-                }
-            }
-            if (style.has("background")) {
-                Object styleObject = copied != null ? copied : widgetStyle(actor);
-                if (styleObject != null) {
-                    if (copied == null) {
-                        copied = SkinStyleCompiler.copyOf(styleObject);
-                    }
-                    SkinStyleCompiler.setBaseDrawable(copied,
-                            requireDrawable(element, style.get("background")));
                 }
             }
             if (copied != null) {
                 setWidgetStyle(actor, copied);
             }
-            if (style.has("text-align")) {
+            if (base.has("text-align")) {
                 if (actor instanceof Label label) {
-                    label.setAlignment(alignOf(style.get("text-align")));
+                    label.setAlignment(alignOf(base.get("text-align")));
                 } else if (actor instanceof TextField field) {
-                    field.setAlignment(alignOf(style.get("text-align")));
+                    field.setAlignment(alignOf(base.get("text-align")));
                 }
             }
+        }
+
+        /** Style-field properties applied per actor for tagless selectors. */
+        private static final List<String> STATE_STYLE_PROPERTIES = List.of(
+                "background", "background-over", "background-down", "background-checked",
+                "background-disabled", "font-color", "color", "font");
+
+        private static boolean hasStateStyle(ResolvedStyle style) {
+            for (String property : STATE_STYLE_PROPERTIES) {
+                if (style.has(property)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private boolean needsTaglessPseudoStyles(Element element) {
+            return !taglessPseudoStates.isEmpty()
+                    && (element.id() != null || !element.classes().isEmpty());
+        }
+
+        /**
+         * Applies every state style property of one pseudo variant to the actor's widget style,
+         * cloning it before the first mutation. Returns the (possibly new) clone, or {@code null}
+         * when nothing was applied.
+         */
+        private Object applyStateStyle(Element element, Actor actor, ResolvedStyle style,
+                String pseudo, Object copied) {
+            Object styleObject = copied != null ? copied : widgetStyle(actor);
+            if (styleObject == null) {
+                if (pseudo != null) {
+                    throw unsupportedState(element, style, pseudo);
+                }
+                return copied; // base font-color on an image: preserved silent no-op
+            }
+            if (copied == null) {
+                copied = SkinStyleCompiler.copyOf(styleObject);
+            }
+            for (String property : STATE_STYLE_PROPERTIES) {
+                if (!style.has(property)) {
+                    continue;
+                }
+                String state = SkinStyleCompiler.propertyState(property, pseudo);
+                CssRule source = style.sourceRule(property);
+                switch (property) {
+                    case "background", "background-over", "background-down", "background-checked",
+                            "background-disabled" -> SkinStyleCompiler.setStateDrawable(copied,
+                                    state, requireDrawable(element, style.get(property)),
+                                    element.tag(), property, source);
+                    case "color", "font-color" -> SkinStyleCompiler.setStateColor(copied, state,
+                            color(element, style), element.tag(), property, source);
+                    case "font" -> SkinStyleCompiler.setStateFont(copied, state,
+                            requireFont(element, style.get("font")), element.tag(), property,
+                            source);
+                    default -> throw new AssertionError(property);
+                }
+            }
+            return copied;
+        }
+
+        private MarkupException unsupportedState(Element element, ResolvedStyle style,
+                String pseudo) {
+            String property = null;
+            for (String candidate : STATE_STYLE_PROPERTIES) {
+                if (style.has(candidate)) {
+                    property = candidate;
+                    break;
+                }
+            }
+            CssRule source = style.sourceRule(property);
+            return SkinStyleCompiler.unsupported(element.tag(), pseudo, property, source);
         }
 
         private Drawable requireDrawable(Element element, String name) {

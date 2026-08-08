@@ -8,8 +8,10 @@ import java.util.Objects;
 
 /**
  * Applies the deterministic cascade: specificity ({@code #id}=100 &gt; {@code .class}=10 &gt;
- * {@code tag}=1, {@code tag.class}=11) wins; later rules break ties. Each element resolves to one
- * immutable {@link ResolvedStyle} per pseudo-state; the base style uses a {@code null} pseudo.
+ * {@code tag}=1, {@code tag.class}=11) wins; later rules break ties. A comma group scores the
+ * maximum specificity over every matching part, so {@code button, #save} matches at 100, not
+ * the first part's 1. Each element resolves to one immutable {@link ResolvedStyle} per
+ * pseudo-state; the base style uses a {@code null} pseudo.
  * Selector comparisons are counted against per-resolve and per-build (resolver lifetime) work
  * limits; a build creates one resolver, so callers that resolve many elements bound the total
  * cascade work. One resolver is not thread-safe.
@@ -71,6 +73,7 @@ public final class CssStyleResolver {
         int comparisons = 0;
         List<Candidate> matching = new ArrayList<>();
         for (CssRule rule : rules) {
+            int bestSpecificity = -1;
             for (Selector selector : rule.selectors()) {
                 if (++comparisons > maxComparisonsPerResolve) {
                     throw tooLarge(element, "style resolution for <" + element.tag()
@@ -80,10 +83,16 @@ public final class CssStyleResolver {
                     throw tooLarge(element, "style resolution exceeds the "
                             + maxComparisonsPerBuild + "-comparison build limit");
                 }
-                if (selector.matches(element.tag(), element.id(), element.classes(), pseudo)) {
-                    matching.add(new Candidate(rule, selector.specificity()));
-                    break;
+                // Every matching part of a comma group counts; the strongest part scores the
+                // whole rule, so `button, #save` beats a class rule even though `button` also
+                // matches.
+                if (selector.matches(element.tag(), element.id(), element.classes(), pseudo)
+                        && selector.specificity() > bestSpecificity) {
+                    bestSpecificity = selector.specificity();
                 }
+            }
+            if (bestSpecificity >= 0) {
+                matching.add(new Candidate(rule, bestSpecificity));
             }
         }
         matching.sort((left, right) -> {
@@ -93,7 +102,8 @@ public final class CssStyleResolver {
         });
         ResolvedStyle.Builder builder = ResolvedStyle.builder();
         for (Candidate candidate : matching) {
-            candidate.rule.properties().forEach(builder::put);
+            candidate.rule.properties().forEach((property, value) ->
+                    builder.put(property, value, candidate.rule));
         }
         return builder.build();
     }

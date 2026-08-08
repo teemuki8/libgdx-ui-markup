@@ -3,6 +3,7 @@ package dev.gdx.markup.core;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -303,6 +304,102 @@ final class MarkupBuilderTest {
             assertEquals(expected, label.getStyle().fontColor);
             assertFalse(label.getStyle() == skin.get("label", Label.LabelStyle.class),
                     "per-actor overrides clone the shared style");
+        });
+    }
+
+    @Test
+    void cssCompiledPseudoFontColorIsStateSpecific() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            BuiltUi built = MarkupBuilder.build(markup.parse("<ui><checkbox id=\"c\"/></ui>"),
+                    css.parse("checkbox:hover { font-color: accent; }"), skin, new NoopSink());
+            CheckBox checkBox = (CheckBox) built.root().getChildren().first();
+            CheckBox.CheckBoxStyle style = checkBox.getStyle();
+            assertEquals(skin.getColor("accent"), style.overFontColor,
+                    "hover compiles into the over font color");
+            assertEquals(skin.get("default", CheckBox.CheckBoxStyle.class).fontColor,
+                    style.fontColor, "the base font color is unchanged");
+            assertNull(style.downFontColor, "pressed stays untouched");
+            assertNull(style.checkedFontColor, "checked stays untouched");
+            assertEquals(skin.get("default", CheckBox.CheckBoxStyle.class).disabledFontColor,
+                    style.disabledFontColor, "the disabled font color is unchanged");
+        });
+    }
+
+    @Test
+    void cssClassPseudoFontColorAppliesPerActorWithoutMutatingSkin() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            BuiltUi built = MarkupBuilder.build(markup.parse(
+                    "<ui><button id=\"b\" class=\"warning\"/></ui>"),
+                    css.parse(".warning:hover { font-color: accent; }"), skin, new NoopSink());
+            TextButton button = (TextButton) built.root().getChildren().first();
+            TextButton.TextButtonStyle style = button.getStyle();
+            assertEquals(skin.getColor("accent"), style.overFontColor,
+                    "class hover maps to the over font color");
+            assertEquals(skin.get("button", TextButton.TextButtonStyle.class).fontColor,
+                    style.fontColor, "the base font color is unchanged");
+            assertNull(style.downFontColor, "only the hover field changes");
+            assertNotSame(skin.get("button", TextButton.TextButtonStyle.class), style,
+                    "the actor owns a per-actor clone");
+            assertNull(skin.get("button", TextButton.TextButtonStyle.class).overFontColor,
+                    "the shared skin style is never mutated");
+        });
+    }
+
+    @Test
+    void cssIdPseudoFontColorAppliesPerActor() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            BuiltUi built = MarkupBuilder.build(markup.parse(
+                    "<ui><button id=\"save\"/></ui>"),
+                    css.parse("#save:disabled { font-color: accent; }"), skin, new NoopSink());
+            TextButton button = (TextButton) built.root().getChildren().first();
+            TextButton.TextButtonStyle style = button.getStyle();
+            assertEquals(skin.getColor("accent"), style.disabledFontColor,
+                    "id disabled maps to the disabled font color");
+            assertEquals(skin.get("button", TextButton.TextButtonStyle.class).fontColor,
+                    style.fontColor, "the base font color is unchanged");
+            assertNull(style.overFontColor, "only the disabled field changes");
+            assertNotSame(skin.get("button", TextButton.TextButtonStyle.class), style,
+                    "the actor owns a per-actor clone");
+            assertNull(skin.get("button", TextButton.TextButtonStyle.class).disabledFontColor,
+                    "the shared skin style is never mutated");
+        });
+    }
+
+    @Test
+    void cssUnsupportedPseudoCombinationFailsLocatedAtSelector() throws Exception {
+        GdxTestHost.run(() -> {
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("<ui><label id=\"l\"/></ui>"),
+                            css.parse("button { padding: 4px; }\n"
+                                    + "label:hover { font-color: accent; }\n"),
+                            DefaultSkin.create(), new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+            assertEquals("css", failure.elementPath());
+            assertEquals(2, failure.line(), "selector coordinates, not the rule index");
+            assertEquals(1, failure.column());
+            assertTrue(failure.getMessage().contains("label"));
+            assertTrue(failure.getMessage().contains("hover"));
+        });
+    }
+
+    @Test
+    void cssTaglessUnsupportedPseudoCombinationFailsLocatedAtSelector() throws Exception {
+        GdxTestHost.run(() -> {
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse(
+                            "<ui><label id=\"l\" class=\"warning\"/></ui>"),
+                            css.parse("button { padding: 4px; }\n"
+                                    + ".warning:hover { font-color: accent; }\n"),
+                            DefaultSkin.create(), new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+            assertEquals("css", failure.elementPath());
+            assertEquals(2, failure.line(), "selector coordinates from the source rule");
+            assertEquals(1, failure.column());
+            assertTrue(failure.getMessage().contains("label"));
+            assertTrue(failure.getMessage().contains("hover"));
         });
     }
 

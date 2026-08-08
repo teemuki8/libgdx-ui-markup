@@ -419,6 +419,54 @@ final class CssTest {
     }
 
     @Test
+    void commaGroupUsesMaximumMatchingSpecificity() {
+        CssDocument document = parser.parse("""
+                .primary { color: from-class; }
+                button, #save { color: from-group; }
+                """);
+        CssStyleResolver resolver = new CssStyleResolver(document);
+        Element save = element("button", "save", List.of("primary"));
+        assertEquals("from-group", resolver.resolve(save).get("color"),
+                "the #save part (100) must outrank the class rule (10), not stop at button (1)");
+    }
+
+    @Test
+    void selectorOrderWithinGroupDoesNotChangeResult() {
+        CssDocument document = parser.parse("""
+                .primary { color: from-class; }
+                #save, button { color: from-group; }
+                """);
+        CssStyleResolver resolver = new CssStyleResolver(document);
+        Element save = element("button", "save", List.of("primary"));
+        assertEquals("from-group", resolver.resolve(save).get("color"),
+                "the strongest matching part wins regardless of its position in the group");
+    }
+
+    @Test
+    void commaGroupTieBreakPreservesRuleSourceOrder() {
+        CssDocument document = parser.parse("""
+                #save, button { color: first; }
+                button, #save { color: second; }
+                """);
+        CssStyleResolver resolver = new CssStyleResolver(document);
+        Element save = element("button", "save", List.of());
+        assertEquals("second", resolver.resolve(save).get("color"),
+                "equal maximum specificity defers to the later rule in source order");
+    }
+
+    @Test
+    void mixedGroupOutranksCompoundSelector() {
+        CssDocument document = parser.parse("""
+                button.primary { color: from-compound; }
+                button, #save { color: from-group; }
+                """);
+        CssStyleResolver resolver = new CssStyleResolver(document);
+        Element save = element("button", "save", List.of("primary"));
+        assertEquals("from-group", resolver.resolve(save).get("color"),
+                "the #save part (100) beats tag.class (11) even though button (1) also matches");
+    }
+
+    @Test
     void booleanValueAndMissingFallback() {
         CssDocument document = parser.parse("button { visible: false; }");
         ResolvedStyle style = new CssStyleResolver(document)
