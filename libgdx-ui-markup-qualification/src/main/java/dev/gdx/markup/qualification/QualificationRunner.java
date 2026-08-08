@@ -339,6 +339,8 @@ public final class QualificationRunner implements AutoCloseable {
                 return NegativeTransforms.blur(source);
             case "scale":
                 return NegativeTransforms.scale(source);
+            case "color-swap":
+                return NegativeTransforms.swapRegions(source);
             default:
                 throw new IllegalArgumentException("unknown deliberate negative " + name);
         }

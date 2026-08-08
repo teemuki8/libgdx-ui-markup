@@ -502,10 +502,15 @@ public final class ReferenceImageStore implements AutoCloseable {
      * terminally completes all pending waiters with a typed {@link ReferenceException.Kind#CLOSED}
      * failure, aborts the transport (the default pinned transport closes its active sockets),
      * and waits on a monotonic bounded condition until no active fetch owner remains, so no
-     * post-close decode, admission, or result can be delivered. Idempotent; close failures
-     * (transport abort, drain timeout, interrupt) are aggregated into a single typed
-     * {@code ReferenceException(IO)} with suppressed causes. Images already handed out remain
-     * readable because they are immutable and detached from the cache.
+     * post-close decode, admission, or result can be delivered. Idempotent after terminal
+     * success: once a close confirms every owner drained, later closes return immediately. A
+     * close that FAILED (drain timeout or interrupt while {@code activeOwners > 0}) leaves
+     * the store in the closing state and a later close re-waits within a fresh bounded
+     * deadline, keeping the owners owned until they are confirmed drained — a prior
+     * timed-out close can never make a later close silently succeed while an owner is alive.
+     * Close failures (transport abort, drain timeout, interrupt) are aggregated into a single
+     * typed {@code ReferenceException(IO)} with suppressed causes. Images already handed out
+     * remain readable because they are immutable and detached from the cache.
      */
     @Override
     public void close() {
@@ -513,27 +518,37 @@ public final class ReferenceImageStore implements AutoCloseable {
         List<CompletableFuture<Optional<ReferenceImage>>> pending;
         lock.lock();
         try {
-            if (closed) {
+            if (closed && activeOwners == 0) {
+                // A prior close confirmed every fetch owner drained: terminal, idempotent.
                 return;
             }
-            closed = true;
-            pending = new ArrayList<>(inFlight.values());
-            inFlight.clear();
-            cache.clear();
-            cacheEncodedBytes = 0;
-            cacheDecodedPixels = 0;
+            if (!closed) {
+                closed = true;
+                pending = new ArrayList<>(inFlight.values());
+                inFlight.clear();
+                cache.clear();
+                cacheEncodedBytes = 0;
+                cacheDecodedPixels = 0;
+            } else {
+                // Retry after a timed-out/interrupted close: the transport was already
+                // aborted and the waiters already completed; only the owners still drain.
+                pending = null;
+            }
         } finally {
             lock.unlock();
         }
-        ReferenceException closedFailure = new ReferenceException(ReferenceException.Kind.CLOSED,
-                "reference store closed; in-flight fetches are terminated");
-        for (CompletableFuture<Optional<ReferenceImage>> future : pending) {
-            future.completeExceptionally(closedFailure);
-        }
-        try {
-            transport.close();
-        } catch (RuntimeException failure) {
-            failures.add(new IOException("transport abort failed", failure));
+        if (pending != null) {
+            ReferenceException closedFailure = new ReferenceException(
+                    ReferenceException.Kind.CLOSED,
+                    "reference store closed; in-flight fetches are terminated");
+            for (CompletableFuture<Optional<ReferenceImage>> future : pending) {
+                future.completeExceptionally(closedFailure);
+            }
+            try {
+                transport.close();
+            } catch (RuntimeException failure) {
+                failures.add(new IOException("transport abort failed", failure));
+            }
         }
         lock.lock();
         try {
