@@ -13,57 +13,37 @@
     <table id="battlefield-frame" width="1150" height="674" pad="0">
       <row/>
       <table id="battlefield" class="panel-alt" width="1150" height="674" pad="8" align="left top">
-        <row/>
-        <label id="ridge-1" class="heading" text="^ ^ ^     ^ ^       ^ ^ ^^       ^      ^ ^" width="900" height="28"/>
-        <row/>
-        <label id="forest-1" text="##  ###     . . .     ####     . .      ##  ##" width="900" height="30"/>
-        <row/>
-        <table id="river-west" class="field-focused-bg" width="250" height="72" pad="0" align="center center">
-          <row/>
-          <label id="river-west-text" class="section" text="~  ~  ~  ~  ~  ~" align="center"/>
-        </table>
-        <table id="castle-north" class="disabled-bg" width="300" height="76" pad="5" align="center center">
-          <row/>
-          <label id="castle-north-text" class="heading" text="[==]  CASTLE  [==]" align="center"/>
-          <row/>
-          <label id="castle-gate" class="section" text="[__]   . . ." align="center"/>
+        <table width="1134" height="104" pad="3">
+          <table class="panel-alt" width="378" height="98" pad="4"><label id="ridge-1" class="heading" text="^ ^ ^   ^ ^" align="center"/><label id="forest-1" class="section" text="##  ###  . . ." align="center"/></table>
+          <table class="field-focused-bg" width="378" height="98" pad="4"><label id="river-west-text" class="section" text="~  ~  ~  ~  ~" align="center"/></table>
+          <table class="disabled-bg" width="378" height="98" pad="4"><label id="castle-north-text" class="heading" text="[==] CASTLE [==]" align="center"/><label id="castle-gate" class="section" text="[__] . . ." align="center"/></table>
         </table>
         <row/>
-        <label id="forest-2" text="###       ^ ^ ^       #####       ^ ^       ##" width="900" height="42"/>
-        <row/>
-        <table id="river-east" class="field-focused-bg" width="210" height="86" pad="0" align="right center">
-          <row/>
-          <label id="river-east-text" class="section" text="~  ~  ~  ~  ~" align="center"/>
-        </table>
-        <table id="unit-cluster" width="430" height="86" pad="4" align="center center">
-          <row/>
-          <label id="red-units" class="title" text="FLAG  FLAG   FLAG   FLAG" align="center"/>
-          <row/>
-          <label id="battle-line" class="heading" text="  5     X  X  X     5" align="center"/>
-          <row/>
-          <progressbar id="frontline-hp" min="0" max="100" value="72" width="250" height="12"/>
+        <table width="1134" height="104" pad="3">
+          <table class="selection-bg" width="378" height="98" pad="4"><label id="forest-2" class="section" text="###  ^ ^ ^  ####" align="center"/></table>
+          <table class="panel-alt" width="378" height="98" pad="4"><label id="red-units" class="title" text="FLAG  FLAG" align="center"/><label id="battle-line" class="heading" text="5   X X   5" align="center"/></table>
+          <table class="field-focused-bg" width="378" height="98" pad="4"><label id="river-east-text" class="section" text="~  ~  ~  ~" align="center"/></table>
         </table>
         <row/>
-        <label id="forest-3" text="####    ^ ^ ^^      ##      ^ ^ ^     ####" width="900" height="42"/>
-        <row/>
-        <table id="village-west" class="panel" width="180" height="62" pad="4" align="left center">
-          <row/>
-          <label id="village-west-text" class="heading" text="V  VILLAGE" align="center"/>
-          <row/>
-          <label id="village-west-gold" class="section" text="income +2" align="center"/>
-        </table>
-        <table id="river-south" class="field-focused-bg" width="300" height="64" pad="0" align="center center">
-          <row/>
-          <label id="river-south-text" class="section" text="~  ~  ~  ~  ~  ~" align="center"/>
+        <table width="1134" height="104" pad="3">
+          <table class="selection-bg" width="378" height="98" pad="4"><label id="forest-3" class="section" text="####  ^ ^  ##" align="center"/></table>
+          <table class="panel-alt" width="378" height="98" pad="4"><progressbar id="frontline-hp" min="0" max="100" value="72" width="280" height="14"/><label id="ridge-2" class="heading" text="^ ^  ###  ^ ^" align="center"/></table>
+          <table class="field-focused-bg" width="378" height="98" pad="4"><label id="river-south-text" class="section" text="~  ~  ~  ~  ~" align="center"/></table>
         </table>
         <row/>
-        <label id="ridge-2" class="heading" text="^ ^ ^^      ###       ^ ^ ^       ####      ^ ^" width="900" height="38"/>
+        <table width="1134" height="104" pad="3">
+          <table class="panel" width="378" height="98" pad="4"><label id="village-west-text" class="heading" text="V  VILLAGE" align="center"/><label id="village-west-gold" class="section" text="income +2" align="center"/></table>
+          <table class="disabled-bg" width="378" height="98" pad="4"><label class="heading" text="^ ^ ^   ###" align="center"/></table>
+          <table class="selection-bg" width="378" height="98" pad="4"><label class="section" text="##  . .  ^ ^" align="center"/></table>
+        </table>
         <row/>
-        <label id="unit-label" class="title" text="X Elvish Archer  21/21 HP" width="320" height="24"/>
-        <progressbar id="unit-hp" min="0" max="21" value="21" width="190" height="12"/>
-        <label id="enemy-label" class="title" text="Orcish Grunt  12/12 HP" width="300" height="24"/>
-        <progressbar id="enemy-hp" min="0" max="12" value="12" width="150" height="12"/>
-      </table>
+        <table width="1134" height="104" pad="3">
+          <table class="panel-alt" width="567" height="98" pad="4"><label id="unit-label" class="title" text="X Elvish Archer  21/21 HP" align="center"/><progressbar id="unit-hp" min="0" max="21" value="21" width="190" height="12"/></table>
+          <table class="disabled-bg" width="567" height="98" pad="4"><label id="enemy-label" class="title" text="Orcish Grunt  12/12 HP" align="center"/><progressbar id="enemy-hp" min="0" max="12" value="12" width="150" height="12"/></table>
+        </table>
+        <row/>
+        <table width="1134" height="36" pad="3"><label id="battlefield-status" class="heading" text="Maaf · Dune Rider · HP 31/39 · MP 0/7" align="center"/></table>
+    </table>
     </table>
     <table id="sidebar" class="panel" width="130" height="674" pad="6" align="left top">
       <row/>
