@@ -138,7 +138,7 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
         } catch (MarkupException failure) {
             errorLabel.setText(failure.formatted());
             errorLabel.setVisible(true);
-            status(MarkupStatus.error(failure.formatted(), failure.line(), failure.column()));
+            status(MarkupStatus.error(failure));
             if (options.exit()) {
                 System.out.flush();
                 System.err.flush();
@@ -147,7 +147,7 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
         } catch (IOException failure) {
             errorLabel.setText(failure.getMessage());
             errorLabel.setVisible(true);
-            status(MarkupStatus.error(failure.getMessage(), 0, 0));
+            status(MarkupStatus.error(failure.getMessage()));
             if (options.exit()) {
                 System.out.flush();
                 System.err.flush();
