@@ -7,7 +7,7 @@
   "accent-down": "#8d6728ff",
   "text": "#e5dcc5ff",
   "muted": "#b1a58aff",
-  "field-focused": "#3a3023ff",
-  "selection": "#7b2020ff",
-  "disabled": "#5b5140ff"
+  "field-focused": "#355052ff",
+  "selection": "#315434ff",
+  "disabled": "#505050ff"
 }
