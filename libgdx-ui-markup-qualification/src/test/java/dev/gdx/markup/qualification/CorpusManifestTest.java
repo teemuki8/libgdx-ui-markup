@@ -574,6 +574,51 @@ final class CorpusManifestTest {
         assertEquals("image/png", roundTripped.mediaType());
     }
 
+    @Test
+    void rejectsNonDefaultPortSourceUrl() throws IOException {
+        ManifestException failure = reject(writeEntries(remoteEntry("a",
+                "https://example.com:8443/a.png")));
+        assertEquals(ManifestException.Kind.INVALID_VALUE, failure.kind());
+    }
+
+    @Test
+    void acceptsExplicit443PortSourceUrl() throws IOException {
+        ObjectNode node = remoteEntry("a", "https://example.com:443/a.png");
+        assertEquals(1, CorpusManifest.load(writeEntries(node)).entries().size());
+    }
+
+    @Test
+    void rejectsDimensionOverCap() throws IOException {
+        ObjectNode node = remoteEntry("a", "https://example.com/a.png");
+        node.put("referenceWidth", CorpusManifest.MAX_REFERENCE_DIMENSION + 1);
+        ManifestException failure = reject(writeEntries(node));
+        assertEquals(ManifestException.Kind.INVALID_VALUE, failure.kind());
+    }
+
+    @Test
+    void acceptsDimensionAtCap() throws IOException {
+        ObjectNode node = remoteEntry("a", "https://example.com/a.png");
+        node.put("referenceWidth", CorpusManifest.MAX_REFERENCE_DIMENSION);
+        assertEquals(1, CorpusManifest.load(writeEntries(node)).entries().size());
+    }
+
+    @Test
+    void rejectsPixelCountOverCap() throws IOException {
+        ObjectNode node = remoteEntry("a", "https://example.com/a.png");
+        node.put("referenceWidth", CorpusManifest.MAX_REFERENCE_DIMENSION);
+        node.put("referenceHeight", CorpusManifest.MAX_REFERENCE_DIMENSION + 1);
+        ManifestException failure = reject(writeEntries(node));
+        assertEquals(ManifestException.Kind.INVALID_VALUE, failure.kind());
+    }
+
+    @Test
+    void acceptsPixelCountAtCap() throws IOException {
+        ObjectNode node = remoteEntry("a", "https://example.com/a.png");
+        node.put("referenceWidth", CorpusManifest.MAX_REFERENCE_DIMENSION);
+        node.put("referenceHeight", CorpusManifest.MAX_REFERENCE_DIMENSION);
+        assertEquals(1, CorpusManifest.load(writeEntries(node)).entries().size());
+    }
+
     // ---------------------------------------------------------------- ids and paths
 
     @Test

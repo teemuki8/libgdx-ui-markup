@@ -1,43 +1,58 @@
 package dev.gdx.markup.qualification;
 
-import java.io.ByteArrayInputStream;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.URI;
 import java.net.UnknownHostException;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Iterator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import javax.imageio.ImageIO;
-import javax.imageio.ImageReader;
-import javax.imageio.stream.ImageInputStream;
+import java.util.concurrent.ThreadLocalRandom;
+import javax.net.ssl.SNIHostName;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.SSLSocket;
 
 /**
- * Fetches copyrighted reference images at test time into a gitignored cache and never
- * redistributes them. Every remote entry declares its exact identity (HTTPS URL, SHA-256,
- * byte length, media type, dimensions) and the store refuses anything that does not match:
- * the URL must be https with a host and no user info or fragment, the host must be in the
- * allowlist and resolve only to public addresses, redirects are followed manually with the
- * same policy applied to every target (bounded to {@link #MAX_REDIRECTS}), and the payload
- * must match the declared digest, byte length, media type, and decoded dimensions. Cache hits
- * are re-verified; a forged cache file is discarded and refetched. Entries that cannot be
- * fetched or verified report empty so the qualification marks them skipped instead of failing.
+ * Fetches copyrighted reference images at test time into a gitignored, per-session, owner-only
+ * cache and never redistributes them. Every remote entry declares its exact identity (HTTPS
+ * URL, SHA-256, byte length, media type, dimensions) and the store refuses anything that does
+ * not match: the URL must be https on port 443 with a host and no user info or fragment, the
+ * host must be in the allowlist, and every fetch connects over TLS to one approved,
+ * globally-routable resolved address (the transport never re-resolves, so a rebinding attack
+ * cannot reach a different peer). Redirects are followed manually with the same policy applied
+ * to a fresh approval per target, bounded to {@link #MAX_REDIRECTS}. The payload must match the
+ * declared digest, byte length, media type, and header dimensions, and is decoded once into a
+ * bounded {@link ReferenceImage} at the analysis resolution; the cache is written and re-read
+ * through single {@code NOFOLLOW} handles so a forged or symlinked cache entry can never be
+ * used or followed.
  *
- * <p>The transport and host resolver are injectable so deterministic tests never touch the
- * network or DNS.
+ * <p>Policy, identity, cache, decode, and transport failures raise typed
+ * {@link ReferenceException}s so the qualification fails loudly; {@link Optional#empty()} is
+ * reserved for references that are explicitly absent (HTTP 404/410).
  */
 public final class ReferenceImageStore implements AutoCloseable {
     /** Maximum accepted reference payload. */
@@ -49,9 +64,15 @@ public final class ReferenceImageStore implements AutoCloseable {
 
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(15);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(60);
+    private static final int MAX_HEADER_LINE = 16 * 1024;
+    private static final int MAX_HEADER_BYTES = 64 * 1024;
     private static final Set<Integer> REDIRECT_STATUSES = Set.of(301, 302, 303, 307, 308);
+    private static final Set<Integer> ABSENT_STATUSES = Set.of(404, 410);
     private static final Set<String> DEFAULT_ALLOWED_HOSTS =
             Set.of("shared.akamai.steamstatic.com");
+    private static final Set<PosixFilePermission> OWNER_ONLY = Set.of(
+            PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+            PosixFilePermission.OWNER_EXECUTE);
 
     /** One GET response: status, Content-Type, Location, and the bounded body bytes. */
     public record Response(int statusCode, String contentType, String location, byte[] body) {
@@ -62,10 +83,14 @@ public final class ReferenceImageStore implements AutoCloseable {
         }
     }
 
-    /** Transport seam: performs one GET and returns the full response. */
+    /**
+     * Transport seam: performs one GET against an already-approved resolved address. The
+     * transport must connect only to {@code approved} addresses and must never resolve the
+     * hostname itself.
+     */
     @FunctionalInterface
     public interface Transport {
-        Response get(URI uri) throws IOException;
+        Response get(URI uri, List<InetAddress> approved) throws IOException;
     }
 
     /** Resolves a hostname to addresses; injectable so tests avoid real DNS. */
@@ -74,213 +99,268 @@ public final class ReferenceImageStore implements AutoCloseable {
         InetAddress[] resolve(String host) throws UnknownHostException;
     }
 
+    /** A reference whose bytes were authenticated and decoded once into a bounded image. */
+    public record ReferenceImage(BufferedImage image) {
+        public ReferenceImage {
+            Objects.requireNonNull(image, "image");
+        }
+    }
+
     private final Path cacheDir;
     private final Transport transport;
     private final HostResolver resolver;
     private final Set<String> allowedHosts;
-    private final HttpClient http;
 
-    /** Creates a store with the default HTTP transport, DNS resolution, and host allowlist. */
+    /** Creates a store with the default pinned-TLS transport, DNS resolution, and host allowlist. */
     public ReferenceImageStore(Path cacheDir) {
         this(cacheDir, null, null, null);
     }
 
     /**
      * Creates a store over injected seams (transport, resolver, host allowlist); package-private
-     * so deterministic tests never touch the network.
+     * so deterministic tests never touch the network. The cache lives in a fresh, owner-only,
+     * randomly named session directory under {@code cacheDir}.
      */
     ReferenceImageStore(Path cacheDir, Transport transport, HostResolver resolver,
             Set<String> allowedHosts) {
-        this.cacheDir = cacheDir;
-        this.http = HttpClient.newBuilder()
-                .connectTimeout(CONNECT_TIMEOUT)
-                .followRedirects(HttpClient.Redirect.NEVER)
-                .build();
-        this.transport = transport != null ? transport : this::httpGet;
+        this.cacheDir = createSessionDir(cacheDir);
+        this.transport = transport != null ? transport : this::httpsGet;
         this.resolver = resolver != null ? resolver : this::resolveAll;
         this.allowedHosts = allowedHosts != null ? allowedHosts : DEFAULT_ALLOWED_HOSTS;
     }
 
     /**
-     * Returns the verified cached reference image for the entry, fetching it when absent. Empty
-     * when the image is unavailable, refused by policy, or does not match the declared identity.
+     * Returns the authenticated reference image for the entry, fetching it when absent. Empty
+     * only when the reference is explicitly absent (HTTP 404/410). Policy, identity, cache,
+     * decode, and transport failures raise {@link ReferenceException}.
      */
-    public Optional<Path> reference(CorpusEntry entry) {
+    public Optional<ReferenceImage> reference(CorpusEntry entry) {
         Path cached = cachePath(entry);
-        if (Files.isRegularFile(cached)) {
-            try {
-                if (verified(cached, entry)) {
-                    return Optional.of(cached);
-                }
-                // A forged or corrupt cache entry is discarded and refetched.
-                Files.deleteIfExists(cached);
-            } catch (IOException failure) {
-                // An unreadable cache entry is treated as absent and refetched.
-            }
+        if (Files.isRegularFile(cached, LinkOption.NOFOLLOW_LINKS)) {
+            return Optional.of(decodedFromCache(cached, entry));
         }
-        Path download = cacheDir.resolve(entry.id() + ".download");
+        byte[] body;
         try {
-            Files.createDirectories(cacheDir);
-            Files.deleteIfExists(download);
-            byte[] body = fetchVerified(entry);
-            if (body == null) {
-                return Optional.empty();
-            }
-            Files.write(download, body);
-            Files.move(download, cached, StandardCopyOption.REPLACE_EXISTING);
-            return Optional.of(cached);
-        } catch (IOException | RejectedException failure) {
-            try {
-                Files.deleteIfExists(download);
-            } catch (IOException ignored) {
-                // best-effort cleanup
-            }
+            body = fetchVerified(entry);
+        } catch (IOException failure) {
+            throw new ReferenceException(ReferenceException.Kind.IO,
+                    "cannot fetch " + entry.sourceUrl(), failure);
+        }
+        if (body == null) {
             return Optional.empty();
         }
+        ReferenceImage image = decodeVerified(body, entry, entry.sourceUrl());
+        writeCache(cached, body);
+        return Optional.of(image);
+    }
+
+    /** Returns the private session cache directory (package-private for tests). */
+    Path sessionDir() {
+        return cacheDir;
     }
 
     /**
-     * Fetches the entry with manual bounded redirect handling, validating every target against
-     * the URL shape, host allowlist, and resolved address policy, then verifying the payload
-     * against the declared identity. Returns null when the final response is not 200.
+     * Fetches the entry with manual bounded redirect handling, approving a fresh set of
+     * globally-routable addresses for every target, then verifying the payload against the
+     * declared identity. Returns null when the reference is explicitly absent.
      */
     private byte[] fetchVerified(CorpusEntry entry) throws IOException {
         URI target;
         try {
             target = URI.create(entry.sourceUrl());
         } catch (IllegalArgumentException failure) {
-            throw new RejectedException("malformed source URL: " + entry.sourceUrl(), failure);
+            throw new ReferenceException(ReferenceException.Kind.UNSAFE_TARGET,
+                    "malformed source URL: " + entry.sourceUrl(), failure);
         }
         int redirects = 0;
         while (true) {
             validateTarget(target);
-            Response response = transport.get(target);
+            List<InetAddress> approved = approve(target.getHost());
+            Response response = transport.get(target, approved);
             if (REDIRECT_STATUSES.contains(response.statusCode())) {
                 if (response.location().isEmpty()) {
-                    throw new RejectedException("redirect without a Location header from " + target);
+                    throw new ReferenceException(ReferenceException.Kind.UNSAFE_TARGET,
+                            "redirect without a Location header from " + target);
                 }
                 if (redirects >= MAX_REDIRECTS) {
-                    throw new RejectedException("more than " + MAX_REDIRECTS + " redirects from "
-                            + entry.sourceUrl());
+                    throw new ReferenceException(ReferenceException.Kind.UNSAFE_TARGET,
+                            "more than " + MAX_REDIRECTS + " redirects from "
+                                    + entry.sourceUrl());
                 }
                 redirects++;
                 try {
                     target = target.resolve(response.location());
                 } catch (IllegalArgumentException failure) {
-                    throw new RejectedException("invalid redirect Location from " + target
-                            + ": " + response.location(), failure);
+                    throw new ReferenceException(ReferenceException.Kind.UNSAFE_TARGET,
+                            "invalid redirect Location from " + target + ": "
+                                    + response.location(), failure);
                 }
                 continue;
             }
+            if (ABSENT_STATUSES.contains(response.statusCode())) {
+                return null;
+            }
             if (response.statusCode() != 200) {
-                return null; // unavailable: report the reference as skipped
+                throw new ReferenceException(ReferenceException.Kind.UNEXPECTED_STATUS,
+                        "status " + response.statusCode() + " from " + target);
             }
             verifyIdentity(response, entry, target);
             return response.body();
         }
     }
 
-    /** Validates one request target (initial or redirect hop) before any request is issued. */
-    private void validateTarget(URI target) throws RejectedException {
+    /** Validates URL shape (https, host, port 443, no user info or fragment) and host allowlist. */
+    private void validateTarget(URI target) {
         try {
             CorpusEntry.validateSourceUrl(target.toString());
         } catch (ManifestException failure) {
-            throw new RejectedException("refusing target " + target + ": " + failure.getMessage());
+            throw new ReferenceException(ReferenceException.Kind.UNSAFE_TARGET,
+                    "refusing target " + target + ": " + failure.getMessage());
         }
         if (!allowedHosts.contains(normalizeHost(target.getHost()))) {
-            throw new RejectedException("host " + target.getHost() + " is not in the allowlist");
-        }
-        InetAddress[] addresses;
-        try {
-            addresses = resolver.resolve(target.getHost());
-        } catch (UnknownHostException failure) {
-            throw new RejectedException("cannot resolve host " + target.getHost(), failure);
-        }
-        for (InetAddress address : addresses) {
-            if (isProhibited(address)) {
-                throw new RejectedException("host " + target.getHost() + " resolves to prohibited "
-                        + "address class " + address.getHostAddress());
-            }
+            throw new ReferenceException(ReferenceException.Kind.UNSAFE_TARGET,
+                    "host " + target.getHost() + " is not in the allowlist");
         }
     }
 
-    /** Refuses the payload unless media type, length, digest, and dimensions match the entry. */
-    private static void verifyIdentity(Response response, CorpusEntry entry, URI target)
-            throws RejectedException {
+    /**
+     * Resolves the host once and returns every globally-routable address. The resolved list is
+     * pinned into the transport; nothing else resolves the host, so a DNS rebinding attack
+     * cannot redirect the connection to a different peer.
+     */
+    private List<InetAddress> approve(String host) {
+        InetAddress[] addresses;
+        try {
+            addresses = resolver.resolve(host);
+        } catch (UnknownHostException failure) {
+            throw new ReferenceException(ReferenceException.Kind.UNSAFE_TARGET,
+                    "cannot resolve host " + host, failure);
+        }
+        List<InetAddress> approved = new ArrayList<>(addresses.length);
+        for (InetAddress address : addresses) {
+            if (isGloballyRoutable(address)) {
+                approved.add(address);
+            }
+        }
+        if (approved.isEmpty()) {
+            throw new ReferenceException(ReferenceException.Kind.UNSAFE_TARGET,
+                    "host " + host + " resolves only to non-globally-routable addresses: "
+                            + Arrays.toString(addresses));
+        }
+        return List.copyOf(approved);
+    }
+
+    /** Refuses the payload unless media type, length, and digest match the declared identity. */
+    private static void verifyIdentity(Response response, CorpusEntry entry, URI target) {
         String mediaType = baseMediaType(response.contentType());
         if (mediaType.isEmpty() || !ALLOWED_MEDIA_TYPES.contains(mediaType)
                 || !mediaType.equals(entry.mediaType())) {
-            throw new RejectedException("Content-Type '" + response.contentType()
-                    + "' does not match the declared media type '" + entry.mediaType()
-                    + "' from " + target);
+            throw new ReferenceException(ReferenceException.Kind.IDENTITY_MISMATCH,
+                    "Content-Type '" + response.contentType()
+                            + "' does not match the declared media type '" + entry.mediaType()
+                            + "' from " + target);
         }
         if (response.body().length > MAX_BYTES) {
-            throw new RejectedException("payload exceeds the " + MAX_BYTES + " byte cap from "
-                    + target);
+            throw new ReferenceException(ReferenceException.Kind.IDENTITY_MISMATCH,
+                    "payload exceeds the " + MAX_BYTES + " byte cap from " + target);
         }
         if (response.body().length != entry.bytes()) {
-            throw new RejectedException("payload is " + response.body().length + " bytes, declared "
-                    + entry.bytes() + " from " + target);
+            throw new ReferenceException(ReferenceException.Kind.IDENTITY_MISMATCH,
+                    "payload is " + response.body().length + " bytes, declared " + entry.bytes()
+                            + " from " + target);
         }
         if (!digestMatches(response.body(), entry.sha256())) {
-            throw new RejectedException("payload SHA-256 does not match the declared identity "
-                    + "from " + target);
-        }
-        verifyDecoded(response.body(), entry);
-    }
-
-    /**
-     * Re-verifies a cache hit against the declared identity (length, digest, decoded dimensions
-     * and format). The digest binds the bytes, so a matching file cannot be attacker-substituted.
-     */
-    private static boolean verified(Path cached, CorpusEntry entry) throws IOException {
-        if (Files.size(cached) != entry.bytes()) {
-            return false;
-        }
-        if (!digestMatches(cached, entry.sha256())) {
-            return false;
-        }
-        try (InputStream raw = Files.newInputStream(cached);
-                ImageInputStream image = ImageIO.createImageInputStream(raw)) {
-            return image != null && decodedMatches(image, entry);
+            throw new ReferenceException(ReferenceException.Kind.IDENTITY_MISMATCH,
+                    "payload SHA-256 does not match the declared identity from " + target);
         }
     }
 
     /**
-     * Reads the image header (never the pixel data) and checks the declared dimensions and the
-     * reader format against the entry, so a decompression-bomb header is refused without
-     * allocating decoded pixels.
+     * Re-authenticates a cache hit from a single NOFOLLOW handle: reads the bytes once, then
+     * checks length, digest, and header dimensions before decoding. A forged or tampered cache
+     * entry fails the qualification with a typed {@code CACHE} error.
      */
-    private static void verifyDecoded(byte[] body, CorpusEntry entry) throws RejectedException {
-        try (ImageInputStream input = ImageIO.createImageInputStream(
-                new ByteArrayInputStream(body))) {
-            if (input == null || !decodedMatches(input, entry)) {
-                throw new RejectedException("decoded dimensions or format do not match the "
-                        + "declared identity (" + entry.referenceWidth() + "x"
-                        + entry.referenceHeight() + ", " + entry.mediaType() + ")");
+    private ReferenceImage decodedFromCache(Path cached, CorpusEntry entry) {
+        byte[] bytes;
+        try {
+            bytes = readBounded(cached);
+        } catch (IOException failure) {
+            throw new ReferenceException(ReferenceException.Kind.CACHE,
+                    "cannot read cache file " + cached, failure);
+        }
+        if (bytes.length != entry.bytes()) {
+            throw new ReferenceException(ReferenceException.Kind.CACHE,
+                    "cache file " + cached + " is " + bytes.length + " bytes, declared "
+                            + entry.bytes());
+        }
+        if (!digestMatches(bytes, entry.sha256())) {
+            throw new ReferenceException(ReferenceException.Kind.CACHE,
+                    "cache file " + cached + " fails the declared SHA-256 identity");
+        }
+        return decodeVerified(bytes, entry, "cache " + cached);
+    }
+
+    /**
+     * Writes the verified bytes with CREATE_NEW and NOFOLLOW, so a pre-planted regular file or
+     * symlink at the cache path is never replaced or followed.
+     */
+    private static void writeCache(Path cached, byte[] body) {
+        try (SeekableByteChannel channel = Files.newByteChannel(cached,
+                Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE,
+                        LinkOption.NOFOLLOW_LINKS))) {
+            ByteBuffer buffer = ByteBuffer.wrap(body);
+            while (buffer.hasRemaining()) {
+                channel.write(buffer);
             }
         } catch (IOException failure) {
-            throw new RejectedException("cannot read image payload: " + failure.getMessage(),
-                    failure);
+            throw new ReferenceException(ReferenceException.Kind.CACHE,
+                    "cannot write cache file " + cached, failure);
         }
     }
 
-    private static boolean decodedMatches(ImageInputStream input, CorpusEntry entry)
-            throws IOException {
-        Iterator<ImageReader> readers = ImageIO.getImageReaders(input);
-        if (!readers.hasNext()) {
-            return false;
-        }
-        ImageReader reader = readers.next();
-        try {
-            reader.setInput(input);
-            if (reader.getWidth(0) != entry.referenceWidth()
-                    || reader.getHeight(0) != entry.referenceHeight()) {
-                return false;
+    private static byte[] readBounded(Path file) throws IOException {
+        try (SeekableByteChannel channel = Files.newByteChannel(file,
+                Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
+            long size = channel.size();
+            if (size > MAX_BYTES) {
+                throw new IOException("cache file exceeds the " + MAX_BYTES + " byte cap");
             }
-            return expectedFormat(entry.mediaType()).equalsIgnoreCase(reader.getFormatName());
-        } finally {
-            reader.dispose();
+            ByteBuffer buffer = ByteBuffer.allocate((int) size);
+            while (buffer.hasRemaining()) {
+                if (channel.read(buffer) < 0) {
+                    throw new IOException("truncated cache file " + file);
+                }
+            }
+            return buffer.array();
+        }
+    }
+
+    /** Reads the image header, verifies declared dimensions and format, then decodes bounded. */
+    private static ReferenceImage decodeVerified(byte[] body, CorpusEntry entry, String context) {
+        BoundedDecode.Header header;
+        try {
+            header = BoundedDecode.header(body);
+        } catch (IOException failure) {
+            throw new ReferenceException(ReferenceException.Kind.DECODE,
+                    "cannot read image header from " + context, failure);
+        }
+        if (header.width() != entry.referenceWidth()
+                || header.height() != entry.referenceHeight()) {
+            throw new ReferenceException(ReferenceException.Kind.IDENTITY_MISMATCH,
+                    "image header is " + header.width() + "x" + header.height() + ", declared "
+                            + entry.referenceWidth() + "x" + entry.referenceHeight() + " from "
+                            + context);
+        }
+        if (!expectedFormat(entry.mediaType()).equalsIgnoreCase(header.formatName())) {
+            throw new ReferenceException(ReferenceException.Kind.IDENTITY_MISMATCH,
+                    "decoded format " + header.formatName() + " does not match declared media "
+                            + "type " + entry.mediaType() + " from " + context);
+        }
+        try {
+            return new ReferenceImage(BoundedDecode.decode(body));
+        } catch (IOException failure) {
+            throw new ReferenceException(ReferenceException.Kind.DECODE,
+                    "cannot decode image from " + context, failure);
         }
     }
 
@@ -317,27 +397,137 @@ public final class ReferenceImageStore implements AutoCloseable {
                 : normalized;
     }
 
-    /** Rejects loopback, private, link-local, multicast, and unspecified address classes. */
-    private static boolean isProhibited(InetAddress address) {
-        return address.isAnyLocalAddress() || address.isLoopbackAddress()
-                || address.isSiteLocalAddress() || address.isLinkLocalAddress()
-                || address.isMulticastAddress();
+    /**
+     * Positive address policy: an address is approved only if it is explicitly globally
+     * routable. All special-purpose, documentation, benchmark, reserved, private, link-local,
+     * site-local, unique-local, loopback, multicast, translation, and unspecified ranges are
+     * rejected by explicit range checks (the JDK predicates do not cover them all).
+     */
+    static boolean isGloballyRoutable(InetAddress address) {
+        byte[] bytes = address.getAddress();
+        return bytes.length == 4 ? ipv4GloballyRoutable(bytes) : ipv6GloballyRoutable(bytes);
+    }
+
+    private static boolean ipv4GloballyRoutable(byte[] b) {
+        int b0 = b[0] & 0xFF;
+        int b1 = b[1] & 0xFF;
+        int b2 = b[2] & 0xFF;
+        if (b0 == 0 || b0 >= 224) {
+            // 0.0.0.0/8 unspecified, 224/4 multicast, 240/4 reserved, 255.255.255.255 broadcast
+            return false;
+        }
+        if (b0 == 10) {
+            return false; // RFC 1918
+        }
+        if (b0 == 100 && (b1 & 0xC0) == 0x40) {
+            return false; // CGNAT 100.64.0.0/10
+        }
+        if (b0 == 127) {
+            return false; // loopback
+        }
+        if (b0 == 169 && b1 == 254) {
+            return false; // link-local 169.254.0.0/16
+        }
+        if (b0 == 172 && (b1 & 0xF0) == 16) {
+            return false; // RFC 1918
+        }
+        if (b0 == 192 && b1 == 0) {
+            return false; // 192.0.0.0/24 protocol assignments and 192.0.2.0/24 documentation
+        }
+        if (b0 == 192 && b1 == 88) {
+            return false; // 192.88.99.0/24 deprecated 6to4 relay anycast
+        }
+        if (b0 == 192 && b1 == 168) {
+            return false; // RFC 1918
+        }
+        if (b0 == 198 && (b1 & 0xFE) == 0x12) {
+            return false; // 198.18.0.0/15 benchmark
+        }
+        if (b0 == 198 && b1 == 51 && b2 == 100) {
+            return false; // 198.51.100.0/24 documentation
+        }
+        if (b0 == 203 && b1 == 0 && b2 == 113) {
+            return false; // 203.0.113.0/24 documentation
+        }
+        return true;
+    }
+
+    private static boolean ipv6GloballyRoutable(byte[] b) {
+        int b0 = b[0] & 0xFF;
+        int b1 = b[1] & 0xFF;
+        int b2 = b[2] & 0xFF;
+        int b3 = b[3] & 0xFF;
+        boolean allZero = true;
+        for (byte value : b) {
+            if (value != 0) {
+                allZero = false;
+                break;
+            }
+        }
+        if (allZero) {
+            return false; // ::
+        }
+        boolean loopback = b0 == 0 && b[15] == 1;
+        for (int i = 1; loopback && i < 15; i++) {
+            if (b[i] != 0) {
+                loopback = false;
+            }
+        }
+        if (loopback) {
+            return false; // ::1
+        }
+        if (b0 == 0 && b1 == 0 && b2 == 0 && b3 == 0 && b[4] == 0 && b[5] == 0 && b[6] == 0
+                && b[7] == 0 && b[8] == 0 && b[9] == 0 && (b[10] & 0xFF) == 0xFF
+                && (b[11] & 0xFF) == 0xFF) {
+            return false; // IPv4-mapped ::ffff:0:0/96
+        }
+        if (b1 == 0x64 && b2 == 0xFF && b3 == 0x9B && b[4] == 0 && b[5] == 0 && b[6] == 0
+                && b[7] == 0 && b[8] == 0 && b[9] == 0 && b[10] == 0 && b[11] == 0) {
+            return false; // NAT64 well-known prefix 64:ff9b::/96
+        }
+        if (b0 == 0x01 && b1 == 0 && b2 == 0 && b3 == 0) {
+            return false; // discard-only 100::/64
+        }
+        if (b0 == 0xFF) {
+            return false; // multicast ff00::/8
+        }
+        if ((b0 & 0xFE) == 0xFC) {
+            return false; // unique-local fc00::/7
+        }
+        if (b0 == 0xFE && (b1 & 0xC0) == 0x80) {
+            return false; // link-local fe80::/10
+        }
+        if (b0 == 0xFE && (b1 & 0xC0) == 0xC0) {
+            return false; // site-local fec0::/10
+        }
+        if (b0 == 0x20 && b1 == 0x02) {
+            return false; // 6to4 2002::/16
+        }
+        if (b0 == 0x20 && b1 == 0x01) {
+            if (b2 == 0 && b3 == 0) {
+                return false; // Teredo 2001::/32
+            }
+            if (b2 == 0 && b3 == 2) {
+                return false; // benchmarking 2001:2::/48
+            }
+            if (b2 == 0 && (b3 & 0xF0) == 0x10) {
+                return false; // ORCHID 2001:10::/28
+            }
+            if (b2 == 0 && (b3 & 0xF0) == 0x20) {
+                return false; // ORCHIDv2 2001:20::/28
+            }
+            if (b2 == 0x0D && b3 == 0xB8) {
+                return false; // documentation 2001:db8::/32
+            }
+        }
+        if (b0 == 0x3F && (b1 & 0xF0) == 0xF0) {
+            return false; // documentation 3fff::/20
+        }
+        return true;
     }
 
     private static boolean digestMatches(byte[] body, String declared) {
         return hex(sha256(body)).equals(declared);
-    }
-
-    private static boolean digestMatches(Path file, String declared) throws IOException {
-        try (InputStream in = Files.newInputStream(file)) {
-            MessageDigest digest = sha256();
-            byte[] buffer = new byte[8192];
-            int read;
-            while ((read = in.read(buffer)) >= 0) {
-                digest.update(buffer, 0, read);
-            }
-            return hex(digest.digest()).equals(declared);
-        }
     }
 
     private static byte[] sha256(byte[] body) {
@@ -361,6 +551,197 @@ public final class ReferenceImageStore implements AutoCloseable {
         return builder.toString();
     }
 
+    // ---------------------------------------------------------- pinned TLS transport
+
+    /** Connects to the approved addresses in order, never resolving the host itself. */
+    private Response httpsGet(URI uri, List<InetAddress> approved) throws IOException {
+        int port = uri.getPort() == -1 ? 443 : uri.getPort();
+        String host = uri.getHost();
+        IOException lastFailure = null;
+        for (InetAddress address : approved) {
+            try {
+                return tlsExchange(uri, host, address, port);
+            } catch (IOException failure) {
+                lastFailure = failure;
+            }
+        }
+        throw lastFailure != null ? lastFailure : new IOException("no approved address for "
+                + host);
+    }
+
+    /** One HTTPS exchange over a socket connected to the pinned address with TLS identity. */
+    private Response tlsExchange(URI uri, String host, InetAddress address, int port)
+            throws IOException {
+        SSLContext context;
+        try {
+            context = SSLContext.getDefault();
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IOException("default TLS context unavailable", impossible);
+        }
+        Socket socket = new Socket();
+        try {
+            socket.connect(new InetSocketAddress(address, port), (int) CONNECT_TIMEOUT.toMillis());
+            socket.setSoTimeout((int) REQUEST_TIMEOUT.toMillis());
+            SSLSocket ssl = (SSLSocket) context.getSocketFactory()
+                    .createSocket(socket, host, port, true);
+            try {
+                SSLParameters parameters = ssl.getSSLParameters();
+                parameters.setEndpointIdentificationAlgorithm("HTTPS");
+                if (!isIpLiteral(host)) {
+                    parameters.setServerNames(List.of(new SNIHostName(host)));
+                }
+                ssl.setSSLParameters(parameters);
+                ssl.startHandshake();
+                return exchange(ssl, uri, host, port);
+            } finally {
+                ssl.close();
+            }
+        } finally {
+            socket.close();
+        }
+    }
+
+    /** Writes a bounded HTTP/1.1 request and reads the bounded status, headers, and body. */
+    private static Response exchange(SSLSocket ssl, URI uri, String host, int port)
+            throws IOException {
+        String request = "GET " + rawPathAndQuery(uri) + " HTTP/1.1\r\n"
+                + "Host: " + host + (port == 443 ? "" : ":" + port) + "\r\n"
+                + "Connection: close\r\n"
+                + "User-Agent: libgdx-ui-markup-qualification/0.1\r\n"
+                + "Accept: image/jpeg, image/png\r\n\r\n";
+        OutputStream out = ssl.getOutputStream();
+        out.write(request.getBytes(StandardCharsets.US_ASCII));
+        out.flush();
+
+        InputStream in = ssl.getInputStream();
+        ByteArrayOutputStream headerBytes = new ByteArrayOutputStream();
+        String statusLine = readHeaderLine(in, headerBytes);
+        if (statusLine == null) {
+            throw new IOException("empty HTTP response from " + host);
+        }
+        int status = parseStatus(statusLine);
+        String contentType = "";
+        String location = "";
+        long contentLength = -1;
+        String line;
+        while ((line = readHeaderLine(in, headerBytes)) != null && !line.isEmpty()) {
+            int colon = line.indexOf(':');
+            if (colon <= 0) {
+                continue;
+            }
+            String name = line.substring(0, colon).trim().toLowerCase(Locale.ROOT);
+            String value = line.substring(colon + 1).trim();
+            switch (name) {
+                case "content-type" -> contentType = value;
+                case "location" -> location = value;
+                case "content-length" -> {
+                    try {
+                        contentLength = Long.parseLong(value);
+                    } catch (NumberFormatException malformed) {
+                        // treat an unparseable content-length as absent and read to EOF
+                    }
+                }
+                default -> { }
+            }
+        }
+        byte[] body;
+        if (contentLength >= 0) {
+            if (contentLength > MAX_BYTES) {
+                throw new IOException("declared content-length " + contentLength
+                        + " exceeds the " + MAX_BYTES + " byte cap");
+            }
+            body = readExactly(in, (int) contentLength);
+        } else {
+            body = readBounded(in);
+        }
+        return new Response(status, contentType, location, body);
+    }
+
+    private static String rawPathAndQuery(URI uri) {
+        String path = uri.getRawPath();
+        if (path == null || path.isEmpty()) {
+            path = "/";
+        }
+        String query = uri.getRawQuery();
+        return query == null ? path : path + "?" + query;
+    }
+
+    private static boolean isIpLiteral(String host) {
+        if (host.indexOf(':') >= 0) {
+            return true; // IPv6 literal
+        }
+        String[] parts = host.split("\\.");
+        if (parts.length != 4) {
+            return false;
+        }
+        for (String part : parts) {
+            for (int i = 0; i < part.length(); i++) {
+                if (!Character.isDigit(part.charAt(i))) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private static int parseStatus(String statusLine) throws IOException {
+        int firstSpace = statusLine.indexOf(' ');
+        if (firstSpace < 0) {
+            throw new IOException("malformed HTTP status line: " + statusLine);
+        }
+        int secondSpace = statusLine.indexOf(' ', firstSpace + 1);
+        String code = secondSpace < 0
+                ? statusLine.substring(firstSpace + 1)
+                : statusLine.substring(firstSpace + 1, secondSpace);
+        try {
+            return Integer.parseInt(code);
+        } catch (NumberFormatException failure) {
+            throw new IOException("malformed HTTP status code: " + statusLine, failure);
+        }
+    }
+
+    private static String readHeaderLine(InputStream in, ByteArrayOutputStream headerBytes)
+            throws IOException {
+        if (headerBytes.size() > MAX_HEADER_BYTES) {
+            throw new IOException("response headers exceed the " + MAX_HEADER_BYTES
+                    + " byte bound");
+        }
+        ByteArrayOutputStream line = new ByteArrayOutputStream();
+        while (true) {
+            int next = in.read();
+            if (next < 0) {
+                if (line.size() == 0 && headerBytes.size() == 0) {
+                    return null; // clean EOF before any header
+                }
+                throw new IOException("truncated HTTP response headers");
+            }
+            line.write(next);
+            if (line.size() > MAX_HEADER_LINE) {
+                throw new IOException("HTTP header line exceeds the " + MAX_HEADER_LINE
+                        + " byte bound");
+            }
+            if (next == '\n') {
+                String value = line.toString(StandardCharsets.ISO_8859_1);
+                headerBytes.write(line.toByteArray());
+                return value.substring(0, value.length() - 1).replace("\r", "");
+            }
+        }
+    }
+
+    /** Reads exactly {@code length} bytes; a shorter body is a truncation failure. */
+    private static byte[] readExactly(InputStream in, int length) throws IOException {
+        byte[] body = new byte[length];
+        int total = 0;
+        while (total < length) {
+            int read = in.read(body, total, length - total);
+            if (read < 0) {
+                throw new IOException("truncated HTTP response body");
+            }
+            total += read;
+        }
+        return body;
+    }
+
     /** Reads at most {@code MAX_BYTES + 1} bytes; larger responses are rejected as oversized. */
     private static byte[] readBounded(InputStream in) throws IOException {
         try (in) {
@@ -380,43 +761,40 @@ public final class ReferenceImageStore implements AutoCloseable {
         }
     }
 
-    private Response httpGet(URI uri) throws IOException {
-        HttpRequest request = HttpRequest.newBuilder(uri)
-                .GET()
-                .timeout(REQUEST_TIMEOUT)
-                .build();
-        try {
-            HttpResponse<InputStream> response = http.send(request,
-                    HttpResponse.BodyHandlers.ofInputStream());
-            byte[] body = readBounded(response.body());
-            String contentType = response.headers().firstValue("content-type").orElse("");
-            String location = response.headers().firstValue("location").orElse("");
-            return new Response(response.statusCode(), contentType, location, body);
-        } catch (InterruptedException failure) {
-            Thread.currentThread().interrupt();
-            throw new IOException("interrupted while fetching " + uri, failure);
-        }
-    }
-
     private InetAddress[] resolveAll(String host) throws UnknownHostException {
         return InetAddress.getAllByName(host);
     }
 
-    @Override
-    public void close() {
-        http.close();
+    /** Creates a fresh, owner-only, randomly named session directory under {@code root}. */
+    private static Path createSessionDir(Path root) {
+        try {
+            Files.createDirectories(root);
+            Path realRoot = root.toRealPath();
+            for (int attempt = 0; ; attempt++) {
+                Path session = root.resolve("session-" + Long.toHexString(System.nanoTime())
+                        + "-" + Integer.toHexString(ThreadLocalRandom.current().nextInt()));
+                try {
+                    Files.createDirectory(session,
+                            PosixFilePermissions.asFileAttribute(OWNER_ONLY));
+                    if (!session.toRealPath().startsWith(realRoot)) {
+                        throw new IOException("session dir escapes cache root via symlink: "
+                                + session);
+                    }
+                    return session;
+                } catch (FileAlreadyExistsException collision) {
+                    if (attempt > 8) {
+                        throw collision;
+                    }
+                }
+            }
+        } catch (IOException failure) {
+            throw new ReferenceException(ReferenceException.Kind.IO,
+                    "cannot create private cache session under " + root, failure);
+        }
     }
 
-    /** Deterministic policy or identity violation; the reference is reported as skipped. */
-    private static final class RejectedException extends RuntimeException {
-        @java.io.Serial private static final long serialVersionUID = 1L;
-
-        RejectedException(String message) {
-            super(message);
-        }
-
-        RejectedException(String message, Throwable cause) {
-            super(message, cause);
-        }
+    @Override
+    public void close() {
+        // Every connection is request-scoped and closed per exchange; nothing to release.
     }
 }

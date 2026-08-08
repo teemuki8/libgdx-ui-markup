@@ -33,6 +33,10 @@ public final class CorpusManifest {
     public static final int MAX_ID_LENGTH = 64;
     /** Maximum aggregate string work across all entries and the optional comment. */
     public static final long MAX_AGGREGATE_WORK = 64 * 1024;
+    /** Maximum reference width or height in pixels; bounds decode and manifest declarations. */
+    public static final int MAX_REFERENCE_DIMENSION = 16384;
+    /** Maximum reference pixel count (width x height); bounds decode and manifest declarations. */
+    public static final long MAX_REFERENCE_PIXELS = 16384L * 16384;
 
     private static final ObjectMapper JSON = new ObjectMapper()
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);

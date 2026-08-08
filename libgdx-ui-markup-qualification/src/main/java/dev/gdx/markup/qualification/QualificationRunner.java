@@ -136,20 +136,30 @@ public final class QualificationRunner implements AutoCloseable {
     }
 
     /** Resolves the entry's reference: a committed corpus file or a fetched remote image. */
-    private Optional<Path> reference(CorpusEntry entry) {
+    private Optional<ReferenceImageStore.ReferenceImage> reference(CorpusEntry entry) {
         if (entry.referenceFile() != null) {
             Path local = resolveInside(corpusDir, entry.referenceFile());
-            return Files.isRegularFile(local) ? Optional.of(local) : Optional.empty();
+            if (!Files.isRegularFile(local)) {
+                return Optional.empty();
+            }
+            try {
+                return Optional.of(new ReferenceImageStore.ReferenceImage(
+                        BoundedDecode.decode(local)));
+            } catch (IOException failure) {
+                throw new ReferenceException(ReferenceException.Kind.DECODE,
+                        "cannot decode committed reference " + local, failure);
+            }
         }
         return store.reference(entry);
     }
 
     /**
      * Fetches the reference and renders the recreation, returning the measured regions; empty
-     * when the reference is unavailable or the preview process failed.
+     * when the reference is explicitly absent or the preview process failed. Policy, identity,
+     * cache, and decode failures raise {@link ReferenceException} so the qualification fails.
      */
     private Optional<RegionSimilarity.Regions> measure(CorpusEntry entry) {
-        Optional<Path> reference = reference(entry);
+        Optional<ReferenceImageStore.ReferenceImage> reference = reference(entry);
         if (reference.isEmpty()) {
             return Optional.empty();
         }
@@ -160,7 +170,8 @@ public final class QualificationRunner implements AutoCloseable {
         try {
             return Optional.of(RegionSimilarity.measure(reference.get(), recreation.get()));
         } catch (IOException failure) {
-            return Optional.empty();
+            throw new ReferenceException(ReferenceException.Kind.DECODE,
+                    "cannot measure entry " + entry.id(), failure);
         }
     }
 

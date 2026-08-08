@@ -78,6 +78,17 @@ public record CorpusEntry(
             throw new ManifestException(ManifestException.Kind.INVALID_VALUE,
                     "reference dimensions must be positive");
         }
+        if (referenceWidth > CorpusManifest.MAX_REFERENCE_DIMENSION
+                || referenceHeight > CorpusManifest.MAX_REFERENCE_DIMENSION) {
+            throw new ManifestException(ManifestException.Kind.INVALID_VALUE,
+                    "reference dimensions exceed the "
+                            + CorpusManifest.MAX_REFERENCE_DIMENSION + " pixel cap");
+        }
+        if ((long) referenceWidth * referenceHeight > CorpusManifest.MAX_REFERENCE_PIXELS) {
+            throw new ManifestException(ManifestException.Kind.INVALID_VALUE,
+                    "reference pixel count exceeds the "
+                            + CorpusManifest.MAX_REFERENCE_PIXELS + " pixel cap");
+        }
     }
 
     private static void validateRemoteIdentity(String sha256, long bytes, String mediaType) {
@@ -137,6 +148,11 @@ public record CorpusEntry(
         if (uri.getFragment() != null) {
             throw new ManifestException(ManifestException.Kind.INVALID_VALUE,
                     "sourceUrl must not contain a fragment: " + sourceUrl);
+        }
+        int port = uri.getPort();
+        if (port != -1 && port != 443) {
+            throw new ManifestException(ManifestException.Kind.INVALID_VALUE,
+                    "sourceUrl must use the default https port 443: " + sourceUrl);
         }
     }
 

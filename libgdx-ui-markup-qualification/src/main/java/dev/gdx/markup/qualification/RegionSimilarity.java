@@ -3,7 +3,6 @@ package dev.gdx.markup.qualification;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.file.Path;
-import javax.imageio.ImageIO;
 
 /**
  * Structural layout similarity between a reference game UI and its markup recreation.
@@ -30,8 +29,9 @@ public final class RegionSimilarity {
     public record Regions(double dice, int referenceCells, int recreationCells) {
     }
 
-    /** Measures region overlap between the reference and the recreation image. */
-    public static Regions measure(Path reference, Path recreation) throws IOException {
+    /** Measures region overlap between the authenticated reference and the recreation image. */
+    public static Regions measure(ReferenceImageStore.ReferenceImage reference, Path recreation)
+            throws IOException {
         boolean[][] referenceRegions = regions(reference);
         boolean[][] recreationRegions = regions(recreation);
         boolean[][] dilatedReference = dilate(referenceRegions);
@@ -92,12 +92,17 @@ public final class RegionSimilarity {
         return count;
     }
 
-    /** Classifies grid cells as structured using each image's own variance histogram. */
+    /** Classifies the authenticated reference's already-decoded bounded image. */
+    static boolean[][] regions(ReferenceImageStore.ReferenceImage reference) {
+        return regions(reference.image());
+    }
+
+    /** Classifies the caller's own recreation screenshot, decoded at the bounded resolution. */
     static boolean[][] regions(Path image) throws IOException {
-        BufferedImage source = ImageIO.read(image.toFile());
-        if (source == null) {
-            throw new IOException("unsupported image format: " + image);
-        }
+        return regions(BoundedDecode.decode(image));
+    }
+
+    private static boolean[][] regions(BufferedImage source) {
         int width = source.getWidth();
         int height = source.getHeight();
         int[][] gray = gray(source);
