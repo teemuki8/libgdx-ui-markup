@@ -404,6 +404,58 @@ final class MarkupBuilderTest {
     }
 
     @Test
+    void cssTaglessPseudoCombinationOnWindowFailsLocated() throws Exception {
+        GdxTestHost.run(() -> {
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse(
+                            "<ui><window class=\"panel\" title=\"T\"/></ui>"),
+                            css.parse("button { padding: 4px; }\n"
+                                    + ".panel:hover { font-color: accent; }\n"),
+                            DefaultSkin.create(), new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+            assertEquals("css", failure.elementPath());
+            assertEquals(2, failure.line(), "selector coordinates from the source rule");
+            assertEquals(1, failure.column());
+            assertTrue(failure.getMessage().contains("window"));
+            assertTrue(failure.getMessage().contains("hover"));
+        });
+    }
+
+    @Test
+    void cssTaglessPseudoCombinationOnTableFailsLocated() throws Exception {
+        GdxTestHost.run(() -> {
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse(
+                            "<ui><table class=\"panel\" id=\"t\"><button id=\"b\"/></table></ui>"),
+                            css.parse("button { padding: 4px; }\n"
+                                    + ".panel:hover { font-color: accent; }\n"),
+                            DefaultSkin.create(), new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+            assertEquals("css", failure.elementPath());
+            assertEquals(2, failure.line(), "selector coordinates from the source rule");
+            assertEquals(1, failure.column());
+            assertTrue(failure.getMessage().contains("table"));
+            assertTrue(failure.getMessage().contains("hover"));
+        });
+    }
+
+    @Test
+    void cssTaglessPseudoWithoutStateFieldsBuildsForContainers() throws Exception {
+        GdxTestHost.run(() -> {
+            // No container style has state fields, so no container pseudo state is
+            // representable; a tagless pseudo rule carrying only non-state properties must
+            // neither error nor disturb the base build.
+            BuiltUi built = MarkupBuilder.build(markup.parse(
+                    "<ui><window class=\"panel\" title=\"T\"/></ui>"),
+                    css.parse(".panel:hover { padding: 4px; }\n.panel { padding: 8px; }"),
+                    DefaultSkin.create(), new NoopSink());
+            Window window = (Window) built.root().getChildren().first();
+            window.validate();
+            assertEquals(8f, window.getPadTop(), 0.001, "base padding still applies");
+        });
+    }
+
+    @Test
     void customFactoryExtendsTheVocabulary() throws Exception {
         GdxTestHost.run(() -> {
             MarkupRegistry registry = MarkupRegistry.defaultRegistry();

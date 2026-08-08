@@ -245,6 +245,7 @@ public final class MarkupBuilder {
                     element.column()).create(element, context(element, path));
             actors.add(table);
             applyCommon(element, table, cellTable);
+            assignPseudoStyle(element, table);
             ResolvedStyle style = resolveStyle(element, null);
             if (style.has("padding")) {
                 List<Float> values = style.lengths("padding", List.of());
@@ -278,6 +279,7 @@ public final class MarkupBuilder {
                     element.column()).create(element, context(element, path));
             actors.add(stack);
             applyCommon(element, stack, cellTable);
+            assignPseudoStyle(element, stack);
             addChildren(stack, null, element.children());
             applySemantics(stack, element, path);
             return stack;
@@ -288,6 +290,7 @@ public final class MarkupBuilder {
                     element.column()).create(element, context(element, path));
             actors.add(group);
             applyCommon(element, group, cellTable);
+            assignPseudoStyle(element, group);
             addChildren(group, null, element.children());
             applySemantics(group, element, path);
             return group;
@@ -304,6 +307,7 @@ public final class MarkupBuilder {
                     element.line(), element.column()).create(element, context(element, path));
             actors.add(pane);
             applyCommon(element, pane, cellTable);
+            assignPseudoStyle(element, pane);
             Actor child = buildActor(element.children().get(0), null);
             if (child != null) {
                 pane.setActor(child);
@@ -581,14 +585,7 @@ public final class MarkupBuilder {
             if (hasStateStyle(base)) {
                 copied = applyStateStyle(element, actor, base, null, copied);
             }
-            if (needsTaglessPseudoStyles(element)) {
-                for (String pseudo : taglessPseudoStates) {
-                    ResolvedStyle variant = resolveStyle(element, pseudo);
-                    if (hasStateStyle(variant)) {
-                        copied = applyStateStyle(element, actor, variant, pseudo, copied);
-                    }
-                }
-            }
+            copied = applyPseudoCssOverrides(element, actor, copied);
             if (copied != null) {
                 setWidgetStyle(actor, copied);
             }
@@ -598,6 +595,41 @@ public final class MarkupBuilder {
                 } else if (actor instanceof TextField field) {
                     field.setAlignment(alignOf(base.get("text-align")));
                 }
+            }
+        }
+
+        /**
+         * Validates and applies every tagless pseudo variant for one actor: a pseudo rule with
+         * state-style properties either maps to a supported state field on the actor's widget
+         * style (returning the clone to assign) or fails with a located {@code STYLE_ERROR}.
+         * Container builders call this on their own (after their base handling) so tagless
+         * pseudo selectors are never silently ignored for containers; leaves reach it through
+         * {@link #applyCssOverrides}. Base-state behavior of the caller is intentionally
+         * untouched.
+         */
+        private Object applyPseudoCssOverrides(Element element, Actor actor, Object copied) {
+            if (!needsTaglessPseudoStyles(element)) {
+                return copied;
+            }
+            for (String pseudo : taglessPseudoStates) {
+                ResolvedStyle variant = resolveStyle(element, pseudo);
+                if (hasStateStyle(variant)) {
+                    copied = applyStateStyle(element, actor, variant, pseudo, copied);
+                }
+            }
+            return copied;
+        }
+
+        /**
+         * Runs the tagless pseudo validation for a container actor (no container style has
+         * state fields today, so a state-style pseudo variant either fails located or leaves
+         * the clone null; the assignment would only matter for a future style with state
+         * fields). Container base-state behavior is untouched.
+         */
+        private void assignPseudoStyle(Element element, Actor actor) {
+            Object copied = applyPseudoCssOverrides(element, actor, null);
+            if (copied != null) {
+                setWidgetStyle(actor, copied);
             }
         }
 
