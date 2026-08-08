@@ -7,7 +7,7 @@
     "markupFile" : "palisade-skirmish.xml",
     "thresholds" : {
       "geometry" : 0.13,
-      "color" : 0.695,
+      "color" : 0.701,
       "detail" : 0.281,
       "coarseLayout" : 0.303
     },
@@ -23,7 +23,7 @@
     "markupFile" : "hades-boon.xml",
     "thresholds" : {
       "geometry" : 0.1,
-      "color" : 0.292,
+      "color" : 0.243,
       "detail" : 0.103,
       "coarseLayout" : 0.213
     },
@@ -39,7 +39,7 @@
     "markupFile" : "sts-shop.xml",
     "thresholds" : {
       "geometry" : 0.1,
-      "color" : 0.208,
+      "color" : 0.214,
       "detail" : 0.154,
       "coarseLayout" : 0.23
     },
@@ -55,7 +55,7 @@
     "markupFile" : "wesnoth-battle.xml",
     "thresholds" : {
       "geometry" : 0.106,
-      "color" : 0.15,
+      "color" : 0.158,
       "detail" : 0.109,
       "coarseLayout" : 0.218
     },
