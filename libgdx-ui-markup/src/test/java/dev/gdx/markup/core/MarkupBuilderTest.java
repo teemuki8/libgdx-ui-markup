@@ -167,6 +167,28 @@ final class MarkupBuilderTest {
     }
 
     @Test
+    void secondBranchErrorPathIsParentScopedWithoutDoubleEnter() throws Exception {
+        GdxTestHost.run(() -> {
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("""
+                            <ui>
+                              <table id="one">
+                                <button id="a"/>
+                              </table>
+                              <table id="two">
+                                <button id="b" class="bad"/>
+                              </table>
+                            </ui>
+                            """), css.parse(".bad { font-color: missing; }"),
+                            DefaultSkin.create(), new NoopSink()));
+            assertEquals(MarkupException.Kind.UNRESOLVED_STYLE, failure.kind());
+            assertEquals("ui/table[1]/button", failure.elementPath(),
+                    "the second table's first button is indexed by its parent, and the "
+                            + "error helper must not enter the current element a second time");
+        });
+    }
+
+    @Test
     void missingDrawableFails() throws Exception {
         GdxTestHost.run(() -> {
             MarkupException failure = assertThrows(MarkupException.class, () ->

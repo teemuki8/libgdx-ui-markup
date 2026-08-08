@@ -21,9 +21,7 @@ import com.badlogic.gdx.utils.Align;
 import dev.gdx.markup.core.style.CssDocument;
 import dev.gdx.markup.core.style.CssStyleResolver;
 import dev.gdx.markup.core.style.ResolvedStyle;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -104,8 +102,7 @@ public final class MarkupBuilder {
     /** One build traversal; owns element counting, paths, and the actor list. */
     private final class Walk {
         private final List<Actor> actors = new ArrayList<>();
-        private final Map<String, Integer> sameTagSiblings = new HashMap<>();
-        private final Deque<String> pathStack = new ArrayDeque<>();
+        private final ElementPathTracker paths = new ElementPathTracker();
         private int elements;
         private int depth;
 
@@ -117,23 +114,14 @@ public final class MarkupBuilder {
         }
 
         void pushRootPath(String tag) {
-            pathStack.push(tag);
+            paths.enter(tag);
         }
 
         void popRootPath() {
-            pathStack.pop();
+            paths.exit();
         }
 
-        private String pathOf(String tag) {
-            Integer count = sameTagSiblings.merge(tag, 1, Integer::sum) - 1;
-            String segment = count == 0 ? tag : tag + "[" + count + "]";
-            if (pathStack.isEmpty()) {
-                return segment;
-            }
-            return pathStack.peek() + "/" + segment;
-        }
-
-        private void enter(String tag, String path, int line, int column) {
+        private void enter(String path, int line, int column) {
             if (++elements > maxElements) {
                 throw new MarkupException(MarkupException.Kind.TOO_LARGE, path, line, column,
                         "build exceeds the " + maxElements + "-element limit");
@@ -142,20 +130,17 @@ public final class MarkupBuilder {
                 throw new MarkupException(MarkupException.Kind.TOO_LARGE, path, line, column,
                         "build exceeds the " + maxDepth + "-level depth limit");
             }
-            pathStack.push(path);
         }
 
         private void exit() {
-            pathStack.pop();
+            paths.exit();
             depth--;
         }
 
         /** Adds every child of a ui/group-style parent with no cell semantics. */
         void addChildren(Group parent, Table cellTable, List<Element> children) {
             for (Element child : children) {
-                if ("row".equals(child.tag())) {
-                    throw rowOutsideTable(child, child.line(), child.column());
-                }
+                // A <row> here reaches buildActor with a null cell table and fails there typed.
                 Actor actor = buildActor(child, cellTable);
                 if (actor != null) {
                     parent.addActor(actor);
@@ -163,25 +148,25 @@ public final class MarkupBuilder {
             }
         }
 
-        private MarkupException rowOutsideTable(Element element, int line, int column) {
+        private MarkupException rowOutsideTable(int line, int column) {
             return new MarkupException(MarkupException.Kind.INVALID_VALUE,
-                    pathOf(element.tag()), line, column,
+                    paths.current(), line, column,
                     "<row> is only valid directly inside a <table> or <window>");
         }
 
         /** Builds one element into the given cell table (or {@code null} outside tables). */
         Actor buildActor(Element element, Table cellTable) {
-            String path = pathOf(element.tag());
+            String path = paths.enter(element.tag());
             int line = element.line();
             int column = element.column();
-            enter(element.tag(), path, line, column);
+            enter(path, line, column);
             try {
                 Actor actor = switch (element.tag()) {
                     case "ui" -> throw new MarkupException(MarkupException.Kind.INVALID_VALUE,
                             path, line, column, "<ui> must be the document root");
                     case "row" -> {
                         if (cellTable == null) {
-                            throw rowOutsideTable(element, line, column);
+                            throw rowOutsideTable(line, column);
                         }
                         cellTable.row();
                         yield null;
@@ -389,7 +374,7 @@ public final class MarkupBuilder {
                 // fall through to the typed failure
             }
             throw new MarkupException(MarkupException.Kind.INVALID_VALUE,
-                    pathOf(element.tag()), element.line(), element.column(),
+                    paths.current(), element.line(), element.column(),
                     "invalid numeric value \"" + raw + "\"");
         }
 
@@ -403,7 +388,7 @@ public final class MarkupBuilder {
                     case "right" -> Align.right;
                     case "center" -> Align.center;
                     default -> throw new MarkupException(MarkupException.Kind.INVALID_VALUE,
-                            pathOf(element.tag()), element.line(), element.column(),
+                            paths.current(), element.line(), element.column(),
                             "unknown align token \"" + token + "\"");
                 };
             }
@@ -573,7 +558,7 @@ public final class MarkupBuilder {
             Drawable drawable = skin.optional(name, Drawable.class);
             if (drawable == null) {
                 throw new MarkupException(MarkupException.Kind.UNRESOLVED_STYLE,
-                        pathOf(element.tag()), element.line(), element.column(),
+                        paths.current(), element.line(), element.column(),
                         "skin has no drawable named \"" + name + "\"");
             }
             return drawable;
@@ -584,7 +569,7 @@ public final class MarkupBuilder {
             com.badlogic.gdx.graphics.Color color = BuildContext.parseColor(skin, name);
             if (color == null) {
                 throw new MarkupException(MarkupException.Kind.UNRESOLVED_STYLE,
-                        pathOf(element.tag()), element.line(), element.column(),
+                        paths.current(), element.line(), element.column(),
                         "skin has no color named \"" + name + "\"");
             }
             return color;
@@ -596,7 +581,7 @@ public final class MarkupBuilder {
                     skin.optional(name, com.badlogic.gdx.graphics.g2d.BitmapFont.class);
             if (font == null) {
                 throw new MarkupException(MarkupException.Kind.UNRESOLVED_STYLE,
-                        pathOf(element.tag()), element.line(), element.column(),
+                        paths.current(), element.line(), element.column(),
                         "skin has no font named \"" + name + "\"");
             }
             return font;
