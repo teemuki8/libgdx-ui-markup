@@ -3,9 +3,21 @@ package dev.gdx.markup.harness;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.badlogic.gdx.scenes.scene2d.Group;
+import com.badlogic.gdx.scenes.scene2d.ui.Skin;
+import com.badlogic.gdx.scenes.scene2d.ui.TextField;
 import com.fasterxml.jackson.databind.JsonNode;
+import dev.gdx.markup.core.BuiltUi;
+import dev.gdx.markup.core.DefaultSkin;
+import dev.gdx.markup.core.MarkupBuilder;
+import dev.gdx.markup.core.MarkupDocument;
+import dev.gdx.markup.core.MarkupParser;
+import dev.gdx.markup.core.NoopSink;
+import dev.gdx.markup.core.style.CssParser;
+import dev.gdx.markup.runtime.MarkupRuntimeSource;
 import dev.gdx.uiharness.agentruntime.AgentRuntimeObservationSource;
 import dev.gdx.uiharness.core.locator.StrictResolution;
 import dev.gdx.uiharness.core.locator.TestIdLocator;
@@ -42,7 +54,9 @@ import org.junit.jupiter.api.Timeout;
  * statuses are actually reachable: a token mismatch or a correlation recorded against a frame
  * that is no longer the latest leaves the binding unprovable, so the adapter emits no
  * observation and the comparator reports {@code UNAVAILABLE} — never {@code STALE} or
- * {@code UNCORRELATED} through this source.
+ * {@code UNCORRELATED} through this source. One test registers a real markup-built actor tree
+ * through {@code MarkupRuntimeSource.registerAuthoritative} and proves a deliberate UI/domain
+ * divergence reports {@code MISMATCH} with the expected displayed and runtime values.
  */
 final class MarkupHarnessEndToEndTest {
     private static final String SESSION_ID = "markup-preview";
@@ -137,7 +151,7 @@ final class MarkupHarnessEndToEndTest {
     void provenCorrelationComparesEqualThroughTheAgentRuntimeSource() {
         try (AgentRuntime runtime = runtimeWithUserEntity()) {
             captureCorrelatedFrame(runtime, 1);
-            DisplayedRuntimeComparison comparison = compareThroughSource(runtime, 1);
+            DisplayedRuntimeComparison comparison = compareThroughSource(runtime, 1, "Ada");
             assertEquals(DisplayedRuntimeComparison.Status.EQUAL, comparison.status(),
                     "a provably correlated frame compares EQUAL through AgentRuntimeObservationSource");
             assertEquals(CORRELATION_TOKEN, comparison.correlationId());
@@ -158,7 +172,7 @@ final class MarkupHarnessEndToEndTest {
     void correlationTokenMismatchIsUnavailableNotStaleOrUncorrelated() {
         try (AgentRuntime runtime = runtimeWithUserEntity()) {
             captureCorrelatedFrame(runtime, 1, "application-owned-token");
-            DisplayedRuntimeComparison comparison = compareThroughSource(runtime, 2);
+            DisplayedRuntimeComparison comparison = compareThroughSource(runtime, 2, "Ada");
             assertEquals(DisplayedRuntimeComparison.Status.UNAVAILABLE, comparison.status(),
                     "a token mismatch leaves the binding unprovable: the source emits no observation");
             assertNull(comparison.runtimeFrame(),
@@ -183,7 +197,7 @@ final class MarkupHarnessEndToEndTest {
         try (AgentRuntime runtime = runtimeWithUserEntity()) {
             captureCorrelatedFrame(runtime, 1);
             captureFrame(runtime);
-            DisplayedRuntimeComparison comparison = compareThroughSource(runtime, 2);
+            DisplayedRuntimeComparison comparison = compareThroughSource(runtime, 2, "Ada");
             assertEquals(DisplayedRuntimeComparison.Status.UNAVAILABLE, comparison.status(),
                     "a correlation recorded against a frame that is no longer the latest leaves "
                             + "the latest frame unprovable: the source emits no observation");
@@ -192,6 +206,67 @@ final class MarkupHarnessEndToEndTest {
             assertEquals(CORRELATION_TOKEN, comparison.correlationId());
             assertTrue(comparison.details().isEmpty());
         }
+    }
+
+    /**
+     * Issue #9 acceptance proof at the integration level: a markup UI registered through
+     * {@code MarkupRuntimeSource.registerAuthoritative} publishes the supplied domain value
+     * ("Carol") while the actor displays a different value ("Alice"). Driving the real
+     * {@link AgentRuntimeObservationSource} and {@link RuntimeComparator} over an explicitly
+     * correlated frame reports {@code MISMATCH} with the expected displayed and runtime values —
+     * widget mirror could never detect this divergence.
+     */
+    @Test
+    void authoritativeMismatchIsReportedThroughTheRuntimeComparator() throws Exception {
+        HarnessGdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupDocument document = new MarkupParser().parse("""
+                    <ui>
+                      <table>
+                        <textfield id="user" data-runtime-entity="user"/>
+                      </table>
+                    </ui>
+                    """);
+            BuiltUi built = MarkupBuilder.build(
+                    document, new CssParser().parse(""), skin, new NoopSink());
+            Group root = built.root();
+            TextField field = (TextField) root.findActor("user");
+            field.setText("Alice");
+
+            try (AgentRuntime runtime = newRuntime()) {
+                try (MarkupRuntimeSource source = MarkupRuntimeSource.registerAuthoritative(
+                        runtime, document, built, SESSION_ID,
+                        (entityId, propertyId, actor) -> {
+                            assertEquals("user", entityId);
+                            assertEquals("value", propertyId);
+                            assertSame(field, actor,
+                                    "the resolver receives the built actor for correlation");
+                            return () -> RuntimeValues.string("Carol");
+                        })) {
+                    assertEquals(List.of("user"), source.registeredEntities(),
+                            "authoritative mode registers the markup entity");
+                    captureCorrelatedFrame(runtime, 1);
+                    DisplayedRuntimeComparison comparison = compareThroughSource(
+                            runtime, 1, "Alice");
+                    assertEquals(DisplayedRuntimeComparison.Status.MISMATCH, comparison.status(),
+                            "a UI/domain divergence reports MISMATCH on a proven frame");
+                    assertEquals("user", comparison.entityId());
+                    assertEquals("value", comparison.propertyId());
+                    assertEquals("Alice", comparison.displayedValue());
+                    assertEquals("Carol", comparison.runtimeValue());
+                    assertEquals(1L, comparison.displayedFrame());
+                    assertEquals(1L, comparison.runtimeFrame(),
+                            "the correlated frame proves both sides of the comparison");
+                }
+            }
+        });
+    }
+
+    private static AgentRuntime newRuntime() {
+        AgentRuntime runtime = AgentRuntime.builder()
+                .sessionId(SessionId.of(SESSION_ID)).build();
+        runtime.start();
+        return runtime;
     }
 
     private static AgentRuntime runtimeWithUserEntity() {
@@ -226,13 +301,13 @@ final class MarkupHarnessEndToEndTest {
 
     /** Compares the {@code user} binding's displayed text against the adapter's observation. */
     private static DisplayedRuntimeComparison compareThroughSource(
-            AgentRuntime runtime, long snapshotFrame) {
+            AgentRuntime runtime, long snapshotFrame, String displayedText) {
         AgentRuntimeObservationSource source =
                 new AgentRuntimeObservationSource(runtime, SESSION_ID);
         RuntimeBinding binding =
                 new RuntimeBinding("user", "value", null, null, CORRELATION_TOKEN);
         SemanticNode node = new SemanticNode("user", null, List.of(), Role.TEXT_FIELD,
-                "user", "Ada", null, "user", null, "TextField",
+                "user", displayedText, null, "user", null, "TextField",
                 new SemanticState(true, true, Optional.empty(), Optional.empty(),
                         Optional.empty(), Optional.empty(), Optional.empty(),
                         false, true, 1.0, false, true, true),
