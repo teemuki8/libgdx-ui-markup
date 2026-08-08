@@ -11,7 +11,10 @@ import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import javax.imageio.ImageIO;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -155,6 +158,53 @@ final class VisualFidelityTest {
 
     @Test
     @Timeout(60)
+    void aBlankRecreationsOwnTransformsCannotCalibrateItIntoAPassingGate() {
+        BufferedImage reference = syntheticUi();
+        BufferedImage blank = new BufferedImage(reference.getWidth(), reference.getHeight(),
+                BufferedImage.TYPE_INT_RGB);
+        fill(blank, 0xff000000);
+        FidelityScore positive = VisualFidelity.measure(reference, blank);
+        assertEquals(0.0, positive.geometry(), 0.0,
+                "a blank recreation must score zero geometry against the reference");
+        assertEquals(0.0, positive.color(), 0.0,
+                "a blank recreation must score zero color against the reference");
+        assertEquals(0.0, positive.detail(), 0.0,
+                "a blank recreation must score zero detail against the reference");
+        // every deliberate transform of a blank screen is still a blank screen, so the
+        // recreation's own transforms can never separate from it
+        Map<FidelityComponent, List<Double>> negatives = new EnumMap<>(FidelityComponent.class);
+        for (FidelityComponent component : FidelityComponent.REQUIRED) {
+            negatives.put(component, new ArrayList<>());
+        }
+        BufferedImage[] transforms = NegativeTransforms.all(blank);
+        String[] names = NegativeTransforms.names();
+        for (int i = 0; i < transforms.length; i++) {
+            FidelityScore negative = VisualFidelity.measure(reference, transforms[i]);
+            String name = names[i];
+            if ("flip".equals(name) || "translate".equals(name) || "scale".equals(name)) {
+                negatives.get(FidelityComponent.GEOMETRY).add(negative.geometry());
+            }
+            if ("hue".equals(name)) {
+                negatives.get(FidelityComponent.COLOR).add(negative.color());
+            }
+            if ("blur".equals(name) || "scale".equals(name)) {
+                negatives.get(FidelityComponent.DETAIL).add(negative.detail());
+            }
+        }
+        for (FidelityComponent component : FidelityComponent.REQUIRED) {
+            assertEquals(List.of(0.0), negatives.get(component).stream().distinct().toList(),
+                    "the transforms of a blank recreation must be indistinguishable from it "
+                            + "on " + component);
+            assertTrue(QualificationPolicy.calibrate(component,
+                            List.of(positive.component(component)),
+                            negatives.get(component)).isEmpty(),
+                    "a blank recreation's own transforms must never calibrate " + component
+                            + " into a passing gate");
+        }
+    }
+
+    @Test
+    @Timeout(60)
     void measureIsDeterministicAcrossDecodePaths() throws IOException {
         BufferedImage image = solidWithText(320, 180, 0xff20282e, 0xffc8b090);
         Path copy = Files.createTempFile("recreation", ".png");
@@ -184,7 +234,8 @@ final class VisualFidelityTest {
         FidelityScore translatedScore = VisualFidelity.measure(base, translated);
         FidelityScore flippedScore = VisualFidelity.measure(base, flipped);
         assertEquals(1.0, identity.geometry(), 0.0001, "identity geometry must be 1");
-        double ceiling = QualificationPolicy.calibrate(List.of(identity.geometry()),
+        double ceiling = QualificationPolicy.calibrate(FidelityComponent.GEOMETRY,
+                List.of(identity.geometry()),
                 List.of(translatedScore.geometry(), flippedScore.geometry())).orElseThrow();
         assertTrue(translatedScore.geometry() < ceiling,
                 "translation must lower geometry below the calibrated negative ceiling: "
@@ -243,7 +294,8 @@ final class VisualFidelityTest {
         FidelityScore identity = VisualFidelity.measure(base, base);
         FidelityScore blurredScore = VisualFidelity.measure(base, blurred);
         assertEquals(1.0, identity.detail(), 0.0001, "identity detail must be 1");
-        double ceiling = QualificationPolicy.calibrate(List.of(identity.detail()),
+        double ceiling = QualificationPolicy.calibrate(FidelityComponent.DETAIL,
+                List.of(identity.detail()),
                 List.of(blurredScore.detail())).orElseThrow();
         assertTrue(blurredScore.detail() < ceiling,
                 "blurred typography must fall below the calibrated negative ceiling: "
@@ -262,7 +314,8 @@ final class VisualFidelityTest {
         FidelityScore identity = VisualFidelity.measure(base, base);
         FidelityScore scaledScore = VisualFidelity.measure(base, scaled);
         FidelityScore spacingScore = VisualFidelity.measure(base, spacingShifted);
-        double ceiling = QualificationPolicy.calibrate(List.of(identity.detail()),
+        double ceiling = QualificationPolicy.calibrate(FidelityComponent.DETAIL,
+                List.of(identity.detail()),
                 List.of(scaledScore.detail(), spacingScore.detail())).orElseThrow();
         assertTrue(scaledScore.detail() < ceiling,
                 "uniform scale must lower detail below the calibrated negative ceiling: "

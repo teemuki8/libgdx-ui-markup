@@ -69,6 +69,27 @@ real game UI screenshots.
    separation. Calibration fails loudly (`ReferenceException.Kind.CALIBRATION`) when the
    ranges overlap or touch. Strict CI never recalibrates; the qualification test fails when a
    current measurement no longer clears its committed threshold (stale baselines).
+4b. **Absolute per-component floors; calibration may never lower required fidelity below
+   them.** Every gated component has an immutable floor — geometry 0.12, color 0.20, detail
+   0.12 — enforced in `QualificationPolicy` (`GEOMETRY_FLOOR`, `COLOR_FLOOR`,
+   `DETAIL_FLOOR`, `floor(FidelityComponent)`). The effective calibrated threshold is
+   `max(component floor, midpoint)`, so a midpoint that would undercut the floor is lifted to
+   it, and a positive that itself scores below the floor refuses calibration outright
+   (`calibrate` returns empty and the calibration task fails with a typed
+   `ReferenceException.Kind.CALIBRATION` naming the component and floor): a sub-floor
+   recreation can never be committed as a passing baseline, so no self-transform calibration
+   can mint a gate that accepts a broken recreation. The gate verdict itself compares against
+   the committed thresholds, so committed baselines below the floor keep gating until they
+   are re-calibrated; staleness reports them because the floor-aware implied threshold
+   exceeds them.
+4c. **Floor-aware bidirectional staleness.** Staleness compares the committed threshold
+   against exactly what `calibrate` would commit today — the floor-aware
+   `max(floor, midpoint)` of the current positive and its component-relevant negatives — in
+   both directions: an upward drift (implied threshold rose beyond the 10% relative
+   tolerance) and a downward drift (implied threshold fell beyond it) are both stale, while a
+   committed threshold at the floor is not falsely flagged when the raw midpoint dips below
+   it (the floor holds the implied value up), and a measured positive below the floor, which
+   can imply no threshold at all, is stale by definition.
 5. **Committed negative fixtures.** The five transforms of the palisade recreation are
    committed under `src/test/resources/negative/` (deterministic, offline). A test measures
    each against the palisade reference and asserts it is rejected by its intended component's
@@ -99,6 +120,15 @@ geometry 0.121 < 0.161, hue color 0.484 < 0.702, blur detail 0.168 < 0.405; hade
 geometry 0.100 < 0.106; sts translate geometry 0.041 < 0.076; wesnoth flip geometry
 0.082 < 0.088 and hue color 0.049 < 0.055.
 
+These measured values predate the absolute floors of decision 4b; the art-heavy entries
+(hades-boon, sts-shop, wesnoth-battle) still sit partly below the floors (e.g. hades
+geometry 0.111 < 0.12, color 0.068 < 0.20; sts geometry 0.084 < 0.12, detail 0.128 ≥ 0.12;
+wesnoth geometry 0.093 < 0.12, color 0.060 < 0.20, detail 0.051 < 0.12). Their recreations
+are being improved (designer wave) to clear `floor + 0.02` (geometry ≥ 0.14, color ≥ 0.22,
+detail ≥ 0.14) so that re-calibration commits thresholds at or above the floors; until that
+re-calibration wave lands, the committed manifest thresholds remain in force for the verdict
+and the floor-aware staleness check flags every sub-floor committed baseline.
+
 ## Consequences
 
 - The qualification exercises the shipped product (the preview binary), the bounded CSS
@@ -115,5 +145,10 @@ geometry 0.100 < 0.106; sts translate geometry 0.041 < 0.076; wesnoth flip geome
   chrome (HUD, panels, text) over an approximation of the dominant scene palette; the
   remaining art texture is inherently unreproducible in markup, which bounds the achievable
   detail and color scores (calibrated accordingly).
+- Calibration is floor-bound: no run can lower a required fidelity gate below the immutable
+  per-component floors (geometry 0.12, color 0.20, detail 0.12), and a recreation whose own
+  deliberate transforms cannot be separated from it (or that scores below a floor) fails
+  calibration loudly instead of minting a passing gate. Raising the bar above the floors is
+  a corpus-quality question (better markup recreations), never a calibration shortcut.
 - The harness's agentic-palisade qualification is untouched and remains a libgdx-ui-harness
   concern.

@@ -166,7 +166,7 @@ public final class QualificationRunner implements AutoCloseable {
             List<List<Double>> negatives) {
         for (int i = 0; i < FidelityComponent.REQUIRED.size(); i++) {
             FidelityComponent component = FidelityComponent.REQUIRED.get(i);
-            if (QualificationPolicy.stale(thresholds.component(component),
+            if (QualificationPolicy.stale(component, thresholds.component(component),
                     score.component(component), negatives.get(i))) {
                 return true;
             }
@@ -304,8 +304,18 @@ public final class QualificationRunner implements AutoCloseable {
 
     private static double calibrateComponent(CorpusEntry entry, FidelityComponent component,
             double positive, List<Double> negatives) {
-        OptionalDouble threshold = QualificationPolicy.calibrate(List.of(positive), negatives);
+        OptionalDouble threshold = QualificationPolicy.calibrate(component, List.of(positive),
+                negatives);
         if (threshold.isEmpty()) {
+            double floor = QualificationPolicy.floor(component);
+            if (positive < floor) {
+                throw new ReferenceException(ReferenceException.Kind.CALIBRATION,
+                        "cannot calibrate " + entry.id() + " " + component + ": positive "
+                                + compact(positive) + " is below the absolute "
+                                + compact(floor) + " floor; a sub-floor recreation cannot be "
+                                + "committed as a passing baseline, so improve the recreation "
+                                + "above the floor");
+            }
             throw new ReferenceException(ReferenceException.Kind.CALIBRATION,
                     "no safe threshold interval for " + entry.id() + " " + component
                             + ": positive " + compact(positive)
