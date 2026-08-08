@@ -3,89 +3,93 @@
      framed by a narrow bronze command strip, dark minimap/sidebar, and bottom turn control. -->
 <ui>
   <table id="root" width="1280" height="720" class="backdrop" pad="0">
-    <table id="command-bar" class="panel" width="1280" height="34" pad="4" align="left center">
+    <table id="command-bar" class="panel" width="1280" height="22" pad="2" align="left center">
       <row/>
-      <button id="menu" text="Menu" name="Menu" width="82" height="26"/>
-      <button id="actions" text="Actions" name="Actions" width="92" height="26"/>
-      <label id="turn-gold" class="title" text="SWORD 7     GOLD 6     VILLAGES 8/16     INCOME +18     TIME 20:01" width="1080" align="left center"/>
+      <button id="menu" text="Menu" name="Menu" width="72" height="18"/>
+      <button id="actions" text="Actions" name="Actions" width="82" height="18"/>
+      <label id="turn-gold" class="title" text="SWORD 7     GOLD 6     VILLAGES 8/16     INCOME +18     TIME 20:01" width="700"/>
     </table>
-    <table id="main-field" width="1280" height="662" pad="0">
-      <table id="battlefield-frame" width="950" height="662" pad="0">
-        <table id="battlefield" class="panel-alt" width="950" height="662" pad="12" align="left top">
-          <label id="ridge-1" class="heading" text="^ ^ ^     ^ ^       ^ ^ ^^       ^      ^ ^" width="900" height="34"/>
+    <row/>
+    <table id="battlefield-frame" width="780" height="674" pad="0">
+      <row/>
+      <table id="battlefield" class="panel-alt" width="950" height="674" pad="8" align="left top">
+        <row/>
+        <label id="ridge-1" class="heading" text="^ ^ ^     ^ ^       ^ ^ ^^       ^      ^ ^" width="900" height="28"/>
+        <row/>
+        <label id="forest-1" text="##  ###     . . .     ####     . .      ##  ##" width="900" height="30"/>
+        <row/>
+        <table id="river-west" class="panel" width="250" height="72" pad="0" align="center center">
           <row/>
-          <label id="forest-1" text="##  ###     . . .     ####     . .      ##  ##" width="900" height="34"/>
-          <row/>
-          <table id="river-west" class="panel" width="270" height="78" pad="4" align="left center">
-            <label id="river-west-text" class="section" text="~  ~  ~  ~  ~  ~" align="center"/>
-          </table>
-          <row/>
-          <table id="castle-north" class="panel" width="330" height="82" pad="6" align="center center">
-            <label id="castle-north-text" class="heading" text="[==]  CASTLE  [==]" align="center"/>
-            <row/>
-            <label id="castle-gate" class="section" text="[__]   . . ." align="center"/>
-          </table>
-          <row/>
-          <label id="forest-2" text="###       ^ ^ ^       #####       ^ ^       ##" width="900" height="34"/>
-          <row/>
-          <table id="river-east" class="panel" width="230" height="82" pad="4" align="right center">
-            <label id="river-east-text" class="section" text="~  ~  ~  ~  ~" align="center"/>
-          </table>
-          <row/>
-          <table id="unit-cluster" width="450" height="90" pad="4" align="center center">
-            <label id="red-units" class="title" text="FLAG   FLAG   FLAG   FLAG" align="center"/>
-            <row/>
-            <label id="battle-line" class="heading" text="  5     X  X  X     5" align="center"/>
-            <row/>
-            <progressbar id="frontline-hp" min="0" max="100" value="72" width="280" height="14"/>
-          </table>
-          <row/>
-          <label id="forest-3" text="####    ^ ^ ^^      ##      ^ ^ ^     ####" width="900" height="34"/>
-          <row/>
-          <table id="village-west" class="panel" width="210" height="70" pad="4" align="left center">
-            <label id="village-west-text" class="heading" text="V  VILLAGE" align="center"/>
-            <row/>
-            <label id="village-west-gold" class="section" text="income +2" align="center"/>
-          </table>
-          <row/>
-          <table id="river-south" class="panel" width="330" height="70" pad="4" align="center center">
-            <label id="river-south-text" class="section" text="~  ~  ~  ~  ~  ~" align="center"/>
-          </table>
-          <row/>
-          <label id="ridge-2" class="heading" text="^ ^ ^^      ###       ^ ^ ^       ####      ^ ^" width="900" height="34"/>
-          <row/>
-          <table id="unit-status" width="900" height="62" pad="2">
-            <table width="370" height="56" pad="2" align="left center">
-              <label id="unit-label" class="title" text="X Elvish Archer  21/21 HP" width="360" height="24"/>
-              <progressbar id="unit-hp" min="0" max="21" value="21" width="240" height="14"/>
-            </table>
-            <table width="370" height="56" pad="2" align="right center">
-              <label id="enemy-label" class="title" text="Orcish Grunt  12/12 HP" width="360" height="24" align="right"/>
-              <progressbar id="enemy-hp" min="0" max="12" value="12" width="200" height="14"/>
-            </table>
-          </table>
+          <label id="river-west-text" class="section" text="~  ~  ~  ~  ~  ~" align="center"/>
         </table>
-      </table>
-      <table id="sidebar" class="panel" width="330" height="662" pad="14" align="left top">
-        <label id="minimap" class="panel-alt" text=". . . . .&#10;.  o  . o&#10;. . ^ . .&#10;o . .  F .&#10;. . . . ." width="300" height="132" align="center"/>
+        <table id="castle-north" class="panel" width="300" height="76" pad="5" align="center center">
+          <row/>
+          <label id="castle-north-text" class="heading" text="[==]  CASTLE  [==]" align="center"/>
+          <row/>
+          <label id="castle-gate" class="section" text="[__]   . . ." align="center"/>
+        </table>
         <row/>
-        <label id="clock" class="title" text="20:10" width="300" height="26" align="center"/>
+        <label id="forest-2" text="###       ^ ^ ^       #####       ^ ^       ##" width="900" height="42"/>
         <row/>
-        <label id="terrain-title" class="title" text="Road (flat)" width="300" height="26"/>
-        <label id="terrain-detail" class="section" text="defense 40%&#10;move cost 1" width="300" height="42"/>
+        <table id="river-east" class="panel" width="210" height="86" pad="0" align="right center">
+          <row/>
+          <label id="river-east-text" class="section" text="~  ~  ~  ~  ~" align="center"/>
+        </table>
+        <table id="unit-cluster" width="430" height="86" pad="4" align="center center">
+          <row/>
+          <label id="red-units" class="title" text="FLAG  FLAG   FLAG   FLAG" align="center"/>
+          <row/>
+          <label id="battle-line" class="heading" text="  5     X  X  X     5" align="center"/>
+          <row/>
+          <progressbar id="frontline-hp" min="0" max="100" value="72" width="250" height="12"/>
+        </table>
         <row/>
-        <label id="unit-info" class="heading" text="Maaf" width="300" height="26"/>
-        <label id="unit-detail" class="section" text="Dune Rider&#10;HP 31/39&#10;XP 8/24&#10;MP 0/7" width="300" height="76"/>
-        <progressbar id="unit-xp" min="0" max="24" value="8" width="288" height="14"/>
+        <label id="forest-3" text="####    ^ ^ ^^      ##      ^ ^ ^     ####" width="900" height="42"/>
         <row/>
-        <label id="attack-title" class="heading" text="Attacks" width="300" height="24"/>
-        <label id="attack-detail" class="section" text="5×2 mace&#10;7×3 composite bow" width="300" height="50"/>
+        <table id="village-west" class="panel" width="180" height="62" pad="4" align="left center">
+          <row/>
+          <label id="village-west-text" class="heading" text="V  VILLAGE" align="center"/>
+          <row/>
+          <label id="village-west-gold" class="section" text="income +2" align="center"/>
+        </table>
+        <table id="river-south" class="panel" width="300" height="64" pad="0" align="center center">
+          <row/>
+          <label id="river-south-text" class="section" text="~  ~  ~  ~  ~  ~" align="center"/>
+        </table>
+        <row/>
+        <label id="ridge-2" class="heading" text="^ ^ ^^      ###       ^ ^ ^       ####      ^ ^" width="900" height="38"/>
+        <row/>
+        <label id="unit-label" class="title" text="X Elvish Archer  21/21 HP" width="320" height="24"/>
+        <progressbar id="unit-hp" min="0" max="21" value="21" width="190" height="12"/>
+        <label id="enemy-label" class="title" text="Orcish Grunt  12/12 HP" width="300" height="24"/>
+        <progressbar id="enemy-hp" min="0" max="12" value="12" width="150" height="12"/>
       </table>
     </table>
-    <table id="turn-bar" class="panel" width="1280" height="24" pad="2" align="right center">
+    <table id="sidebar" class="panel" width="330" height="674" pad="12" align="left top">
       <row/>
-      <label id="status" class="section" text="Player 1 · Turn 3" width="1120" align="left"/>
-      <button id="end-turn" text="End Turn" name="End turn" width="132" height="20"/>
+      <label id="minimap" class="panel-alt" text=". . . . .\n.  o  . o\n. . ^ . .\no . .  F .\n. . . . ." width="290" height="120" align="center"/>
+      <row/>
+      <label id="clock" class="title" text="20:10" width="112" height="24" align="center"/>
+      <row/>
+      <label id="terrain-title" class="title" text="Road (flat)" width="112" height="24"/>
+      <row/>
+      <label id="terrain-detail" class="section" text="defense 40%\nmove cost 1" width="112" height="38"/>
+      <row/>
+      <label id="unit-info" class="heading" text="Maaf" width="112" height="24"/>
+      <row/>
+      <label id="unit-detail" class="section" text="Dune Rider\nHP 31/39\nXP 8/24\nMP 0/7" width="112" height="70"/>
+      <row/>
+      <progressbar id="unit-xp" min="0" max="24" value="8" width="108" height="12"/>
+      <row/>
+      <label id="attack-title" class="heading" text="Attacks" width="112" height="22"/>
+      <row/>
+      <label id="attack-detail" class="section" text="5×2 mace\n7×3 composite bow" width="112" height="46"/>
+    </table>
+    <row/>
+    <table id="turn-bar" class="panel" width="1280" height="24" pad="3" align="right center">
+      <row/>
+      <label id="status" class="section" text="Player 1 · Turn 3" width="1040" align="left"/>
+      <button id="end-turn" text="End Turn" name="End turn" width="112" height="20"/>
     </table>
   </table>
 </ui>
