@@ -32,7 +32,7 @@
         <table id="tile-row-top" width="820" height="64" class="panel-alt" align="center center">
           <label id="tile-top-1" text="◇    ◇    ◇    ◇    ◇    ◇" class="section" width="790" align="center"/>
         </table>
-        <table id="arena-detail-grid" width="820" height="180" class="panel-alt" align="center center">
+        <table id="arena-detail-grid" width="820" height="180" class="field-focused-bg" align="center center">
           <row/>
           <label id="arena-line-1" text="▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱" width="790" height="24" align="center"/>
           <row/>
@@ -52,7 +52,7 @@
           <row/>
           <label id="obelisk-left-detail" text="TARTARUS" class="section" width="130" align="center"/>
         </table>
-        <table id="battle-center" width="530" height="230" class="panel-alt" align="center center">
+        <table id="battle-center" width="530" height="230" class="field-focused-bg" align="center center">
           <row/>
           <label id="hero-mark" text="◆   ZAGREUS   ◆" class="title" width="480" height="56" align="center"/>
           <row/>
@@ -70,7 +70,7 @@
         <table id="tile-row-bottom" width="820" height="64" class="panel-alt" align="center center">
           <label id="tile-bottom-1" text="◇   ◇   ◇   ◇   ◇   ◇   ◇" class="section" width="790" align="center"/>
         </table>
-        <table id="tile-grid" width="820" height="150" class="panel-alt" align="center center">
+        <table id="tile-grid" width="820" height="150" class="selection-bg" align="center center">
           <row/>
           <label id="tile-grid-1" class="section" text="◇  ◇  ◇  ◇  ◇  ◇  ◇  ◇  ◇" width="790" height="24" align="center"/>
           <row/>

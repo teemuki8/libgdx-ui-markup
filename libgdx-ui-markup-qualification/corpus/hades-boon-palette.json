@@ -1,13 +1,13 @@
 {
-  "background": "#050509ff",
-  "panel": "#08070dff",
-  "panel-alt": "#171a1aff",
+  "background": "#000000ff",
+  "panel": "#000000ff",
+  "panel-alt": "#1a1a1aff",
   "accent": "#dd3b32ff",
   "accent-over": "#f05a3fff",
   "accent-down": "#a92a2aff",
   "text": "#f4f4f4ff",
   "muted": "#aaa8a8ff",
-  "field-focused": "#47303bff",
-  "selection": "#6a3035ff",
-  "disabled": "#54454cff"
+  "field-focused": "#101010ff",
+  "selection": "#2a2a2aff",
+  "disabled": "#1a1a1aff"
 }
