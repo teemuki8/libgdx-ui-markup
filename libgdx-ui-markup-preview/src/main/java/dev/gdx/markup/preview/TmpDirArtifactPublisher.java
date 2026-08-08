@@ -21,8 +21,10 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileOwnerAttributeView;
+import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.nio.file.attribute.UserDefinedFileAttributeView;
 import java.nio.file.attribute.UserPrincipal;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -162,6 +164,9 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
             FileAttribute<?>[] directoryCreationAttrs =
                     effective.directoryCreationAttributes(parentOwner);
             created = createSessionDirectory(parentReal, effective, directoryCreationAttrs);
+            // Provision a per-directory identity token (Windows) before identity capture so
+            // the captured fileKey includes it; a no-op elsewhere.
+            this.identitySource.provisionIdentity(created);
             Path sessionReal = created.toRealPath();
             if (sessionReal.getParent() == null || !sessionReal.getParent().equals(parentReal)) {
                 throw new ArtifactReference.ArtifactUnavailableException(
@@ -589,6 +594,14 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
             }
             failure = aggregate(failure, closeStream(sessionDir, dirStream, "session", () ->
                     sessionStreamClosed = true));
+        } else if (verdict.state == CleanupVerdict.State.REPLACED
+                || verdict.state == CleanupVerdict.State.RENAMED) {
+            // No session stream (e.g. Windows has no SecureDirectoryStream): the original
+            // session inode no longer holds the captured name. Locate it by identity in the
+            // parent and clean its contents through the identity-checked absolute fallback;
+            // the original directory itself remains linked as the reported leak and a
+            // replacement is never touched.
+            failure = aggregate(failure, deleteOriginalChildrenFallback());
         }
         // With the session stream closed (or absent), remove the session entry itself through
         // the parent anchor — identity-verified so a replacement is never deleted.
@@ -672,20 +685,39 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
                 }
             }
         } else {
-            // Session stream closed or absent: verify through the identity-source seam over
-            // the captured path. A gone path is an idempotent no-op unless the inode is still
-            // linked elsewhere (renamed away).
+            // Session stream closed or absent (e.g. Windows, which has no
+            // SecureDirectoryStream): verify through the identity-source seam over the
+            // captured path. A gone path is an idempotent no-op unless the inode is still
+            // linked elsewhere (renamed away). A name that still exists but holds a
+            // DIFFERENT directory object is a replacement (refused, never deleted); the same
+            // object with a different owner is a re-ownership (refused, never deleted); an
+            // unreadable or unavailable identity deletes nothing either.
             if (!Files.exists(sessionReal, LinkOption.NOFOLLOW_LINKS)) {
                 return sessionInodeStillLinkedInParent()
                         ? CleanupVerdict.renamed()
                         : CleanupVerdict.gone();
             }
             try {
-                verifyIdentity(sessionReal, sessionFileKey, sessionOwner, "session");
+                Object currentKey = identitySource.fileKey(sessionReal);
+                if (currentKey == null) {
+                    return CleanupVerdict.reowned(unavailable(
+                            "session directory identity (fileKey) missing or changed: "
+                                    + sessionReal, null));
+                }
+                if (!sessionFileKey.equals(currentKey)) {
+                    return CleanupVerdict.replaced();
+                }
+                UserPrincipal currentOwner = identitySource.owner(sessionReal);
+                if (currentOwner == null || !sessionOwner.equals(currentOwner)) {
+                    return CleanupVerdict.reowned(unavailable(
+                            "session directory owner missing or changed: " + sessionReal,
+                            null));
+                }
                 anchoredOk = true;
-            } catch (ArtifactReference.ArtifactUnavailableException changed) {
-                anchoredOk = false;
-                anchoredFailure = changed;
+            } catch (IOException | RuntimeException failure) {
+                return CleanupVerdict.unverifiable(unavailable(
+                        "session directory identity cannot be proven: "
+                                + failure.getMessage(), failure));
             }
         }
         if (!anchoredOk) {
@@ -725,7 +757,12 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
         }
         try {
             Object currentKey = identitySource.fileKey(sessionReal);
-            if (currentKey == null || !sessionFileKey.equals(currentKey)) {
+            if (currentKey == null) {
+                return CleanupVerdict.unverifiable(unavailable(
+                        "session directory identity (fileKey) is unavailable: "
+                                + sessionReal, null));
+            }
+            if (!sessionFileKey.equals(currentKey)) {
                 return CleanupVerdict.replaced();
             }
             return CleanupVerdict.matches();
@@ -759,9 +796,7 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
                     continue; // the captured name itself (missing or replaced) is not a link elsewhere
                 }
                 try {
-                    if (sessionFileKey.equals(Files.readAttributes(sibling,
-                            BasicFileAttributes.class,
-                            LinkOption.NOFOLLOW_LINKS).fileKey())) {
+                    if (sessionFileKey.equals(identitySource.fileKey(sibling))) {
                         return sibling;
                     }
                 } catch (IOException | RuntimeException unreadable) {
@@ -859,6 +894,56 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
                         "failed to close the renamed original session stream: "
                                 + closeFailure.getMessage(), closeFailure));
             }
+        }
+        return primary;
+    }
+
+    /**
+     * Non-SDS equivalent of {@link #deleteOriginalContentsThroughCurrentName} for providers
+     * without directory-relative streams (e.g. Windows): locate the original session inode
+     * in the parent by its identity, re-verify its fileKey and owner through the seam, then
+     * delete its CHILDREN (never the original directory itself — it remains linked as the
+     * reported leak) through absolute no-follow operations. Returns {@code null} when the
+     * original is not linked in the parent; a replacement or unverifiable location is
+     * refused, never deleted.
+     */
+    private RuntimeException deleteOriginalChildrenFallback() {
+        Path original;
+        try {
+            original = findSessionInodeInParent();
+        } catch (IOException | RuntimeException failure) {
+            return new IllegalStateException(
+                    "unable to locate the renamed original session directory: "
+                            + failure.getMessage(), failure);
+        }
+        if (original == null) {
+            return null; // not linked in the parent: nothing to clean at a foreign location
+        }
+        try {
+            verifyIdentity(original, sessionFileKey, sessionOwner, "session");
+        } catch (ArtifactReference.ArtifactUnavailableException changed) {
+            return new IllegalStateException(
+                    "refusing to clean the unverified renamed original session directory: "
+                            + original, changed);
+        }
+        RuntimeException primary = null;
+        try (java.util.stream.Stream<Path> walk = Files.walk(original)) {
+            List<Path> paths = walk.sorted(Comparator.reverseOrder()).toList();
+            for (Path path : paths) {
+                if (path.equals(original)) {
+                    continue; // the original directory itself remains (the reported leak)
+                }
+                try {
+                    Files.deleteIfExists(path);
+                } catch (IOException | RuntimeException failure) {
+                    primary = aggregate(primary, new IllegalStateException(
+                            "failed to delete " + path, failure));
+                }
+            }
+        } catch (IOException | RuntimeException walkFailure) {
+            primary = aggregate(primary, new IllegalStateException(
+                    "failed to walk the renamed original session directory " + original,
+                    walkFailure));
         }
         return primary;
     }
@@ -1423,17 +1508,109 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
 
         /** Returns the owner principal, or {@code null} when the provider has none. */
         UserPrincipal owner(Path path) throws IOException;
+
+        /** Provisions a fresh per-directory identity (e.g. a Windows identity token) on a
+         * directory this publisher just created; a no-op where the filesystem fileKey
+         * suffices. Best-effort: an unsupported store degrades to the remaining identity
+         * signals (publication stays usable, cleanup stays fail-closed). */
+        default void provisionIdentity(Path created) throws IOException {
+        }
     }
 
-    /** Real identity source: fileKey from NOFOLLOW attributes, owner from the owner view. */
+    /** Real identity source: fileKey from NOFOLLOW attributes (on Windows, a composite of
+     * the NOFOLLOW creation time plus the per-directory identity token, because the JDK
+     * Windows provider has no fileKey — {@code WindowsFileAttributes.fileKey()} is always
+     * {@code null}), owner from the owner view. */
     static final class RealIdentitySource implements IdentitySource {
+        private static final boolean WINDOWS = System.getProperty("os.name", "")
+                .toLowerCase(java.util.Locale.ROOT).contains("win");
+        private static final String IDENTITY_TOKEN_ATTRIBUTE = "gdx-markup-identity";
+        private static final int IDENTITY_TOKEN_BYTES = 32;
+
         @Override public Object fileKey(Path path) throws IOException {
+            if (WINDOWS) {
+                BasicFileAttributes attrs = Files.readAttributes(path,
+                        BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+                return new WindowsDirKey(attrs.creationTime(), readIdentityToken(path));
+            }
             return Files.readAttributes(path, BasicFileAttributes.class,
                     LinkOption.NOFOLLOW_LINKS).fileKey();
         }
 
         @Override public UserPrincipal owner(Path path) throws IOException {
             return Files.getOwner(path, LinkOption.NOFOLLOW_LINKS);
+        }
+
+        @Override public void provisionIdentity(Path created) throws IOException {
+            if (!WINDOWS) {
+                return;
+            }
+            // Write a fresh random token as a user-defined attribute (an NTFS alternate data
+            // stream on the directory). It travels with renames and is unreadable by
+            // principals without access to the owner-only directory, so a foreign replacement
+            // cannot forge it. A store without user attributes degrades to the creation-time
+            // identity (still fail-closed).
+            try {
+                UserDefinedFileAttributeView view = Files.getFileAttributeView(created,
+                        UserDefinedFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
+                if (view == null) {
+                    return;
+                }
+                byte[] token = new byte[IDENTITY_TOKEN_BYTES];
+                RANDOM.nextBytes(token);
+                view.write(IDENTITY_TOKEN_ATTRIBUTE, ByteBuffer.wrap(token));
+            } catch (IOException | RuntimeException unsupported) {
+                // no user-attribute store: fall back to (creation time, owner) identity
+            }
+        }
+
+        /** Reads the identity token, or {@code null} when the directory carries none. */
+        private static byte[] readIdentityToken(Path path) {
+            try {
+                UserDefinedFileAttributeView view = Files.getFileAttributeView(path,
+                        UserDefinedFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
+                if (view == null || !view.list().contains(IDENTITY_TOKEN_ATTRIBUTE)) {
+                    return null;
+                }
+                ByteBuffer buffer = ByteBuffer.allocate(IDENTITY_TOKEN_BYTES);
+                int count = view.read(IDENTITY_TOKEN_ATTRIBUTE, buffer);
+                byte[] token = new byte[count];
+                buffer.flip();
+                buffer.get(token);
+                return token;
+            } catch (IOException | RuntimeException unavailable) {
+                return null;
+            }
+        }
+    }
+
+    /** Immutable Windows directory identity: the NOFOLLOW creation time (stable across
+     * renames, distinct for a freshly created replacement) plus the identity token when the
+     * directory carries one (written by {@link RealIdentitySource#provisionIdentity}). The
+     * owner is verified separately, so a same-directory re-ownership is detected by the
+     * owner check, never by this key. */
+    static final class WindowsDirKey {
+        private final FileTime creationTime;
+        private final byte[] token;
+
+        WindowsDirKey(FileTime creationTime, byte[] token) {
+            this.creationTime = creationTime;
+            this.token = token == null ? null : token.clone();
+        }
+
+        @Override public boolean equals(Object other) {
+            return other instanceof WindowsDirKey key
+                    && creationTime.equals(key.creationTime)
+                    && Arrays.equals(token, key.token);
+        }
+
+        @Override public int hashCode() {
+            return creationTime.hashCode() * 31 + Arrays.hashCode(token);
+        }
+
+        @Override public String toString() {
+            return "WindowsDirKey(creationTime=" + creationTime + ", token="
+                    + (token == null ? "none" : "present") + ")";
         }
     }
 

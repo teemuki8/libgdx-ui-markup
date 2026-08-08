@@ -3,6 +3,7 @@ package dev.gdx.markup.preview;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -836,6 +837,61 @@ final class TmpDirArtifactPublisherTest {
     }
 
     /**
+     * A retried close (session stream already closed) locates the renamed original by
+     * identity through the seam and cleans its children through the identity-checked
+     * ABSOLUTE fallback — the exact path Windows uses on every close (no
+     * SecureDirectoryStream). The original directory itself remains linked as the reported
+     * leak; a replacement is never touched.
+     */
+    @Test
+    void retriedCloseCleansRenamedOriginalContentsThroughFallback() throws Exception {
+        TmpDirArtifactPublisher publisher =
+                new TmpDirArtifactPublisher(1024, 4096, 4, tempDir, null);
+        Path moved = null;
+        try {
+            Path sessionDir = publisher.sessionDir();
+            publisher.publish("text/plain", new byte[] {1});
+            moved = tempDir.resolve("moved-" + System.nanoTime());
+            Files.move(sessionDir, moved);
+            // First close: the renamed-original leak is reported; its contents are cleaned
+            // (through the retained fd on SDS platforms, through the fallback on Windows).
+            RuntimeException first = assertThrows(RuntimeException.class, publisher::close,
+                    "the first close reports the renamed-original leak");
+            assertTrue(first.getMessage().contains("renamed")
+                            || first.getMessage().contains("moved"),
+                    "the first close names the rename: " + first.getMessage());
+            try (Stream<Path> children = Files.list(moved)) {
+                assertTrue(children.findAny().isEmpty(),
+                        "the renamed original was emptied by the first close");
+            }
+            // The renamed original still exists (the reported leak); give it fresh content.
+            Files.writeString(moved.resolve("late.txt"), "late-content");
+            // Retried close (session stream closed): the identity-checked absolute fallback
+            // must locate the renamed original by identity and clean its children again,
+            // keeping the directory itself.
+            RuntimeException retry = assertThrows(RuntimeException.class, publisher::close,
+                    "the retried close re-reports the renamed-original leak");
+            assertTrue(retry.getMessage().contains("renamed")
+                            || retry.getMessage().contains("moved"),
+                    "the retried close names the rename: " + retry.getMessage());
+            assertFalse(Files.exists(moved.resolve("late.txt")),
+                    "the late content was cleaned by the identity-checked fallback");
+            assertTrue(Files.isDirectory(moved),
+                    "the renamed original directory remains linked (the reported leak)");
+            try (Stream<Path> children = Files.list(moved)) {
+                assertTrue(children.findAny().isEmpty(),
+                        "the renamed original stays emptied by the retried close");
+            }
+        } finally {
+            try {
+                Files.deleteIfExists(moved); // the leaked renamed original
+            } catch (Exception ignored) {
+                // best-effort cleanup
+            }
+        }
+    }
+
+    /**
      * A real-directory replacement swapped in after the anchors were lost (a failed first
      * close) must never be traversed or deleted by a retried close: the retry re-proves the
      * session identity and fails closed, leaving the replacement and its contents intact.
@@ -1244,6 +1300,73 @@ final class TmpDirArtifactPublisherTest {
                     "exactly the count quota of concurrent publishes succeed");
             assertEquals(maxCount, listRegularFiles(publisher.sessionDir()).size(),
                     "exactly the count quota of artifacts are retained");
+        }
+    }
+
+    /** The Windows directory identity (creation time + per-directory token) is stable across
+     * renames and distinct for fresh directories: the exact replant/rename semantics the
+     * Windows identity source relies on, unit-tested without a Windows host. */
+    @Test
+    void windowsDirKeyIsStableAndDistinct() {
+        java.nio.file.attribute.FileTime created = java.nio.file.attribute.FileTime.fromMillis(1_700_000_000_000L);
+        byte[] tokenA = {1, 2, 3, 4};
+        byte[] tokenB = {5, 6, 7, 8};
+        TmpDirArtifactPublisher.WindowsDirKey original = new TmpDirArtifactPublisher.WindowsDirKey(
+                created, tokenA);
+        // The same directory object after a rename keeps its creation time and token.
+        assertEquals(original, new TmpDirArtifactPublisher.WindowsDirKey(created, tokenA));
+        assertEquals(original.hashCode(),
+                new TmpDirArtifactPublisher.WindowsDirKey(created, tokenA).hashCode());
+        // A freshly created replacement has a different creation time.
+        assertNotEquals(original, new TmpDirArtifactPublisher.WindowsDirKey(
+                java.nio.file.attribute.FileTime.fromMillis(1_700_000_000_001L), tokenA));
+        // A directory without the token is distinct from one that carries it.
+        assertNotEquals(original, new TmpDirArtifactPublisher.WindowsDirKey(created, null));
+        // Two different tokens are distinct even with the same creation time.
+        assertNotEquals(original, new TmpDirArtifactPublisher.WindowsDirKey(created, tokenB));
+        // Two distinct token-less directories with the same creation time compare equal only
+        // by that signal (the degraded fallback); the token removes that ambiguity.
+        assertEquals(new TmpDirArtifactPublisher.WindowsDirKey(created, null),
+                new TmpDirArtifactPublisher.WindowsDirKey(created, null));
+        assertNotEquals(original, "not a key");
+    }
+
+    /** A distinct injected identity (the Windows-replacement shape: a different, non-null
+     * directory identity at the same path) fails closed on every verifyTrusted-guarded
+     * operation on every platform; the real-replant no-deletion guarantee is covered by
+     * {@link #realDirectoryReplantIsRefusedAndReportedNotDeleted}. */
+    @Test
+    void distinctInjectedIdentityIsRefusedOnEveryPlatform() throws Exception {
+        TmpDirArtifactPublisher publisher =
+                new TmpDirArtifactPublisher(1024, 4096, 4, tempDir, null);
+        try {
+            Path sessionDir = publisher.sessionDir();
+            byte[] payload = {1};
+            publisher.publish("text/plain", payload);
+            String digest = sha256(payload);
+            Object distinct = new Object();
+            publisher.identitySource = new TmpDirArtifactPublisher.IdentitySource() {
+                @Override public Object fileKey(Path path) {
+                    return distinct;
+                }
+
+                @Override public java.nio.file.attribute.UserPrincipal owner(Path path)
+                        throws java.io.IOException {
+                    return Files.getOwner(path);
+                }
+            };
+            assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                    () -> publisher.publish("text/plain", new byte[] {2}),
+                    "a distinct injected identity fails closed on publish");
+            assertArrayEquals(payload, Files.readAllBytes(sessionDir.resolve(digest)),
+                    "the published artifact is untouched after the identity mismatch");
+        } finally {
+            publisher.identitySource = new TmpDirArtifactPublisher.RealIdentitySource();
+            try {
+                publisher.close(); // real identity restored: cleanup completes normally
+            } catch (RuntimeException expected) {
+                // already closed
+            }
         }
     }
 
