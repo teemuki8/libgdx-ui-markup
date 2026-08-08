@@ -16,6 +16,7 @@ import java.nio.file.attribute.AclEntry;
 import java.nio.file.attribute.AclEntryPermission;
 import java.nio.file.attribute.AclEntryType;
 import java.nio.file.attribute.AclFileAttributeView;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.nio.file.attribute.UserPrincipal;
@@ -363,12 +364,16 @@ final class TmpDirArtifactPublisherTest {
     void ownerOnlyPolicyFailureRemovesTheCreatedDirectory() throws Exception {
         TmpDirArtifactPublisher.OwnerOnlyPolicy failing =
                 new TmpDirArtifactPublisher.OwnerOnlyPolicy() {
-                    @Override public FileAttribute<?>[] directoryCreationAttributes(Path parent) {
-                        return new FileAttribute<?>[0];
+                    @Override public java.nio.file.attribute.FileAttribute<?>[]
+                            directoryCreationAttributes(
+                                    java.nio.file.attribute.UserPrincipal parentOwner) {
+                        return new java.nio.file.attribute.FileAttribute<?>[0];
                     }
 
-                    @Override public FileAttribute<?>[] fileCreationAttributes(Path sessionDir) {
-                        return new FileAttribute<?>[0];
+                    @Override public java.nio.file.attribute.FileAttribute<?>[]
+                            fileCreationAttributes(
+                                    java.nio.file.attribute.UserPrincipal sessionOwner) {
+                        return new java.nio.file.attribute.FileAttribute<?>[0];
                     }
 
                     @Override public void verifyDirectory(Path dir) throws java.io.IOException {
@@ -498,6 +503,229 @@ final class TmpDirArtifactPublisherTest {
         return principal.equals(owner)
                 || name.equals("SYSTEM") || name.endsWith("\\SYSTEM")
                 || name.equals("Administrators") || name.endsWith("\\Administrators");
+    }
+
+    @Test
+    void constructionFailsWhenFileKeyOrOwnerIsUnavailable() throws Exception {
+        // Parent identity unavailable (null fileKey): construction fails closed.
+        TmpDirArtifactPublisher.IdentitySource noParentKey = new TmpDirArtifactPublisher
+                .IdentitySource() {
+            @Override public Object fileKey(Path path) {
+                return null;
+            }
+
+            @Override public java.nio.file.attribute.UserPrincipal owner(Path path)
+                    throws java.io.IOException {
+                return Files.getOwner(path);
+            }
+        };        assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                () -> new TmpDirArtifactPublisher(1024, 4096, 4, tempDir, null, noParentKey),
+                "construction fails closed when the parent fileKey is unavailable");
+        // Session identity unavailable (null owner after the parent is trusted): fail closed
+        // and remove the created directory.
+        TmpDirArtifactPublisher.IdentitySource noSessionOwner =
+                new TmpDirArtifactPublisher.IdentitySource() {
+                    @Override public Object fileKey(Path path) throws java.io.IOException {
+                        return Files.readAttributes(path, BasicFileAttributes.class,
+                                java.nio.file.LinkOption.NOFOLLOW_LINKS).fileKey();
+                    }
+
+                    @Override public java.nio.file.attribute.UserPrincipal owner(Path path)
+                            throws java.io.IOException {
+                        return path.equals(tempDir) ? Files.getOwner(path) : null;
+                    }
+                };
+        assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                () -> new TmpDirArtifactPublisher(1024, 4096, 4, tempDir, null, noSessionOwner),
+                "construction fails closed when the session owner is unavailable");
+        try (Stream<Path> children = Files.list(tempDir)) {
+            assertTrue(children.noneMatch(path ->
+                            path.getFileName().toString().startsWith("gdx-markup-")),
+                    "the partially created session directory is removed when identity is "
+                            + "unavailable");
+        }
+    }
+
+    @Test
+    void replantDifferingOwnerIsRefusedAndNeverDeleted() throws Exception {
+        TmpDirArtifactPublisher publisher =
+                new TmpDirArtifactPublisher(1024, 4096, 4, tempDir, null);
+        try {
+            Path sessionDir = publisher.sessionDir();
+            publisher.publish("text/plain", new byte[] {1});
+            // Swap the identity source so the session path now reports a DIFFERENT owner (a
+            // real directory re-owned by another principal): every path must fail closed on
+            // the owner inequality even though the fileKey still matches.
+            publisher.identitySource = new TmpDirArtifactPublisher.IdentitySource() {
+                @Override public Object fileKey(Path path) throws java.io.IOException {
+                    return Files.readAttributes(path, BasicFileAttributes.class,
+                            java.nio.file.LinkOption.NOFOLLOW_LINKS).fileKey();
+                }
+
+                @Override public java.nio.file.attribute.UserPrincipal owner(Path path) {
+                    return new FakePrincipal("someone-else");
+                }
+            };
+            assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                    () -> publisher.publish("text/plain", new byte[] {2}),
+                    "a session directory re-owned by another principal fails closed on publish");
+            // Cleanup must refuse to delete the re-owned replacement and report the leak.
+            RuntimeException cleanup = assertThrows(RuntimeException.class, publisher::close,
+                    "close reports the re-owned session as a leak");
+            assertTrue(cleanup.getMessage().contains("replaced")
+                            || cleanup.getMessage().contains("re-owned")
+                            || cleanup.getMessage().contains("owner changed"),
+                    "the leak message names the replacement: " + cleanup.getMessage());
+            assertTrue(Files.isDirectory(sessionDir),
+                    "the re-owned session directory is never deleted by cleanup");
+            Files.deleteIfExists(sessionDir); // the replacement, after the leak was reported
+        } finally {
+            publisher.identitySource = new TmpDirArtifactPublisher.RealIdentitySource();
+            try {
+                publisher.close(); // real identity now matches: cleanup completes
+            } catch (RuntimeException expected) {
+                // the session dir was deleted above; an already-gone close is a no-op
+            }
+        }
+    }
+
+    @Test
+    void precomputedFileAttributesUseCapturedSessionOwner() throws Exception {
+        java.nio.file.attribute.UserPrincipal realOwner =
+                Files.getOwner(tempDir, java.nio.file.LinkOption.NOFOLLOW_LINKS);
+        TmpDirArtifactPublisher publisher =
+                new TmpDirArtifactPublisher(1024, 4096, 4, tempDir, null);
+        Path sessionDir = publisher.sessionDir();
+        try {
+            // The precomputed file attributes must be derived from the captured immutable
+            // session owner — never re-read from an absolute path after construction.
+            java.nio.file.attribute.FileAttribute<?>[] attrs =
+                    publisher.fileCreationAttributes();
+            assertEquals(1, attrs.length, "one precomputed file creation attribute");
+            if ("acl:acl".equals(attrs[0].name())) {
+                @SuppressWarnings("unchecked")
+                List<AclEntry> entries = (List<AclEntry>) attrs[0].value();
+                TmpDirArtifactPublisher.AclOwnerOnly.verifyOwnerOnly(entries, realOwner, tempDir);
+            } else {
+                // POSIX rw-------: owner-only by construction; nothing to compare by principal.
+                assertEquals("posix:permissions", attrs[0].name());
+            }
+            // A replant (rename + fresh real directory at the same name) never grants the
+            // replacement owner: the anchored fd still points at the original directory.
+            publisher.publish("text/plain", new byte[] {1});
+            Path moved = tempDir.resolve("moved-" + System.nanoTime());
+            Files.move(sessionDir, moved);
+            Files.createDirectory(sessionDir); // replant a fresh real directory
+            assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                    () -> publisher.publish("text/plain", new byte[] {2}),
+                    "the replanted directory fails closed (fileKey identity)");
+            // Close reports the replant as a leak instead of deleting the replacement.
+            RuntimeException cleanup = assertThrows(RuntimeException.class, publisher::close,
+                    "close reports the replant as a leak");
+            assertTrue(cleanup.getMessage().contains("replaced"),
+                    "the leak message names the replacement: " + cleanup.getMessage());
+            assertTrue(Files.isDirectory(sessionDir),
+                    "the replacement is never deleted by cleanup");
+            // The moved original's contents were cleaned through the anchored fd.
+            try (Stream<Path> movedChildren = Files.list(moved)) {
+                assertTrue(movedChildren.findAny().isEmpty(),
+                        "the moved original session was cleaned through its fd");
+            }
+            Files.deleteIfExists(sessionDir); // the replacement, after the leak was reported
+            Files.deleteIfExists(moved); // the emptied original
+        } finally {
+            publisher.close(); // already closed or idempotent
+        }
+    }
+
+    @Test
+    void aclRejectsMaliciousLookalikePrincipals() throws Exception {
+        UserPrincipal owner = FileSystems.getDefault().getUserPrincipalLookupService()
+                .lookupPrincipalByName(System.getProperty("user.name"));
+        // Malicious principals whose NAMES resemble SYSTEM/Administrators but which are NOT
+        // the exact resolved UserPrincipal objects must be rejected by exact-equality
+        // verification (never name suffix/substring matching).
+        UserPrincipal domainSystem = new FakePrincipal("DOMAIN\\SYSTEM");
+        UserPrincipal notAdministrators = new FakePrincipal("NotAdministrators");
+        List<AclEntry> entries = new ArrayList<>(
+                TmpDirArtifactPublisher.AclOwnerOnly.ownerOnlyEntries(owner));
+        entries.add(AclEntry.newBuilder()
+                .setType(AclEntryType.ALLOW)
+                .setPrincipal(domainSystem)
+                .setPermissions(EnumSet.of(AclEntryPermission.WRITE_DATA))
+                .build());
+        assertThrows(java.io.IOException.class,
+                () -> TmpDirArtifactPublisher.AclOwnerOnly.verifyOwnerOnly(
+                        entries, owner, tempDir),
+                "DOMAIN\\SYSTEM is not the exact resolved SYSTEM principal and is rejected");
+        List<AclEntry> adminLookalike = new ArrayList<>(
+                TmpDirArtifactPublisher.AclOwnerOnly.ownerOnlyEntries(owner));
+        adminLookalike.add(AclEntry.newBuilder()
+                .setType(AclEntryType.ALLOW)
+                .setPrincipal(notAdministrators)
+                .setPermissions(EnumSet.of(AclEntryPermission.WRITE_DATA))
+                .build());
+        assertThrows(java.io.IOException.class,
+                () -> TmpDirArtifactPublisher.AclOwnerOnly.verifyOwnerOnly(
+                        adminLookalike, owner, tempDir),
+                "NotAdministrators is not the exact resolved Administrators principal");
+    }
+
+    @Test
+    void aclParentPolicyRejectsForeignWriteAclAndWriteOwner() throws Exception {
+        UserPrincipal owner = FileSystems.getDefault().getUserPrincipalLookupService()
+                .lookupPrincipalByName(System.getProperty("user.name"));
+        AclFileAttributeView view = Files.getFileAttributeView(tempDir, AclFileAttributeView.class);
+        Assumptions.assumeTrue(view != null, "an ACL view is available");
+        List<AclEntry> original = new ArrayList<>(view.getAcl());
+        try {
+            for (AclEntryPermission foreign : new AclEntryPermission[] {
+                    AclEntryPermission.WRITE_ACL, AclEntryPermission.WRITE_OWNER}) {
+                view.setAcl(List.of(
+                        AclEntry.newBuilder()
+                                .setType(AclEntryType.ALLOW)
+                                .setPrincipal(owner)
+                                .setPermissions(EnumSet.allOf(AclEntryPermission.class))
+                                .build(),
+                        AclEntry.newBuilder()
+                                .setType(AclEntryType.ALLOW)
+                                .setPrincipal(foreignPrincipal())
+                                .setPermissions(EnumSet.of(foreign))
+                                .build()));
+                assertThrows(java.io.IOException.class,
+                        () -> new TmpDirArtifactPublisher.AclOwnerOnly()
+                                .validateParent(tempDir),
+                        "a parent ACL granting a foreign principal " + foreign
+                                + " is rejected");
+            }
+        } finally {
+            view.setAcl(original);
+        }
+    }
+
+    /** A minimal principal with an arbitrary name, for testing exact-equality ACL checks. */
+    private static final class FakePrincipal implements UserPrincipal {
+        private final String name;
+
+        FakePrincipal(String name) {
+            this.name = name;
+        }
+
+        @Override public String getName() {
+            return name;
+        }
+
+        @Override public boolean equals(Object other) {
+            return other instanceof FakePrincipal fake && fake.name.equals(name);
+        }
+
+        @Override public int hashCode() {
+            return name.hashCode();
+        }
+
+        @Override public String toString() {
+            return name;
+        }
     }
 
     private static UserPrincipal foreignPrincipal() throws Exception {

@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
@@ -41,16 +42,22 @@ import java.util.Set;
  * their full SHA-256 digest.
  *
  * <p>Trust model: the immutable parent/session identities — canonical path, {@code fileKey},
- * and owner — are captured at construction and re-verified (equality, not only path/mode) before
- * every operation; any replacement fails closed. Where the provider supports
- * {@link SecureDirectoryStream}, both the parent and the session directory are held as open
- * directory anchors: temp creation/writes/reads and the temp→target install are directory-
- * relative (an install race is a no-replace {@link FileAlreadyExistsException}, compared
- * no-follow), and cleanup deletes contents directory-relative before removing the original
- * session entry through the parent anchor — a rename can never make cleanup delete a
- * replacement silently. On providers without SDS, every absolute operation is bracketed by a
- * parent+session fileKey recheck, and the parent must hold a validated owner-only policy that
- * denies other-principal rename/delete-child.
+ * and owner — are captured at construction and are <b>mandatory</b>: construction fails closed
+ * when a fileKey or owner cannot be obtained, and every publish/cleanup/delete path requires the
+ * current non-null fileKey <b>and</b> owner to equal the captured ones (never skipped, never a
+ * null comparison). A replacement — symlink, fresh real directory, or a directory owned by a
+ * different principal — fails closed and is never deleted by cleanup (the leak is reported).
+ * Owner-only directory/file attributes are precomputed once from the captured immutable parent
+ * and session owners and passed into relative creation, never re-read from an absolute path.
+ *
+ * <p>Where the provider supports {@link SecureDirectoryStream}, both the parent and the session
+ * directory are held as open directory anchors: temp creation/writes/reads and the temp→target
+ * install are directory-relative (an install race is a no-replace
+ * {@link FileAlreadyExistsException}, compared no-follow), and cleanup deletes contents
+ * directory-relative before removing the original session entry through the parent anchor — a
+ * rename can never make cleanup delete a replacement silently. On providers without SDS, every
+ * absolute operation is bracketed by a parent+session fileKey/owner recheck, and the parent must
+ * hold a validated owner-only policy that denies other-principal rename/delete-child.
  *
  * <p>Per-file, cumulative byte, and count quotas are enforced before retention under one lock;
  * identical content deduplicates without extra quota and mismatches are collisions (never
@@ -76,11 +83,15 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
     private final Object parentFileKey;
     private final UserPrincipal parentOwner;
     private final OwnerOnlyPolicy ownerPolicy;
+    private final FileAttribute<?>[] fileCreationAttrs;
     private final SecureDirectoryStream<Path> parentStream;
     private final SecureDirectoryStream<Path> dirStream;
     private final long maxFileBytes;
     private final long maxTotalBytes;
     private final int maxCount;
+    /** Package-visible seam for immutable identity reads; tests swap in providers with null
+     * fileKey/owner or a different owner to prove fail-closed behavior. */
+    IdentitySource identitySource;
     private long totalBytes;
     private int count;
     private boolean closed;
@@ -90,28 +101,38 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
     /** Production constructor: fixed safe defaults and a fresh owner-only session directory. */
     TmpDirArtifactPublisher() {
         this(DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_TOTAL_BYTES, DEFAULT_MAX_COUNT,
-                Path.of(System.getProperty("java.io.tmpdir")), null);
+                Path.of(System.getProperty("java.io.tmpdir")), null, null);
     }
 
     /** Test constructor: bounded quotas for deterministic tests. */
     TmpDirArtifactPublisher(long maxFileBytes, long maxTotalBytes, int maxCount) {
         this(maxFileBytes, maxTotalBytes, maxCount,
-                Path.of(System.getProperty("java.io.tmpdir")), null);
+                Path.of(System.getProperty("java.io.tmpdir")), null, null);
+    }
+
+    /** Test seam constructor: bounded quotas, an explicit parent, and an explicit owner-only
+     * policy; a {@code null} policy selects the platform policy. */
+    TmpDirArtifactPublisher(long maxFileBytes, long maxTotalBytes, int maxCount,
+            Path parent, OwnerOnlyPolicy policy) {
+        this(maxFileBytes, maxTotalBytes, maxCount, parent, policy, null);
     }
 
     /**
      * Test seam constructor: bounded quotas, an explicit parent (so tests can pre-plant or
-     * replace the parent/session), and an explicit owner-only policy (so tests can simulate
-     * ACL success and failure). A {@code null} policy selects the platform policy.
+     * replace the parent/session), an explicit owner-only policy (so tests can simulate ACL
+     * success and failure), and an identity source (so tests can simulate providers without
+     * fileKey/owner or a different owner). A {@code null} policy selects the platform policy;
+     * a {@code null} identity source uses the real filesystem.
      */
     TmpDirArtifactPublisher(long maxFileBytes, long maxTotalBytes, int maxCount,
-            Path parent, OwnerOnlyPolicy policy) {
+            Path parent, OwnerOnlyPolicy policy, IdentitySource identitySource) {
         if (maxFileBytes <= 0 || maxTotalBytes <= 0 || maxCount <= 0) {
             throw new IllegalArgumentException("quotas must be positive");
         }
         this.maxFileBytes = maxFileBytes;
         this.maxTotalBytes = maxTotalBytes;
         this.maxCount = maxCount;
+        this.identitySource = identitySource != null ? identitySource : new RealIdentitySource();
         Path created = null;
         try {
             if (Files.isSymbolicLink(parent) || !Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS)) {
@@ -122,22 +143,29 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
             OwnerOnlyPolicy effective = policy != null ? policy : OwnerOnlyPolicy.detect(parentReal);
             // The parent must deny other-principal rename/delete-child of our session entry.
             effective.validateParent(parentReal);
-            BasicFileAttributes parentAttrs =
-                    Files.readAttributes(parentReal, BasicFileAttributes.class,
-                            LinkOption.NOFOLLOW_LINKS);
-            Object parentFileKey = parentAttrs.fileKey();
-            UserPrincipal parentOwner = ownerOf(parentReal);
-            created = createSessionDirectory(parentReal, effective);
+            // Stable identity is mandatory: a provider without a parent fileKey or owner cannot
+            // be trusted, so construction fails closed (never a null comparison later).
+            Object parentFileKey = this.identitySource.fileKey(parentReal);
+            UserPrincipal parentOwner = this.identitySource.owner(parentReal);
+            if (parentFileKey == null || parentOwner == null) {
+                throw new ArtifactReference.ArtifactUnavailableException(
+                        "artifact parent identity (fileKey/owner) is unavailable: " + parentReal);
+            }
+            FileAttribute<?>[] directoryCreationAttrs =
+                    effective.directoryCreationAttributes(parentOwner);
+            created = createSessionDirectory(parentReal, effective, directoryCreationAttrs);
             Path sessionReal = created.toRealPath();
             if (sessionReal.getParent() == null || !sessionReal.getParent().equals(parentReal)) {
                 throw new ArtifactReference.ArtifactUnavailableException(
                         "session directory escaped its parent: " + created);
             }
-            BasicFileAttributes sessionAttrs =
-                    Files.readAttributes(created, BasicFileAttributes.class,
-                            LinkOption.NOFOLLOW_LINKS);
-            Object sessionFileKey = sessionAttrs.fileKey();
-            UserPrincipal sessionOwner = ownerOf(created);
+            // Stable identity is mandatory for the session too.
+            Object sessionFileKey = this.identitySource.fileKey(created);
+            UserPrincipal sessionOwner = this.identitySource.owner(created);
+            if (sessionFileKey == null || sessionOwner == null) {
+                throw new ArtifactReference.ArtifactUnavailableException(
+                        "artifact session identity (fileKey/owner) is unavailable: " + created);
+            }
             this.sessionDir = created;
             this.sessionReal = sessionReal;
             this.parentReal = parentReal;
@@ -146,6 +174,9 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
             this.parentFileKey = parentFileKey;
             this.parentOwner = parentOwner;
             this.ownerPolicy = effective;
+            // Precompute the owner-only file attributes once from the captured immutable
+            // session owner; relative creation uses these, never a re-read of an absolute path.
+            this.fileCreationAttrs = effective.fileCreationAttributes(sessionOwner);
             this.parentStream = openSecureStream(parentReal);
             this.dirStream = openSecureStream(sessionReal);
         } catch (RuntimeException | IOException failure) {
@@ -167,6 +198,11 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
     /** Returns the owned session directory (test seam). */
     Path sessionDir() {
         return sessionDir;
+    }
+
+    /** Returns the precomputed owner-only file creation attributes (test seam). */
+    FileAttribute<?>[] fileCreationAttributes() {
+        return fileCreationAttrs.clone();
     }
 
     /** Resolves one published digest to bytes for verification (instance, session-relative). */
@@ -294,14 +330,16 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
 
     /**
      * Creates the unpredictable session directory directly in the canonical parent using
-     * create-new semantics with owner-only attributes applied atomically at creation, then
-     * verifies the policy. On any failure the created directory is removed (staged ownership).
+     * create-new semantics with the precomputed owner-only attributes applied atomically at
+     * creation, then verifies the policy. On any failure the created directory is removed
+     * (staged ownership).
      */
-    private static Path createSessionDirectory(Path parentReal, OwnerOnlyPolicy policy) {
+    private static Path createSessionDirectory(Path parentReal, OwnerOnlyPolicy policy,
+            FileAttribute<?>[] creationAttrs) {
         for (int attempt = 0; attempt < NAME_RETRIES; attempt++) {
             Path candidate = parentReal.resolve(SESSION_PREFIX + randomHex(16));
             try {
-                Files.createDirectory(candidate, policy.directoryCreationAttributes(parentReal));
+                Files.createDirectory(candidate, creationAttrs);
             } catch (FileAlreadyExistsException collision) {
                 continue; // retry with a fresh unpredictable name
             } catch (IOException failure) {
@@ -348,7 +386,8 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
     }
 
     /** Fails closed unless the parent and session still hold their immutable identities
-     * (canonical path, fileKey, owner) and the owner-only policies still hold. */
+     * (canonical path, mandatory non-null fileKey and owner, all equal) and the owner-only
+     * policies still hold. */
     private void verifyTrusted() {
         try {
             if (Files.isSymbolicLink(sessionDir)
@@ -372,28 +411,23 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
         }
     }
 
-    /** Fails closed unless the path's immutable fileKey and owner still match the captured
-     * identities (null captures — providers without keys/owners — fall back to path only). */
-    private static void verifyIdentity(Path path, Object capturedKey, UserPrincipal capturedOwner,
-            String role) throws IOException {
-        BasicFileAttributes attrs = Files.readAttributes(path, BasicFileAttributes.class,
-                LinkOption.NOFOLLOW_LINKS);
-        if (capturedKey != null && !capturedKey.equals(attrs.fileKey())) {
-            throw new IOException(role + " directory identity (fileKey) changed: " + path);
-        }
-        if (capturedOwner != null) {
-            UserPrincipal current = ownerOf(path);
-            if (current != null && !capturedOwner.equals(current)) {
-                throw new IOException(role + " directory owner changed: " + path);
-            }
-        }
-    }
-
-    private static UserPrincipal ownerOf(Path path) {
+    /** Fails closed unless the path's immutable fileKey and owner are both non-null and equal
+     * to the captured identities — null is never a valid comparison result. */
+    private void verifyIdentity(Path path, Object capturedKey, UserPrincipal capturedOwner,
+            String role) {
         try {
-            return Files.getOwner(path, LinkOption.NOFOLLOW_LINKS);
-        } catch (IOException | UnsupportedOperationException unavailable) {
-            return null; // provider without an owner view: fileKey remains the identity anchor
+            Object currentKey = identitySource.fileKey(path);
+            if (currentKey == null || !capturedKey.equals(currentKey)) {
+                throw new IOException(role + " directory identity (fileKey) missing or changed: "
+                        + path);
+            }
+            UserPrincipal currentOwner = identitySource.owner(path);
+            if (currentOwner == null || !capturedOwner.equals(currentOwner)) {
+                throw new IOException(role + " directory owner missing or changed: " + path);
+            }
+        } catch (IOException failure) {
+            throw unavailable(
+                    role + " identity cannot be proven: " + failure.getMessage(), failure);
         }
     }
 
@@ -459,7 +493,7 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
         return out.toByteArray();
     }
 
-    /** Creates a unique temporary file (create-new, owner-only attributes at creation) and
+    /** Creates a unique temporary file (create-new, precomputed owner-only attributes) and
      * writes the content; returns the temp name. On failure the partial file is removed. */
     private String createTemp(byte[] content) throws IOException {
         for (int attempt = 0; attempt < NAME_RETRIES; attempt++) {
@@ -471,7 +505,7 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
                             Path.of(name),
                             Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE,
                                     LinkOption.NOFOLLOW_LINKS),
-                            ownerPolicy.fileCreationAttributes(sessionReal))) {
+                            fileCreationAttrs)) {
                         writeAll(channel, content);
                     }
                 } else {
@@ -479,7 +513,7 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
                     try (SeekableByteChannel channel = Files.newByteChannel(path,
                             Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE,
                                     LinkOption.NOFOLLOW_LINKS),
-                            ownerPolicy.fileCreationAttributes(sessionReal))) {
+                            fileCreationAttrs)) {
                         writeAll(channel, content);
                     }
                 }
@@ -644,11 +678,10 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
 
     /**
      * Removes the original session entry through the parent anchor, but only after verifying
-     * its immutable identity still matches the captured fileKey: if the session directory was
-     * renamed and a replacement planted at its name, cleanup refuses to delete the replacement
-     * and reports the leak instead of deleting it silently. When the session stream is already
-     * closed (a prior close deleted contents but failed to remove the entry), remaining
-     * contents are cleaned through the identity-verified fallback walk first.
+     * its immutable identity (mandatory non-null fileKey and owner, both equal) still matches:
+     * if the session directory was renamed and a replacement planted at its name — even a real
+     * directory owned by a different principal — cleanup refuses to delete the replacement and
+     * reports the leak instead of deleting it silently.
      */
     private RuntimeException deleteSessionEntryThroughParent() {
         if (parentStream == null || parentStreamClosed) {
@@ -662,10 +695,18 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
                 return null; // already gone
             }
             Object currentKey = view.readAttributes().fileKey();
-            if (sessionFileKey != null && !sessionFileKey.equals(currentKey)) {
+            if (!sessionFileKey.equals(currentKey)) {
                 return new IllegalStateException(
                         "session directory was replaced; refusing to delete the replacement "
                                 + "(leak reported): " + sessionDir);
+            }
+            // Owner must still match the captured immutable owner (mandatory, non-null).
+            try {
+                verifyIdentity(sessionReal, sessionFileKey, sessionOwner, "session");
+            } catch (ArtifactReference.ArtifactUnavailableException ownerChanged) {
+                return new IllegalStateException(
+                        "session directory owner changed; refusing to delete the replacement "
+                                + "(leak reported): " + sessionDir, ownerChanged);
             }
             if (sessionStreamClosed) {
                 // The session stream is gone; clean any remaining contents through the
@@ -683,7 +724,7 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
     }
 
     /** Fallback removal of the session entry without a parent anchor: the identity-verified
-     * full cleanup (children first, then the entry) — fileKey-refusing a replacement. */
+     * full cleanup (children first, then the entry) — fileKey/owner-refusing a replacement. */
     private RuntimeException deleteSessionEntryFallback() {
         return deleteOwnedFallback();
     }
@@ -701,40 +742,32 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
         }
     }
 
-    /** Fallback cleanup without SDS: identity-refusing, never deleting a replacement. */
+    /** Fallback cleanup without SDS: identity-refusing (mandatory non-null equal fileKey and
+     * owner), never deleting a replacement. An already-gone session is idempotent. */
     private RuntimeException deleteOwnedFallback() {
+        if (!Files.exists(sessionReal, LinkOption.NOFOLLOW_LINKS)) {
+            return null; // already deleted: idempotent
+        }
         RuntimeException primary = null;
         try {
-            if (sessionFileKey != null) {
-                BasicFileAttributes attrs = Files.readAttributes(sessionReal,
-                        BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-                if (!sessionFileKey.equals(attrs.fileKey())) {
-                    return new IllegalStateException(
-                            "session directory was replaced; refusing to delete the "
-                                    + "replacement (leak reported): " + sessionDir);
-                }
+            try {
+                verifyIdentity(sessionReal, sessionFileKey, sessionOwner, "session");
+            } catch (ArtifactReference.ArtifactUnavailableException changed) {
+                return new IllegalStateException(
+                        "session directory was replaced or re-owned; refusing to delete the "
+                                + "replacement (leak reported): " + sessionDir, changed);
             }
             primary = aggregate(primary, deleteOwnedAggregating(sessionReal));
-            // The walk deleted the session dir itself; remove the parent entry if the walk
-            // could not (e.g. permission), verifying identity first.
-            if (Files.exists(sessionReal, LinkOption.NOFOLLOW_LINKS)
-                    && sessionFileKey != null) {
-                BasicFileAttributes attrs = Files.readAttributes(sessionReal,
-                        BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
-                if (sessionFileKey.equals(attrs.fileKey())) {
-                    try {
-                        Files.deleteIfExists(sessionReal);
-                    } catch (IOException deleteFailure) {
-                        primary = aggregate(primary, new IllegalStateException(
-                                "failed to delete session entry " + sessionReal,
-                                deleteFailure));
-                    }
+            if (Files.exists(sessionReal, LinkOption.NOFOLLOW_LINKS)) {
+                try {
+                    Files.deleteIfExists(sessionReal);
+                } catch (IOException deleteFailure) {
+                    primary = aggregate(primary, new IllegalStateException(
+                            "failed to delete session entry " + sessionReal, deleteFailure));
                 }
             }
             return primary;
-        } catch (NoSuchFileException alreadyGone) {
-            return primary;
-        } catch (IOException | RuntimeException failure) {
+        } catch (RuntimeException failure) {
             return aggregate(primary, new IllegalStateException(
                     "failed to clean up session directory: " + failure.getMessage(), failure));
         }
@@ -800,20 +833,24 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
 
     /** Owner-only access policy abstraction: POSIX when available, ACL otherwise; the
      * platform policy is selected by {@link #detect(Path)}, and construction fails closed
-     * when neither can be established or verified. */
+     * when neither can be established or verified. Owner-only directory/file attributes are
+     * derived from the captured immutable owner principals and precomputed once. */
     interface OwnerOnlyPolicy {
-        /** Owner-only attributes applied atomically at session-directory creation. */
-        FileAttribute<?>[] directoryCreationAttributes(Path parent) throws IOException;
+        /** Owner-only attributes applied atomically at session-directory creation, derived
+         * from the captured immutable parent owner. */
+        FileAttribute<?>[] directoryCreationAttributes(UserPrincipal parentOwner)
+                throws IOException;
 
-        /** Owner-only attributes applied atomically at artifact-file creation; the session
-         * directory supplies the owner (the file inherits the session owner). */
-        FileAttribute<?>[] fileCreationAttributes(Path sessionDir) throws IOException;
+        /** Owner-only attributes applied atomically at artifact-file creation, derived from
+         * the captured immutable session owner. */
+        FileAttribute<?>[] fileCreationAttributes(UserPrincipal sessionOwner)
+                throws IOException;
 
         /** Verifies a directory is owner-only; throws if trust cannot be proven. */
         void verifyDirectory(Path dir) throws IOException;
 
-        /** Verifies the parent denies other-principal rename/delete-child of the session
-         * entry; throws (fail closed) when other principals could rename or delete it. */
+        /** Verifies the parent denies other-principal rename/delete-child and ACL/owner
+         * changes of the session entry; throws (fail closed) otherwise. */
         void validateParent(Path parent) throws IOException;
 
         static OwnerOnlyPolicy detect(Path dir) {
@@ -837,12 +874,12 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
         private static final Set<PosixFilePermission> FILE =
                 PosixFilePermissions.fromString("rw-------");
 
-        @Override public FileAttribute<?>[] directoryCreationAttributes(Path parent) {
+        @Override public FileAttribute<?>[] directoryCreationAttributes(UserPrincipal parentOwner) {
             return new FileAttribute<?>[] {
                     PosixFilePermissions.asFileAttribute(DIRECTORY)};
         }
 
-        @Override public FileAttribute<?>[] fileCreationAttributes(Path sessionDir) {
+        @Override public FileAttribute<?>[] fileCreationAttributes(UserPrincipal sessionOwner) {
             return new FileAttribute<?>[] {
                     PosixFilePermissions.asFileAttribute(FILE)};
         }
@@ -874,21 +911,39 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
         }
     }
 
-    /** ACL owner-only policy for filesystems without POSIX views: only the owner (plus the
-     * platform-required system/admin principals) is granted access, and the ACL is applied
-     * atomically at directory/file creation via the {@code acl:acl} attribute. */
+    /** ACL owner-only policy for filesystems without POSIX views. The trusted principals are
+     * the exact resolved {@link UserPrincipal} objects for the owner, {@code SYSTEM}, and
+     * {@code BUILTIN\Administrators} (when resolvable on the platform) — never matched by name
+     * suffix or substring. The ACL is applied atomically at directory/file creation via the
+     * {@code acl:acl} attribute, and parent validation rejects other-principal
+     * WRITE_DATA/DELETE_CHILD/DELETE/WRITE_ACL/WRITE_OWNER. */
     static final class AclOwnerOnly implements OwnerOnlyPolicy {
         private static final String SYSTEM_PRINCIPAL = "SYSTEM";
-        private static final String ADMINISTRATORS_PRINCIPAL = "Administrators";
+        private static final String ADMINISTRATORS_PRINCIPAL = "BUILTIN\\Administrators";
 
-        @Override public FileAttribute<?>[] directoryCreationAttributes(Path parent)
-                throws IOException {
-            return new FileAttribute<?>[] {aclAttribute(ownerOf(parent))};
+        /** Exact resolved platform-required principals; empty when unresolvable. */
+        private static final Set<UserPrincipal> REQUIRED_PRINCIPALS = resolveRequiredPrincipals();
+
+        private static Set<UserPrincipal> resolveRequiredPrincipals() {
+            Set<UserPrincipal> required = new HashSet<>();
+            java.nio.file.attribute.UserPrincipalLookupService lookup =
+                    FileSystems.getDefault().getUserPrincipalLookupService();
+            for (String name : new String[] {SYSTEM_PRINCIPAL, ADMINISTRATORS_PRINCIPAL}) {
+                try {
+                    required.add(lookup.lookupPrincipalByName(name));
+                } catch (IOException ignored) {
+                    // principal not resolvable on this platform: not required here
+                }
+            }
+            return required;
         }
 
-        @Override public FileAttribute<?>[] fileCreationAttributes(Path sessionDir)
-                throws IOException {
-            return new FileAttribute<?>[] {aclAttribute(ownerOf(sessionDir))};
+        @Override public FileAttribute<?>[] directoryCreationAttributes(UserPrincipal parentOwner) {
+            return new FileAttribute<?>[] {aclAttribute(parentOwner)};
+        }
+
+        @Override public FileAttribute<?>[] fileCreationAttributes(UserPrincipal sessionOwner) {
+            return new FileAttribute<?>[] {aclAttribute(sessionOwner)};
         }
 
         @Override public void verifyDirectory(Path dir) throws IOException {
@@ -903,15 +958,17 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
             for (AclEntry entry : view.getAcl()) {
                 if (entry.type() != AclEntryType.ALLOW
                         || owner.equals(entry.principal())
-                        || isRequiredPrincipal(entry.principal())) {
+                        || REQUIRED_PRINCIPALS.contains(entry.principal())) {
                     continue;
                 }
                 Set<AclEntryPermission> permissions = entry.permissions();
                 if (permissions.contains(AclEntryPermission.WRITE_DATA)
                         || permissions.contains(AclEntryPermission.DELETE_CHILD)
-                        || permissions.contains(AclEntryPermission.DELETE)) {
-                    throw new IOException("parent ACL grants other-principal rename/delete-child"
-                            + " on " + parent + ": " + entry.principal());
+                        || permissions.contains(AclEntryPermission.DELETE)
+                        || permissions.contains(AclEntryPermission.WRITE_ACL)
+                        || permissions.contains(AclEntryPermission.WRITE_OWNER)) {
+                    throw new IOException("parent ACL grants other-principal rename/delete/"
+                            + "ACL/owner changes on " + parent + ": " + entry.principal());
                 }
             }
         }
@@ -924,27 +981,14 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
             return view;
         }
 
-        private static UserPrincipal ownerOf(Path path) throws IOException {
-            AclFileAttributeView view = Files.getFileAttributeView(path, AclFileAttributeView.class);
-            if (view == null) {
-                throw new IOException("no ACL attribute view for " + path);
-            }
-            return view.getOwner();
-        }
-
-        /** Builds the owner-only ACL: the owner with all permissions, plus the platform's
-         * required system/admin principals when they are resolvable (Windows). */
+        /** Builds the owner-only ACL: the exact owner principal with all permissions, plus the
+         * exact resolved platform-required principals. */
         static List<AclEntry> ownerOnlyEntries(UserPrincipal owner) {
             List<AclEntry> entries = new ArrayList<>();
             entries.add(entry(AclEntryType.ALLOW, owner, EnumSet.allOf(AclEntryPermission.class)));
-            var lookup = FileSystems.getDefault().getUserPrincipalLookupService();
-            for (String required : new String[] {SYSTEM_PRINCIPAL, ADMINISTRATORS_PRINCIPAL}) {
-                try {
-                    entries.add(entry(AclEntryType.ALLOW, lookup.lookupPrincipalByName(required),
-                            EnumSet.allOf(AclEntryPermission.class)));
-                } catch (IOException ignored) {
-                    // principal not resolvable on this platform: not required here
-                }
+            for (UserPrincipal required : REQUIRED_PRINCIPALS) {
+                entries.add(entry(AclEntryType.ALLOW, required,
+                        EnumSet.allOf(AclEntryPermission.class)));
             }
             return entries;
         }
@@ -975,8 +1019,10 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
             };
         }
 
-        /** Verifies the ACL grants access only to the owner and the platform-required
-         * principals; throws otherwise (fail closed). */
+        /** Verifies the ACL grants access only to the exact owner and the exact resolved
+         * platform-required principals; throws otherwise (fail closed). A principal whose name
+         * merely resembles {@code SYSTEM} or {@code Administrators} but is not one of the
+         * resolved objects is rejected. */
         static void verifyOwnerOnly(List<AclEntry> acl, UserPrincipal owner, Path path)
                 throws IOException {
             for (AclEntry entry : acl) {
@@ -985,19 +1031,33 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
                 }
                 if (entry.type() == AclEntryType.ALLOW
                         && !owner.equals(entry.principal())
-                        && !isRequiredPrincipal(entry.principal())) {
+                        && !REQUIRED_PRINCIPALS.contains(entry.principal())) {
                     throw new IOException("ACL grants a non-owner principal on " + path
                             + ": " + entry.principal());
                 }
             }
         }
+    }
 
-        private static boolean isRequiredPrincipal(UserPrincipal principal) {
-            String name = principal.getName();
-            return name.equals(SYSTEM_PRINCIPAL)
-                    || name.endsWith("\\" + SYSTEM_PRINCIPAL)
-                    || name.equals(ADMINISTRATORS_PRINCIPAL)
-                    || name.endsWith("\\" + ADMINISTRATORS_PRINCIPAL);
+    /** Package-visible seam for reading immutable identity (fileKey + owner); tests inject
+     * providers with null fileKey/owner or a different owner to prove fail-closed behavior. */
+    interface IdentitySource {
+        /** Returns the immutable fileKey, or {@code null} when the provider has none. */
+        Object fileKey(Path path) throws IOException;
+
+        /** Returns the owner principal, or {@code null} when the provider has none. */
+        UserPrincipal owner(Path path) throws IOException;
+    }
+
+    /** Real identity source: fileKey from NOFOLLOW attributes, owner from the owner view. */
+    static final class RealIdentitySource implements IdentitySource {
+        @Override public Object fileKey(Path path) throws IOException {
+            return Files.readAttributes(path, BasicFileAttributes.class,
+                    LinkOption.NOFOLLOW_LINKS).fileKey();
+        }
+
+        @Override public UserPrincipal owner(Path path) throws IOException {
+            return Files.getOwner(path, LinkOption.NOFOLLOW_LINKS);
         }
     }
 }
