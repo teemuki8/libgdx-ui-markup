@@ -23,6 +23,7 @@ import dev.gdx.markup.core.style.CssStyleResolver;
 import dev.gdx.markup.core.style.ResolvedStyle;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -99,14 +100,34 @@ public final class MarkupBuilder {
         return Map.copyOf(map);
     }
 
-    /** One build traversal; owns element counting, paths, and the actor list. */
+    /** One build traversal; owns element counting, paths, the actor list, and the style cache. */
     private final class Walk {
         private final List<Actor> actors = new ArrayList<>();
         private final ElementPathTracker paths = new ElementPathTracker();
+        private final IdentityHashMap<Element, Map<String, ResolvedStyle>> styleCache =
+                new IdentityHashMap<>();
         private int elements;
         private int depth;
 
         private Walk() {
+        }
+
+        /**
+         * Resolves one element's style once per distinct element and pseudo-state for the
+         * duration of this build; the immutable result is reused by every consumer.
+         */
+        private ResolvedStyle resolveStyle(Element element, String pseudo) {
+            Map<String, ResolvedStyle> byPseudo = styleCache.get(element);
+            if (byPseudo == null) {
+                byPseudo = new HashMap<>(2);
+                styleCache.put(element, byPseudo);
+            }
+            ResolvedStyle style = byPseudo.get(pseudo);
+            if (style == null) {
+                style = resolver.resolve(element, pseudo);
+                byPseudo.put(pseudo, style);
+            }
+            return style;
         }
 
         List<Actor> actors() {
@@ -201,7 +222,7 @@ public final class MarkupBuilder {
                     element.column()).create(element, context(element, path));
             actors.add(table);
             applyCommon(element, table, cellTable);
-            ResolvedStyle style = resolver.resolve(element);
+            ResolvedStyle style = resolveStyle(element, null);
             if (style.has("padding")) {
                 List<Float> values = style.lengths("padding", List.of());
                 if (values.size() == 1) {
@@ -279,11 +300,11 @@ public final class MarkupBuilder {
         }
 
         private BuildContext context(Element element, String path) {
-            return new BuildContext(element, skin, resolver.resolve(element), sink, path);
+            return new BuildContext(element, skin, resolveStyle(element, null), sink, path);
         }
 
         private void applyCell(com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cell, Element element) {
-            ResolvedStyle style = resolver.resolve(element);
+            ResolvedStyle style = resolveStyle(element, null);
             applyCellAttrs(cell, element);
             applyCellCss(cell, element, style);
         }
@@ -469,7 +490,7 @@ public final class MarkupBuilder {
         }
 
         private void applyCommon(Element element, Actor actor, Table cellTable) {
-            ResolvedStyle style = resolver.resolve(element);
+            ResolvedStyle style = resolveStyle(element, null);
             if (cellTable == null) {
                 applySize(element, actor, "width", actor::setWidth);
                 applySize(element, actor, "height", actor::setHeight);
@@ -523,7 +544,7 @@ public final class MarkupBuilder {
 
         /** Applies class-only/id-only CSS style overrides directly to the actor's style. */
         private void applyCssOverrides(Element element, Actor actor, Table cellTable) {
-            ResolvedStyle style = resolver.resolve(element);
+            ResolvedStyle style = resolveStyle(element, null);
             if (actor instanceof Table table && style.has("background")) {
                 table.setBackground(requireDrawable(element, style.get("background")));
             }
