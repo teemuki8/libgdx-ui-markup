@@ -4,6 +4,7 @@ import com.badlogic.gdx.ApplicationAdapter;
 import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.Input;
 import com.badlogic.gdx.graphics.Color;
+import com.badlogic.gdx.graphics.GL20;
 import com.badlogic.gdx.graphics.Pixmap;
 import com.badlogic.gdx.graphics.g2d.BitmapFont;
 import com.badlogic.gdx.scenes.scene2d.InputEvent;
@@ -46,6 +47,13 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
 
     private static final long RELOAD_DEBOUNCE_NANOS = 300_000_000L;
     private static final Color ERROR_TEXT = Color.valueOf("ff6b6bff");
+    /**
+     * Fixed opaque clear color, applied before every draw. Matches the default skin's
+     * background so screenshots keep the intended UI backdrop; being a constant makes every
+     * frame (and therefore every screenshot) deterministic regardless of prior back-buffer
+     * contents.
+     */
+    static final Color CLEAR_COLOR = Color.valueOf("172033ff");
 
     private final CliOptions options;
     private Stage stage;
@@ -60,7 +68,10 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
     private boolean screenshotTaken;
     private boolean closed;
 
-    private PreviewApp(CliOptions options) {
+    /**
+     * Package-visible for render-thread tests; production entry is {@link #main(String[])}.
+     */
+    PreviewApp(CliOptions options) {
         this.options = Objects.requireNonNull(options, "options");
     }
 
@@ -219,6 +230,11 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
         } else {
             stage.act(Math.min(Gdx.graphics.getDeltaTime(), 1 / 30f));
         }
+        // Deterministic frames: set the fixed clear color and clear color+depth before every
+        // draw. Without this, the back buffer keeps stale pixels from prior frames (or its
+        // undefined initial contents), which leaks into the screenshot as ghost history.
+        Gdx.gl.glClearColor(CLEAR_COLOR.r, CLEAR_COLOR.g, CLEAR_COLOR.b, CLEAR_COLOR.a);
+        Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT | GL20.GL_DEPTH_BUFFER_BIT);
         stage.draw();
         if (mcp != null) {
             mcp.afterDraw();
@@ -239,10 +255,29 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
         Pixmap pixmap = Pixmap.createFromFrameBuffer(0, 0,
                 Gdx.graphics.getBackBufferWidth(), Gdx.graphics.getBackBufferHeight());
         try {
+            // OpenGL reads the default framebuffer bottom-up, so pixmap row 0 is the scene's
+            // bottom row, and the PNG encoder writes row 0 at the top. Flip the rows exactly
+            // once so the PNG is top-left normalized instead of vertically inverted.
+            flipVertically(pixmap);
             com.badlogic.gdx.graphics.PixmapIO.writePNG(
                     Gdx.files.absolute(options.screenshot().toAbsolutePath().toString()), pixmap);
         } finally {
             pixmap.dispose();
+        }
+    }
+
+    /** Swaps each pixmap row with its vertical opposite, exactly once. */
+    private static void flipVertically(Pixmap pixmap) {
+        int width = pixmap.getWidth();
+        int height = pixmap.getHeight();
+        pixmap.setBlending(Pixmap.Blending.None);
+        for (int row = 0; row < height / 2; row++) {
+            int opposite = height - 1 - row;
+            for (int x = 0; x < width; x++) {
+                int top = pixmap.getPixel(x, row);
+                pixmap.drawPixel(x, row, pixmap.getPixel(x, opposite));
+                pixmap.drawPixel(x, opposite, top);
+            }
         }
     }
 
