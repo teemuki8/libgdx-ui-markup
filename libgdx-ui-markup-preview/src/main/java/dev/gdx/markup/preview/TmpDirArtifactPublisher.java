@@ -796,22 +796,22 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
     }
 
     /**
-     * Deletes the owned session contents for the verdict. The retained fd (name-independent)
-     * always gets the first attempt; for a REPLACED or RENAMED session the original inode no
-     * longer sits at the captured name, and a directory stream retained across that rename
-     * cannot enumerate its contents reliably on every platform — so the original's current
-     * name is located by fileKey through a FRESH parent scan and its contents are cleaned
-     * through a freshly opened, re-verified stream. A replacement is never touched: the fresh
-     * stream's anchored identity (its own fd fileKey) must equal the captured identity before
-     * anything is deleted.
+     * Deletes the owned session contents for the verdict. A MATCHES or GONE session still
+     * sits at the captured name, so the retained (pre-verified) fd cleans it
+     * directory-relative. For a REPLACED or RENAMED session the captured name no longer
+     * holds the original inode, and a directory stream retained across that rename cannot
+     * enumerate its contents reliably on every platform — so the original's current name is
+     * located by fileKey through a FRESH parent scan and its contents are cleaned through a
+     * freshly opened, fully re-verified stream (fileKey + owner + seam) only; the retained
+     * fd is never used to delete a renamed/replanted original whose identity was verified
+     * before the fresh scan/open. A replacement is never touched.
      */
     private RuntimeException deleteContents(CleanupVerdict verdict) {
-        RuntimeException primary = deleteContentsDirRelative();
         if (verdict.state == CleanupVerdict.State.REPLACED
                 || verdict.state == CleanupVerdict.State.RENAMED) {
-            primary = aggregate(primary, deleteOriginalContentsThroughCurrentName());
+            return deleteOriginalContentsThroughCurrentName();
         }
-        return primary;
+        return deleteContentsDirRelative();
     }
 
     /**
@@ -833,23 +833,17 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
             return null; // not linked in the parent; the retained-fd attempt governs
         }
         RuntimeException primary = null;
-        SecureDirectoryStream<Path> fresh = openSecureStream(original);
+        // Open and prove the anchored identity (fileKey AND owner, plus the seam) through
+        // the fresh fd before any deletion: a same-inode re-ownership (fileKey unchanged,
+        // owner changed) or a raced replacement is refused, never deleted.
+        SecureDirectoryStream<Path> fresh =
+                openVerifiedStream(original, sessionFileKey, sessionOwner);
         if (fresh == null) {
             return new IllegalStateException(
-                    "unable to open the renamed original session directory for cleanup: "
-                            + original);
+                    "unable to open the verified renamed original session directory for "
+                            + "cleanup: " + original);
         }
         try {
-            // Re-prove the anchored identity through the fresh fd before any deletion: a
-            // same-inode re-ownership or a raced replacement is refused, never deleted.
-            BasicFileAttributeView keyView = fresh.getFileAttributeView(Path.of("."),
-                    BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
-            Object fdKey = keyView != null ? keyView.readAttributes().fileKey() : null;
-            if (fdKey == null || !sessionFileKey.equals(fdKey)) {
-                return new IllegalStateException(
-                        "refusing to clean the unverified renamed original session directory: "
-                                + original);
-            }
             try {
                 primary = aggregate(primary, deleteChildren(fresh, original));
             } catch (RuntimeException walkFailure) {
@@ -857,10 +851,6 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
                         "failed to delete the renamed original session contents: "
                                 + walkFailure.getMessage(), walkFailure));
             }
-        } catch (IOException | RuntimeException failure) {
-            primary = aggregate(primary, new IllegalStateException(
-                    "unable to verify the renamed original session directory: "
-                            + failure.getMessage(), failure));
         } finally {
             try {
                 fresh.close();
@@ -939,25 +929,24 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
         return primary;
     }
 
-    /** Fallback recursion for a provider whose subdirectory streams are not directory-
-     * relative: delete the subtree through checked absolute operations. */
+    /**
+     * Fallback for a provider whose subdirectory streams are not directory-relative: cleanup
+     * fails closed (leak reported) rather than walking/deleting by absolute path — a path
+     * walk cannot be bound to the verified directory handle, so a replacement could be
+     * deleted instead.
+     */
     private RuntimeException deleteChildrenFallback(Path dirPath) {
-        RuntimeException primary = null;
-        try {
-            primary = aggregate(primary, deleteOwnedAggregating(dirPath));
-        } catch (RuntimeException walkFailure) {
-            primary = aggregate(primary, walkFailure);
-        }
-        return primary;
+        return new IllegalStateException(
+                "subdirectory stream is not directory-relative; refusing to delete by path "
+                        + "(leak reported): " + dirPath);
     }
 
     /**
-     * Removes the original session entry through the parent anchor, honoring the verdict of
-     * the mandatory pre-deletion identity verification: only a {@code MATCHES} verdict deletes
-     * (through the parent anchor, re-proving the entry's fileKey immediately before the
-     * delete, or the identity-verified fallback when the anchor is unavailable/closed); a
-     * re-owned same-inode session, a replaced entry, or an unprovable identity is refused and
-     * reported as a leak — never deleted.
+     * Removes the original session entry honoring the verdict of the mandatory pre-deletion
+     * identity verification: only a {@code MATCHES} verdict deletes, and it does so only
+     * through verified no-follow directory handles ({@link #removeSessionEntryIdentityBound})
+     * — never by path/name; a re-owned same-inode session, a replaced entry, an unprovable
+     * identity, or an unavailable verified handle is refused and reported as a leak.
      */
     private RuntimeException deleteSessionEntryThroughParent(CleanupVerdict verdict) {
         switch (verdict.state) {
@@ -980,44 +969,147 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
                         "session directory identity cannot be proven; refusing to delete "
                                 + "(leak reported): " + sessionDir, verdict.cause);
             case MATCHES:
-                break;
+                return removeSessionEntryIdentityBound();
         }
-        if (sessionStreamClosed) {
-            // The session stream is gone; clean any remaining contents through the
-            // identity-verified fallback (refuses a replacement, never deletes it).
-            return deleteOwnedFallback();
+        throw new AssertionError("unreachable: " + verdict.state);
+    }
+
+    /**
+     * Removes a {@code MATCHES} session entry through verified no-follow directory handles
+     * only, so a replacement can never be deleted: any remaining contents are deleted
+     * directory-relative through a verified session stream (the retained one when still
+     * open, otherwise a freshly opened and re-verified one — never {@code Files.walk}), and
+     * the entry itself is deleted through a verified parent anchor (re-opened fresh when the
+     * retained one is closed/absent) with the entry's fileKey re-proven immediately before
+     * the delete. When a verified handle cannot be established, cleanup fails closed and the
+     * leak is reported instead of deleting by path/name.
+     */
+    private RuntimeException removeSessionEntryIdentityBound() {
+        RuntimeException primary = null;
+        // 1. Remaining contents through a verified session directory handle.
+        SecureDirectoryStream<Path> sessionAnchor;
+        boolean closeSession = false;
+        if (dirStream != null && !sessionStreamClosed) {
+            sessionAnchor = dirStream;
+        } else {
+            sessionAnchor = openVerifiedStream(sessionReal, sessionFileKey, sessionOwner);
+            closeSession = true;
         }
-        if (parentStream == null || parentStreamClosed) {
-            return deleteSessionEntryFallback();
+        if (sessionAnchor == null) {
+            return new IllegalStateException(
+                    "session contents cannot be removed without a verified directory handle; "
+                            + "refusing to delete by path (leak reported): " + sessionDir);
+        }
+        try {
+            try {
+                primary = aggregate(primary, deleteChildren(sessionAnchor, sessionReal));
+            } catch (RuntimeException walkFailure) {
+                primary = aggregate(primary, new IllegalStateException(
+                        "failed to delete session contents: " + walkFailure.getMessage(),
+                        walkFailure));
+            }
+        } finally {
+            if (closeSession) {
+                try {
+                    sessionAnchor.close();
+                } catch (IOException | RuntimeException closeFailure) {
+                    primary = aggregate(primary, new IllegalStateException(
+                            "failed to close the session directory stream: "
+                                    + closeFailure.getMessage(), closeFailure));
+                }
+            }
+        }
+        // 2. The entry itself through a verified parent anchor.
+        SecureDirectoryStream<Path> parentAnchor;
+        boolean closeParent = false;
+        if (parentStream != null && !parentStreamClosed) {
+            parentAnchor = parentStream;
+        } else {
+            parentAnchor = openVerifiedStream(parentReal, parentFileKey, parentOwner);
+            closeParent = true;
+        }
+        if (parentAnchor == null) {
+            return aggregate(primary, new IllegalStateException(
+                    "session entry cannot be removed without a verified parent anchor; "
+                            + "refusing to delete by path (leak reported): " + sessionDir));
         }
         Path name = sessionReal.getFileName();
         try {
-            // Re-prove the entry's identity through the parent anchor immediately before the
-            // delete (no path race): a swap in the window since the close() verdict is refused.
-            BasicFileAttributeView view = parentStream.getFileAttributeView(name,
+            // Re-prove the entry's identity through the anchor immediately before the delete
+            // (no path race): a swap in the window since the close() verdict is refused.
+            BasicFileAttributeView view = parentAnchor.getFileAttributeView(name,
                     BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
             if (view == null) {
-                return null; // already gone
+                return primary; // already gone
             }
             if (!sessionFileKey.equals(view.readAttributes().fileKey())) {
-                return new IllegalStateException(
+                return aggregate(primary, new IllegalStateException(
                         "session directory was replaced; refusing to delete the replacement "
-                                + "(leak reported): " + sessionDir);
+                                + "(leak reported): " + sessionDir));
             }
-            parentStream.deleteDirectory(name);
-            return null;
+            parentAnchor.deleteDirectory(name);
+            return primary;
         } catch (NoSuchFileException alreadyGone) {
-            return null;
+            return primary;
         } catch (IOException | RuntimeException failure) {
-            return new IllegalStateException("failed to delete session entry " + name,
-                    failure);
+            return aggregate(primary, new IllegalStateException(
+                    "failed to delete session entry " + name, failure));
+        } finally {
+            if (closeParent) {
+                try {
+                    parentAnchor.close();
+                } catch (IOException | RuntimeException closeFailure) {
+                    // best-effort close of the fresh parent anchor
+                }
+            }
         }
     }
 
-    /** Fallback removal of the session entry without a parent anchor: the identity-verified
-     * full cleanup (children first, then the entry) — fileKey/owner-refusing a replacement. */
-    private RuntimeException deleteSessionEntryFallback() {
-        return deleteOwnedFallback();
+    /**
+     * Opens a fresh no-follow directory stream on {@code path} and proves the anchored
+     * identity of the opened fd — both the fileKey AND the owner must equal the captured
+     * identities, and the identity-source seam must confirm the owner when readable. Returns
+     * {@code null} (after closing the stream) when the stream cannot be opened or its
+     * identity cannot be proven; callers must delete nothing in that case (fail closed).
+     */
+    private SecureDirectoryStream<Path> openVerifiedStream(Path path, Object capturedKey,
+            UserPrincipal capturedOwner) {
+        SecureDirectoryStream<Path> stream = openSecureStream(path);
+        if (stream == null) {
+            return null;
+        }
+        try {
+            BasicFileAttributeView keyView = stream.getFileAttributeView(Path.of("."),
+                    BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
+            FileOwnerAttributeView ownerView = stream.getFileAttributeView(Path.of("."),
+                    FileOwnerAttributeView.class, LinkOption.NOFOLLOW_LINKS);
+            Object fdKey = keyView != null ? keyView.readAttributes().fileKey() : null;
+            UserPrincipal fdOwner = ownerView != null ? ownerView.getOwner() : null;
+            boolean anchored = fdKey != null && capturedKey.equals(fdKey)
+                    && fdOwner != null && capturedOwner.equals(fdOwner);
+            if (anchored) {
+                try {
+                    UserPrincipal seamOwner = identitySource.owner(path);
+                    anchored = seamOwner != null && capturedOwner.equals(seamOwner);
+                } catch (NoSuchFileException nameGone) {
+                    // the name is gone; the anchored fd read governs
+                } catch (IOException seamFailure) {
+                    anchored = false;
+                }
+            }
+            if (!anchored) {
+                stream.close();
+                return null;
+            }
+            return stream;
+        } catch (IOException | RuntimeException failure) {
+            try {
+                stream.close();
+            } catch (IOException | RuntimeException ignored) {
+                // best-effort close of the unverifiable stream
+            }
+            return null;
+        }
     }
 
     /** Closes one anchor; a failure leaves the stream open so a retry can close it. */
@@ -1030,37 +1122,6 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
         } catch (IOException | RuntimeException failure) {
             return new IllegalStateException("failed to close " + role
                     + " directory stream (retryable): " + failure.getMessage(), failure);
-        }
-    }
-
-    /** Fallback cleanup without SDS: identity-refusing (mandatory non-null equal fileKey and
-     * owner), never deleting a replacement. An already-gone session is idempotent. */
-    private RuntimeException deleteOwnedFallback() {
-        if (!Files.exists(sessionReal, LinkOption.NOFOLLOW_LINKS)) {
-            return null; // already deleted: idempotent
-        }
-        RuntimeException primary = null;
-        try {
-            try {
-                verifyIdentity(sessionReal, sessionFileKey, sessionOwner, "session");
-            } catch (ArtifactReference.ArtifactUnavailableException changed) {
-                return new IllegalStateException(
-                        "session directory was replaced or re-owned; refusing to delete the "
-                                + "replacement (leak reported): " + sessionDir, changed);
-            }
-            primary = aggregate(primary, deleteOwnedAggregating(sessionReal));
-            if (Files.exists(sessionReal, LinkOption.NOFOLLOW_LINKS)) {
-                try {
-                    Files.deleteIfExists(sessionReal);
-                } catch (IOException deleteFailure) {
-                    primary = aggregate(primary, new IllegalStateException(
-                            "failed to delete session entry " + sessionReal, deleteFailure));
-                }
-            }
-            return primary;
-        } catch (RuntimeException failure) {
-            return aggregate(primary, new IllegalStateException(
-                    "failed to clean up session directory: " + failure.getMessage(), failure));
         }
     }
 
