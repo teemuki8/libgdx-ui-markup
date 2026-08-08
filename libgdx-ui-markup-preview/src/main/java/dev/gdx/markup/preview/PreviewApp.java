@@ -23,6 +23,7 @@ import dev.gdx.markup.core.NoopSink;
 import dev.gdx.markup.core.SemanticSink;
 import dev.gdx.markup.core.style.CssDocument;
 import dev.gdx.markup.core.style.CssParser;
+import dev.gdx.markup.runtime.MarkupRuntimeSource;
 import java.io.IOException;
 import java.nio.file.FileSystems;
 import java.nio.file.Path;
@@ -114,6 +115,10 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
         errorLabel.setWrap(true);
         errorLabel.setBounds(16, 16, 1248, 120);
         errorLabel.setVisible(false);
+        // The overlay is staged up front, before the first rebuild, so a failed initial build
+        // can render it even though no scene was ever committed. Successful rebuilds clear the
+        // stage and re-add the overlay last (on top of the scene).
+        stage.getRoot().addActor(errorLabel);
 
         if (options.mcp()) {
             mcp = new PreviewMcp(stage);
@@ -122,49 +127,167 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
         startWatcher();
     }
 
-    /** Rebuilds the scene from disk on the GL thread and reports one bounded status line. */
-    private void rebuild() {
+    /**
+     * Rebuilds the scene from disk on the GL thread and reports one bounded status line. The
+     * rebuild is transactional: everything the new scene needs (document, stylesheet, skin,
+     * actor tree, runtime registration) is prepared off the live stage inside a {@link
+     * Candidate}, the candidate runtime registration is attached first (preserving or
+     * reinstalling the last-good registration on failure), and only then is the stage swapped
+     * and the old skin disposed. A failed rebuild disposes only the candidate's resources and
+     * keeps the last-good skin, actors, and runtime registration live, with the typed error
+     * overlay staged on top. Package-visible so render-thread test children can drive
+     * rebuilds deterministically.
+     */
+    void rebuild() {
+        Candidate candidate = null;
         try {
             MarkupDocument document = new MarkupParser().parse(options.ui());
             CssDocument css = new CssParser().parse(options.css());
-            Skin newSkin = options.skin() == null ? DefaultSkin.create()
-                    : new Skin(Gdx.files.absolute(options.skin().toString()));
-            if (skin != null) {
-                skin.dispose();
-            }
-            skin = newSkin;
-            BuiltUi built = MarkupBuilder.build(document, css, skin, sink());
+            candidate = new Candidate(document, css, createSkin());
+            BuiltUi built = MarkupBuilder.build(document, css, candidate.skin(), sink());
+            candidate.adoptBuilt(built);
             // The ui root group must cover the viewport or harness actionability (parent
             // intersection and Group.hit) sees a zero-sized parent and rejects every actor.
             built.root().setSize(stage.getViewport().getWorldWidth(),
                     stage.getViewport().getWorldHeight());
-            stage.getRoot().clearChildren();
-            stage.getRoot().addActor(built.root());
-            stage.getRoot().addActor(errorLabel);
-            errorLabel.setVisible(false);
             if (mcp != null) {
-                mcp.attachRuntime(document, built);
+                candidate.adoptRuntime(mcp.attachRuntime(document, built));
             }
+            commit(candidate);
+            candidate = null; // ownership transferred; never dispose the committed scene
             status(MarkupStatus.ok(built.actors().size()));
         } catch (MarkupException failure) {
-            errorLabel.setText(failure.formatted());
-            errorLabel.setVisible(true);
-            status(MarkupStatus.error(failure));
+            publishFailure(failure.formatted(), MarkupStatus.error(failure));
+            if (candidate != null) {
+                candidate.close();
+            }
             if (options.exit()) {
                 System.out.flush();
                 System.err.flush();
                 System.exit(2);
             }
         } catch (IOException failure) {
-            errorLabel.setText(failure.getMessage());
-            errorLabel.setVisible(true);
-            status(MarkupStatus.error(failure.getMessage()));
+            publishFailure(failure.getMessage(), MarkupStatus.error(failure.getMessage()));
+            if (candidate != null) {
+                candidate.close();
+            }
+            if (options.exit()) {
+                System.out.flush();
+                System.err.flush();
+                System.exit(2);
+            }
+        } catch (RuntimeException failure) {
+            // Runtime-attach failures (for example the agent runtime's DUPLICATE_ENTITY) and any
+            // other unexpected runtime failure are candidate failures: keep the last-good scene
+            // live, dispose only the candidate, and publish a typed generic error.
+            String message = failure.getMessage() == null
+                    ? failure.getClass().getSimpleName() : failure.getMessage();
+            publishFailure(message, MarkupStatus.error(message));
+            if (candidate != null) {
+                candidate.close();
+            }
             if (options.exit()) {
                 System.out.flush();
                 System.err.flush();
                 System.exit(2);
             }
         }
+    }
+
+    private Skin createSkin() {
+        return options.skin() == null ? DefaultSkin.create()
+                : new Skin(Gdx.files.absolute(options.skin().toString()));
+    }
+
+    /**
+     * Stage swap then old dispose: the last-good actors stay staged and the last-good skin
+     * stays live until this exact point, the candidate's runtime registration was already
+     * retired into {@link PreviewMcp} by {@code attachRuntime}, and the old skin is disposed
+     * exactly once after the swap.
+     */
+    private void commit(Candidate candidate) {
+        stage.getRoot().clearChildren();
+        stage.getRoot().addActor(candidate.built().root());
+        stage.getRoot().addActor(errorLabel);
+        errorLabel.setVisible(false);
+        Skin previous = skin;
+        skin = candidate.skin();
+        if (previous != null) {
+            previous.dispose();
+        }
+    }
+
+    /** Stages the typed error overlay and publishes one bounded status line. */
+    private void publishFailure(String text, MarkupStatus status) {
+        errorLabel.setText(text);
+        errorLabel.setVisible(true);
+        status(status);
+    }
+
+    /**
+     * One prepared rebuild. Owns every candidate resource — the parsed document, stylesheet,
+     * candidate skin, built actor tree, and (once attached) the runtime registration — until
+     * the rebuild is committed or disposed. {@link #close()} releases exactly the candidate's
+     * resources in reverse acquisition order (runtime registration first, then the skin), so a
+     * failed rebuild can never touch the last-good skin, actors, or runtime registration.
+     */
+    private static final class Candidate implements AutoCloseable {
+        private final MarkupDocument document;
+        private final CssDocument css;
+        private final Skin skin;
+        private BuiltUi built;
+        private MarkupRuntimeSource runtime;
+
+        Candidate(MarkupDocument document, CssDocument css, Skin skin) {
+            this.document = Objects.requireNonNull(document, "document");
+            this.css = Objects.requireNonNull(css, "css");
+            this.skin = Objects.requireNonNull(skin, "skin");
+        }
+
+        void adoptBuilt(BuiltUi ui) {
+            built = Objects.requireNonNull(ui, "ui");
+        }
+
+        void adoptRuntime(MarkupRuntimeSource source) {
+            runtime = Objects.requireNonNull(source, "source");
+        }
+
+        Skin skin() {
+            return skin;
+        }
+
+        BuiltUi built() {
+            return built;
+        }
+
+        @Override public void close() {
+            MarkupRuntimeSource pending = runtime;
+            runtime = null;
+            if (pending != null) {
+                pending.close();
+            }
+            skin.dispose();
+        }
+    }
+
+    /** Returns the currently committed (live) skin, or {@code null} before the first success. */
+    Skin skin() {
+        return skin;
+    }
+
+    /** Returns whether the typed error overlay is visible and staged in the scene. */
+    boolean errorOverlayVisible() {
+        return errorLabel != null && errorLabel.isVisible() && errorLabel.getStage() == stage;
+    }
+
+    /** Returns whether the staged scene contains an actor with the given id/name. */
+    boolean stageContains(String actorName) {
+        return stage != null && stage.getRoot().findActor(actorName) != null;
+    }
+
+    /** Returns the harness MCP wiring, or {@code null} when not in {@code --mcp} mode. */
+    PreviewMcp mcp() {
+        return mcp;
     }
 
     private SemanticSink sink() {

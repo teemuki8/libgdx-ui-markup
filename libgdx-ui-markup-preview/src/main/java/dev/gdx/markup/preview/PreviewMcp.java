@@ -23,6 +23,8 @@ import dev.gdx.uiharness.scene2d.RenderThreadScheduler;
 import dev.gdx.uiharness.scene2d.Scene2dHarness;
 import dev.gdx.uiharness.scene2d.Scene2dSession;
 import io.github.teemuki8.libgdx.agent.runtime.core.AgentRuntime;
+import io.github.teemuki8.libgdx.agent.runtime.core.AgentRuntimeException;
+import io.github.teemuki8.libgdx.agent.runtime.core.RuntimeErrorCode;
 import io.github.teemuki8.libgdx.agent.runtime.core.SessionId;
 import io.github.teemuki8.libgdx.agent.runtime.core.UiFrameCorrelation;
 import java.time.Duration;
@@ -54,7 +56,12 @@ final class PreviewMcp implements AutoCloseable {
     private final HarnessMcpServer server;
     private final AgentRuntime runtime;
     private final Thread terminator;
+    /** Committed (live) runtime registration; replaced only by a committed candidate. */
     private MarkupRuntimeSource runtimeSource;
+    /** The committed document/built retained so the last-good registration can be reinstalled
+     * when a colliding candidate had to remove its ids before failing. */
+    private MarkupDocument lastGoodDocument;
+    private BuiltUi lastGoodBuilt;
 
     PreviewMcp(Stage stage) {
         this.stage = Objects.requireNonNull(stage, "stage");
@@ -123,19 +130,83 @@ final class PreviewMcp implements AutoCloseable {
     /** Registers markup-declared {@code data-runtime-entity} actors as agent-runtime value
      * sources for the freshly built scene (render thread), explicitly in widget-mirror mode: the
      * property supplier reads the widget's live state back, which validates transport and
-     * correlation only and cannot detect a UI/domain divergence. Old registrations are closed
-     * first.
+     * correlation only and cannot detect a UI/domain divergence.
+     *
+     * <p>Transactional: on success returns a live owner (the committed registration, whose
+     * lifecycle the caller adopts) with the old registration retired. On failure it either
+     * leaves the last-good registration untouched — when the candidate never collided with it —
+     * or, when the candidate shared entity ids with the live registration and the old ids had
+     * to be removed first, reinstalls the retained last-good registration before rethrowing.
+     * A thrown call never leaves candidate handles behind (the runtime's own registration is
+     * transactional and rolls back its acquisitions).
      */
-    void attachRuntime(MarkupDocument document, BuiltUi built) {
-        if (runtimeSource != null) {
-            runtimeSource.close();
+    MarkupRuntimeSource attachRuntime(MarkupDocument document, BuiltUi built) {
+        MarkupRuntimeSource previous = runtimeSource;
+        try {
+            return commitCandidate(document, built);
+        } catch (RuntimeException failure) {
+            if (!(failure instanceof AgentRuntimeException runtimeFailure)
+                    || runtimeFailure.code() != RuntimeErrorCode.DUPLICATE_ENTITY
+                    || previous == null) {
+                throw failure;
+            }
+            // The candidate shares entity ids with the live registration: remove the old ids,
+            // retry, and on retry failure restore the retained last-good registration before
+            // reporting the candidate failure.
+            previous.close();
+            runtimeSource = null;
+            try {
+                return commitCandidate(document, built);
+            } catch (RuntimeException retryFailure) {
+                restoreLastGood(retryFailure);
+                throw retryFailure;
+            }
         }
-        runtimeSource = MarkupRuntimeSource.registerWidgetMirror(runtime, document, built,
-                PreviewApp.SESSION_ID);
+    }
+
+    /** Registers the candidate and, on success, retires the previous registration and adopts
+     * the candidate as the committed owner. */
+    private MarkupRuntimeSource commitCandidate(MarkupDocument document, BuiltUi built) {
+        MarkupRuntimeSource candidate = MarkupRuntimeSource.registerWidgetMirror(
+                runtime, document, built, PreviewApp.SESSION_ID);
+        MarkupRuntimeSource retired = runtimeSource;
+        runtimeSource = candidate;
+        lastGoodDocument = document;
+        lastGoodBuilt = built;
+        if (retired != null) {
+            retired.close();
+        }
         System.err.println("markup-runtime: {\"mode\":\"widget-mirror\",\"entities\":"
-                + runtimeSource.registeredEntities().size() + ",\"bindings\":"
-                + runtimeSource.registeredEntities().size() + "}");
+                + candidate.registeredEntities().size() + ",\"bindings\":"
+                + candidate.registeredEntities().size() + "}");
         System.err.flush();
+        return candidate;
+    }
+
+    /** Re-registers the retained last-good document/built and adopts it as the committed owner;
+     * always rethrows the original failure (with any restore failure suppressed). */
+    private void restoreLastGood(RuntimeException original) {
+        if (lastGoodDocument == null || lastGoodBuilt == null) {
+            throw original;
+        }
+        try {
+            MarkupRuntimeSource restored = MarkupRuntimeSource.registerWidgetMirror(
+                    runtime, lastGoodDocument, lastGoodBuilt, PreviewApp.SESSION_ID);
+            runtimeSource = restored;
+        } catch (RuntimeException restoreFailure) {
+            original.addSuppressed(restoreFailure);
+        }
+        throw original;
+    }
+
+    /** Returns the committed runtime registration, or {@code null} before the first commit. */
+    MarkupRuntimeSource runtimeSource() {
+        return runtimeSource;
+    }
+
+    /** Returns the agent runtime backing the preview session (test seam). */
+    AgentRuntime runtime() {
+        return runtime;
     }
 
     /** Advances the deterministic clock and drains render-thread commands (GL thread). */
@@ -162,6 +233,8 @@ final class PreviewMcp implements AutoCloseable {
             runtimeSource.close();
             runtimeSource = null;
         }
+        lastGoodDocument = null;
+        lastGoodBuilt = null;
         runtime.close();
         server.close();
         session.close();

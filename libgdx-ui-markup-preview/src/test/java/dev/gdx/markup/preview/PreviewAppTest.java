@@ -188,6 +188,49 @@ final class PreviewAppTest {
     }
 
     /**
+     * A good build, then a failing edit, then a recovery, then a second failing edit and a
+     * second recovery, scripted in one child JVM: each failure must keep the last-good skin
+     * instance and actors live and staged (the overlay renders on top), each recovery must
+     * commit a fresh skin and swap the actors, and the child must exit cleanly.
+     */
+    @Test
+    @Timeout(120)
+    void badEditAfterGoodBuildKeepsLastGoodAndRecovers() throws Exception {
+        Path ui = tempDir.resolve("bad-after-good.xml");
+        Path css = tempDir.resolve("bad-after-good.css");
+        Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
+        try (PreviewTestProcess child = PreviewTestProcess.launch(
+                "bad-after-good", ui, css, null, Duration.ofSeconds(60))) {
+            int exit = child.await();
+            assertEquals(0, exit, "child exit code; stderr: " + child.stderr());
+            assertTrue(child.stdout().contains("preview-child: bad-after-good ok"),
+                    "child ok line; stdout: " + child.stdout() + " stderr: " + child.stderr());
+        }
+        assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
+    }
+
+    /**
+     * The first build fails: the typed error overlay must be visible on screen (staged), no
+     * skin or actors may be committed, the overlay must draw without any scene resources, and
+     * a later good edit must recover to a committed scene.
+     */
+    @Test
+    @Timeout(120)
+    void initialBadBuildShowsErrorOverlayAndRecovers() throws Exception {
+        Path ui = tempDir.resolve("initial-bad.xml");
+        Path css = tempDir.resolve("initial-bad.css");
+        Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
+        try (PreviewTestProcess child = PreviewTestProcess.launch(
+                "initial-bad", ui, css, null, Duration.ofSeconds(60))) {
+            int exit = child.await();
+            assertEquals(0, exit, "child exit code; stderr: " + child.stderr());
+            assertTrue(child.stdout().contains("preview-child: initial-bad ok"),
+                    "child ok line; stdout: " + child.stdout() + " stderr: " + child.stderr());
+        }
+        assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
+    }
+
+    /**
      * Interrupting the parent while it waits on a stuck child — repeatedly, including while
      * cleanup is running — must not skip or abort cleanup: every bounded wait in the
      * termination ladder (terminate → bounded wait → force-kill → final wait) and the pump
