@@ -272,6 +272,7 @@ public final class MarkupBuilder {
             actors.add(table);
             applyCommon(element, table, cellTable);
             assignPseudoStyle(element, table);
+            applyCssOverrides(element, table, cellTable);
             ResolvedStyle style = resolveStyle(element, null);
             if (style.has("padding")) {
                 List<Float> values = style.lengths("padding", List.of());

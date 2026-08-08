@@ -1,45 +1,77 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Recreation of the Slay the Spire shop layout: a large center-left items panel with a
-     gold row and a right-hand relics panel with an HP bar. -->
+<!-- Slay the Spire battle/shop reference: charcoal HUD, warm dungeon field, a luminous
+     centered card, asymmetric combatants, and a dense fan of cards along the bottom edge. -->
 <ui>
-  <table id="root" width="1280" height="720">
-    <row/>
-    <table id="shop-panel" class="panel" width="680" height="500" pad="20" expand="true"
-           align="center center">
-      <row/>
-      <label id="shop-title" class="title" text="SHOP"/>
-      <row/>
-      <button id="item-1" text="Bloody Idol — 150 gold" name="Item 1" width="560" height="64"/>
-      <row/>
-      <button id="item-2" text="Frozen Eye — 120 gold" name="Item 2" width="560" height="64"/>
-      <row/>
-      <button id="item-3" text="Preserved Insect — 130 gold" name="Item 3" width="560"
-              height="64"/>
-      <row/>
-      <button id="item-4" text="Strawberry — 200 gold" name="Item 4" width="560" height="64"/>
-      <row/>
-      <label id="shop-gold" text="Gold: 137"/>
-      <row/>
-      <progressbar id="shop-gold-bar" min="0" max="300" value="137" width="420" height="16"/>
+  <table id="root" class="backdrop" width="1280" height="720">
+    <table id="hud" class="panel-alt" width="1280" height="58" expand="true" fill="true" pad="10">
+      <label id="player-name" class="heading" text="MegaCrit   the Defect" width="220" align="left"/>
+      <label id="player-hp" text="♥ 47/82" width="130" align="left"/>
+      <label id="player-gold" text="◉ 86" width="110" align="left"/>
+      <label id="floor" class="title" text="11th Floor" width="420" align="center"/>
+      <label id="draw-pile" text="Deck 14" width="150" align="right"/>
     </table>
-    <table id="side-panel" class="panel" width="250" height="500" pad="14"
+    <row/>
+    <table id="battlefield" width="1280" height="492" expand="true" fill="true" pad="0">
+      <table id="hero-zone" width="430" height="440" pad="18" align="center center">
+        <label id="hero-orb" class="accent-bar" text="●  ◌  ◌"/>
+        <row/>
+        <label id="hero-name" class="heading" text="THE DEFECT"/>
+        <row/>
+        <label id="hero-status" text="47 / 82 HP   ◆"/>
+        <row/>
+        <progressbar id="hero-hp" min="0" max="82" value="47" width="240" height="16"/>
+        <row/>
+        <label id="hero-energy" text="4 / 3 ENERGY"/>
+        <row/>
+        <label id="hero-orb-status" class="section" text="Lightning  3     Focus  1"/>
+        <row/>
+        <label id="hero-potion" text="Potion   ●"/>
+        <row/>
+        <label id="hero-intent" class="muted" text="Turn 7"/>
+        <row/>
+        <label id="hero-power" text="Block  12   Buffs  2   Orbs  3"/>
+        <row/>
+      </table>
+      <table id="card-zone" class="panel-alt" width="180" height="245" pad="18" pad-top="110" align="center top">
+        <label id="card-cost" class="title" text="0"/>
+        <row/>
+        <label id="card-name" class="title" text="Zap+"/>
+        <row/>
+        <label id="card-kind" class="section" text="SKILL"/>
+        <row/>
+        <label id="card-rule" class="heading" text="Channel 1 Lightning."/>
+        <row/>
+        <label id="card-target" text="Evoke   •   Channel"/>
+        <row/>
+        <label id="card-flavor" class="section" text="A spark in the dark."/>
+      </table>
+      <table id="enemy-zone" width="670" height="440" pad="18" align="center center">
+        <label id="enemy-name" class="heading" text="THE AWAKENED ONE"/>
+        <row/>
+        <label id="enemy-intent" class="title" text="7   ⚡"/>
+        <row/>
+        <label id="enemy-status" text="30 / 50 HP"/>
+        <row/>
+        <progressbar id="enemy-hp" min="0" max="50" value="30" width="240" height="16"/>
+        <row/>
+        <label id="enemy-buff" class="section" text="Strength  2     Ritual"/>
+        <row/>
+        <label id="enemy-action" text="Intent: attack"/>
+        <row/>
+        <label id="enemy-block" text="Block  7   Debuffs  1   Vulnerable"/>
+        <row/>
+        <label id="enemy-armor" class="section" text="Intent  •  Attack  •  Damage  7"/>
+      </table>
+    </table>
+    <row/>
+    <table id="hand" class="panel-alt" width="1280" height="170" expand="true" fill="true" pad="12"
            align="center center">
-      <row/>
-      <label id="side-title" class="title" text="RELIC"/>
-      <row/>
-      <label id="relic-1" text="Burning Blood"/>
-      <row/>
-      <label id="relic-2" text="Vajra"/>
-      <row/>
-      <label id="relic-3" text="Anchor"/>
-      <row/>
-      <label id="relic-4" text="Omamori"/>
-      <row/>
-      <label id="side-hp" text="HP 62/68"/>
-      <row/>
-      <progressbar id="side-hp-bar" min="0" max="68" value="62" width="200" height="14"/>
-      <row/>
-      <label id="side-deck" text="Deck: 12 cards"/>
+      <table id="hand-spacer" width="230" height="1"/>
+      <button id="card-strike-left" text="1   Strike" name="Strike" width="240" height="130"/>
+      <button id="card-strike" text="1   Strike" name="Strike" width="140" height="130"/>
+      <button id="card-dualcast" text="1   Dualcast" name="Dualcast" width="120" height="130"/>
+      <button id="card-defend" text="1   Defend+" name="Defend" width="180" height="130"/>
+      <button id="end-turn" class="primary" text="End Turn" name="End Turn" width="190" height="62"/>
     </table>
   </table>
 </ui>

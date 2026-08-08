@@ -28,17 +28,35 @@ import com.badlogic.gdx.scenes.scene2d.utils.TextureRegionDrawable;
  * thread; the caller owns disposal.
  */
 public final class DefaultSkin {
-    private static final Color BACKGROUND = Color.valueOf("172033ff");
-    private static final Color PANEL = Color.valueOf("26324aff");
-    private static final Color PANEL_ALT = Color.valueOf("303e5aff");
-    private static final Color ACCENT = Color.valueOf("69d2e7ff");
-    private static final Color ACCENT_OVER = Color.valueOf("8ce2efff");
-    private static final Color ACCENT_DOWN = Color.valueOf("3d9fb4ff");
-    private static final Color TEXT = Color.valueOf("f4f7ffff");
-    private static final Color MUTED = Color.valueOf("aebbd0ff");
-    private static final Color FOCUSED_FIELD = Color.valueOf("3a4c6eff");
-    private static final Color SELECTION = Color.valueOf("477f91ff");
-    private static final Color DISABLED = Color.valueOf("56647aff");
+    /**
+     * Optional system property pointing at a small flat-JSON palette override file, for
+     * example {@code {"panel": "#16323aff", "accent": "#c05a2aff"}}. Each recognized color
+     * name replaces the built-in default; unknown names and malformed values are ignored so
+     * the default skin stays usable anywhere the property is absent. The qualification corpus
+     * uses this to render recreations in each reference game's palette.
+     */
+    public static final String PALETTE_PROPERTY = "markup.skin.palette";
+
+    /** Byte cap for the optional flat-JSON palette override file; read as cap + 1. */
+    static final int MAX_PALETTE_BYTES = 8192;
+
+    /** The named colors the default skin exposes; any subset may be overridden. */
+    static final String[] COLOR_NAMES = {
+        "background", "panel", "panel-alt", "accent", "accent-over", "accent-down",
+        "text", "muted", "field-focused", "selection", "disabled",
+    };
+
+    private static final String BACKGROUND_HEX = "172033ff";
+    private static final String PANEL_HEX = "26324aff";
+    private static final String PANEL_ALT_HEX = "303e5aff";
+    private static final String ACCENT_HEX = "69d2e7ff";
+    private static final String ACCENT_OVER_HEX = "8ce2efff";
+    private static final String ACCENT_DOWN_HEX = "3d9fb4ff";
+    private static final String TEXT_HEX = "f4f7ffff";
+    private static final String MUTED_HEX = "aebbd0ff";
+    private static final String FOCUSED_FIELD_HEX = "3a4c6eff";
+    private static final String SELECTION_HEX = "477f91ff";
+    private static final String DISABLED_HEX = "56647aff";
 
     private DefaultSkin() {
     }
@@ -46,6 +64,64 @@ public final class DefaultSkin {
     /** Builds a fresh skin; call on the render thread and dispose when done. */
     public static Skin create() {
         return create(DefaultSkin::createPixel, pixmap -> new Texture(pixmap));
+    }
+
+    /** The effective palette: built-in hex values overridden by the optional palette file. */
+    private static java.util.Map<String, String> palette() {
+        java.util.Map<String, String> defaults = new java.util.LinkedHashMap<>();
+        defaults.put("background", BACKGROUND_HEX);
+        defaults.put("panel", PANEL_HEX);
+        defaults.put("panel-alt", PANEL_ALT_HEX);
+        defaults.put("accent", ACCENT_HEX);
+        defaults.put("accent-over", ACCENT_OVER_HEX);
+        defaults.put("accent-down", ACCENT_DOWN_HEX);
+        defaults.put("text", TEXT_HEX);
+        defaults.put("muted", MUTED_HEX);
+        defaults.put("field-focused", FOCUSED_FIELD_HEX);
+        defaults.put("selection", SELECTION_HEX);
+        defaults.put("disabled", DISABLED_HEX);
+        String property = System.getProperty(PALETTE_PROPERTY);
+        if (property == null || property.isBlank()) {
+            return defaults;
+        }
+        java.util.Map<String, String> overrides = readPaletteFile(java.nio.file.Path.of(property));
+        for (java.util.Map.Entry<String, String> entry : overrides.entrySet()) {
+            if (defaults.containsKey(entry.getKey())) {
+                defaults.put(entry.getKey(), entry.getValue());
+            }
+        }
+        return defaults;
+    }
+
+    /**
+     * Reads a bounded flat JSON object of {@code "name": "#rrggbbaa"} pairs. Only the
+     * recognized color names are used; the reader is intentionally tiny and strict so a
+     * corrupted file cannot change the skin's shape. The file is read byte-bounded
+     * (cap + 1) before any UTF-8/JSON string is allocated, so an oversized palette fails
+     * without a full-file read.
+     */
+    static java.util.Map<String, String> readPaletteFile(java.nio.file.Path file) {
+        java.util.Map<String, String> overrides = new java.util.LinkedHashMap<>();
+        try (java.io.InputStream in = java.nio.file.Files.newInputStream(file)) {
+            byte[] bytes = in.readNBytes(MAX_PALETTE_BYTES + 1);
+            if (bytes.length > MAX_PALETTE_BYTES) {
+                throw new IllegalArgumentException("palette file too large: " + file);
+            }
+            String text = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+            java.util.regex.Matcher matcher = java.util.regex.Pattern
+                    .compile("\"([a-zA-Z-]+)\"\\s*:\\s*\"(#[0-9a-fA-F]{8})\"")
+                    .matcher(text);
+            java.util.Set<String> names = java.util.Set.of(COLOR_NAMES);
+            while (matcher.find()) {
+                String key = matcher.group(1);
+                if (names.contains(key)) {
+                    overrides.put(key, matcher.group(2));
+                }
+            }
+        } catch (java.io.IOException failure) {
+            throw new IllegalArgumentException("cannot read skin palette " + file, failure);
+        }
+        return overrides;
     }
 
     /**
@@ -68,10 +144,11 @@ public final class DefaultSkin {
         skin.add("pixel", pixelTexture);
         skin.add("default-font", font);
 
-        addColors(skin);
+        java.util.Map<String, String> palette = palette();
+        addColors(skin, palette);
         TextureRegionDrawable pixel = new TextureRegionDrawable(new TextureRegion(pixelTexture));
-        addDrawables(skin, pixel);
-        addStyles(skin, font, pixel);
+        addDrawables(skin, pixel, palette);
+        addStyles(skin, font, pixel, palette);
         return skin;
     }
 
@@ -94,46 +171,57 @@ public final class DefaultSkin {
         return pixmap;
     }
 
-    private static void addColors(Skin skin) {
-        skin.add("background", new Color(BACKGROUND));
-        skin.add("panel", new Color(PANEL));
-        skin.add("panel-alt", new Color(PANEL_ALT));
-        skin.add("accent", new Color(ACCENT));
-        skin.add("accent-over", new Color(ACCENT_OVER));
-        skin.add("accent-down", new Color(ACCENT_DOWN));
-        skin.add("pressed", new Color(ACCENT_DOWN));
-        skin.add("text", new Color(TEXT));
-        skin.add("muted", new Color(MUTED));
-        skin.add("field-focused", new Color(FOCUSED_FIELD));
-        skin.add("selection", new Color(SELECTION));
-        skin.add("disabled", new Color(DISABLED));
+    private static void addColors(Skin skin, java.util.Map<String, String> palette) {
+        skin.add("background", new Color(Color.valueOf(palette.get("background"))));
+        skin.add("panel", new Color(Color.valueOf(palette.get("panel"))));
+        skin.add("panel-alt", new Color(Color.valueOf(palette.get("panel-alt"))));
+        skin.add("accent", new Color(Color.valueOf(palette.get("accent"))));
+        skin.add("accent-over", new Color(Color.valueOf(palette.get("accent-over"))));
+        skin.add("accent-down", new Color(Color.valueOf(palette.get("accent-down"))));
+        skin.add("pressed", new Color(Color.valueOf(palette.get("accent-down"))));
+        skin.add("text", new Color(Color.valueOf(palette.get("text"))));
+        skin.add("muted", new Color(Color.valueOf(palette.get("muted"))));
+        skin.add("field-focused", new Color(Color.valueOf(palette.get("field-focused"))));
+        skin.add("selection", new Color(Color.valueOf(palette.get("selection"))));
+        skin.add("disabled", new Color(Color.valueOf(palette.get("disabled"))));
     }
 
-    private static void addDrawables(Skin skin, TextureRegionDrawable pixel) {
-        addDrawable(skin, "panel", pixel.tint(PANEL));
-        addDrawable(skin, "panel-alt", pixel.tint(PANEL_ALT));
-        addDrawable(skin, "accent", pixel.tint(ACCENT));
-        addDrawable(skin, "accent-over", pixel.tint(ACCENT_OVER));
-        addDrawable(skin, "accent-down", pixel.tint(ACCENT_DOWN));
-        addDrawable(skin, "pressed", pixel.tint(ACCENT_DOWN));
-        addDrawable(skin, "field", pixel.tint(PANEL_ALT));
-        addDrawable(skin, "field-focused", pixel.tint(FOCUSED_FIELD));
-        addDrawable(skin, "field-disabled", pixel.tint(DISABLED));
-        addDrawable(skin, "checkbox-off", pixel.tint(DISABLED));
-        addDrawable(skin, "checkbox-on", pixel.tint(ACCENT));
-        addDrawable(skin, "checkbox-over", pixel.tint(ACCENT_OVER));
+    private static void addDrawables(Skin skin, TextureRegionDrawable pixel,
+            java.util.Map<String, String> palette) {
+        Color panel = Color.valueOf(palette.get("panel"));
+        Color panelAlt = Color.valueOf(palette.get("panel-alt"));
+        Color accent = Color.valueOf(palette.get("accent"));
+        Color accentOver = Color.valueOf(palette.get("accent-over"));
+        Color accentDown = Color.valueOf(palette.get("accent-down"));
+        Color background = Color.valueOf(palette.get("background"));
+        Color focused = Color.valueOf(palette.get("field-focused"));
+        Color selection = Color.valueOf(palette.get("selection"));
+        Color disabled = Color.valueOf(palette.get("disabled"));
+        addDrawable(skin, "background", pixel.tint(background));
+        addDrawable(skin, "panel", pixel.tint(panel));
+        addDrawable(skin, "panel-alt", pixel.tint(panelAlt));
+        addDrawable(skin, "accent", pixel.tint(accent));
+        addDrawable(skin, "accent-over", pixel.tint(accentOver));
+        addDrawable(skin, "accent-down", pixel.tint(accentDown));
+        addDrawable(skin, "pressed", pixel.tint(accentDown));
+        addDrawable(skin, "field", pixel.tint(panelAlt));
+        addDrawable(skin, "field-focused", pixel.tint(focused));
+        addDrawable(skin, "field-disabled", pixel.tint(disabled));
+        addDrawable(skin, "checkbox-off", pixel.tint(disabled));
+        addDrawable(skin, "checkbox-on", pixel.tint(accent));
+        addDrawable(skin, "checkbox-over", pixel.tint(accentOver));
         addDrawable(skin, "checkbox-off-disabled", pixel.tint(Color.valueOf("3a4354ff")));
         addDrawable(skin, "checkbox-on-disabled", pixel.tint(Color.valueOf("477f91ff")));
-        addDrawable(skin, "button-disabled", pixel.tint(DISABLED));
-        addDrawable(skin, "window", pixel.tint(Color.valueOf("354562ff")));
+        addDrawable(skin, "button-disabled", pixel.tint(disabled));
+        addDrawable(skin, "window", pixel.tint(panel));
         addDrawable(skin, "scroll-bg", pixel.tint(Color.valueOf("202a3fff")));
         addDrawable(skin, "scroll-bar", pixel.tint(Color.valueOf("1a2233ff")));
-        addDrawable(skin, "scroll-knob", pixel.tint(ACCENT));
-        addDrawable(skin, "selection", pixel.tint(SELECTION));
+        addDrawable(skin, "scroll-knob", pixel.tint(accent));
+        addDrawable(skin, "selection", pixel.tint(selection));
         addDrawable(skin, "slider-bg", pixel.tint(Color.valueOf("202a3fff")));
-        addDrawable(skin, "slider-knob", pixel.tint(ACCENT));
+        addDrawable(skin, "slider-knob", pixel.tint(accent));
         addDrawable(skin, "progress-bg", pixel.tint(Color.valueOf("202a3fff")));
-        addDrawable(skin, "progress-fill", pixel.tint(ACCENT));
+        addDrawable(skin, "progress-fill", pixel.tint(accent));
     }
 
     private static void addDrawable(Skin skin, String name, Drawable drawable) {
@@ -142,19 +230,25 @@ public final class DefaultSkin {
         skin.add(name, drawable, Drawable.class);
     }
 
-    private static void addStyles(Skin skin, BitmapFont font, TextureRegionDrawable pixel) {
-        LabelStyle label = new LabelStyle(font, TEXT);
+    private static void addStyles(Skin skin, BitmapFont font, TextureRegionDrawable pixel,
+            java.util.Map<String, String> palette) {
+        Color text = Color.valueOf(palette.get("text"));
+        Color muted = Color.valueOf(palette.get("muted"));
+        Color accent = Color.valueOf(palette.get("accent"));
+        Color accentOver = Color.valueOf(palette.get("accent-over"));
+        Color accentDown = Color.valueOf(palette.get("accent-down"));
+        LabelStyle label = new LabelStyle(font, text);
         skin.add("label", label);
         skin.add("default", label);
 
         TextButtonStyle button = new TextButtonStyle();
-        button.up = pixel.tint(ACCENT);
-        button.down = pixel.tint(ACCENT_DOWN);
-        button.over = pixel.tint(ACCENT_OVER);
-        button.checked = pixel.tint(ACCENT_DOWN);
+        button.up = pixel.tint(accent);
+        button.down = pixel.tint(accentDown);
+        button.over = pixel.tint(accentOver);
+        button.checked = pixel.tint(accentDown);
         button.disabled = skin.getDrawable("button-disabled");
         button.font = font;
-        button.fontColor = Color.valueOf("10202aff");
+        button.fontColor = text;
         skin.add("button", button);
         skin.add("default", button);
 
@@ -166,16 +260,16 @@ public final class DefaultSkin {
         checkBox.checkboxOffDisabled = skin.getDrawable("checkbox-off-disabled");
         checkBox.checkboxOnDisabled = skin.getDrawable("checkbox-on-disabled");
         checkBox.font = font;
-        checkBox.fontColor = TEXT;
-        checkBox.disabledFontColor = MUTED;
+        checkBox.fontColor = text;
+        checkBox.disabledFontColor = muted;
         skin.add("checkbox", checkBox);
         skin.add("default", checkBox);
 
         TextFieldStyle field = new TextFieldStyle();
         field.font = font;
-        field.fontColor = TEXT;
+        field.fontColor = text;
         field.messageFont = font;
-        field.messageFontColor = MUTED;
+        field.messageFontColor = muted;
         field.background = skin.getDrawable("field");
         field.focusedBackground = skin.getDrawable("field-focused");
         field.disabledBackground = skin.getDrawable("field-disabled");
@@ -186,7 +280,7 @@ public final class DefaultSkin {
 
         WindowStyle window = new WindowStyle();
         window.titleFont = font;
-        window.titleFontColor = TEXT;
+        window.titleFontColor = text;
         window.background = skin.getDrawable("window");
         skin.add("window", window);
         skin.add("default", window);
@@ -203,7 +297,7 @@ public final class DefaultSkin {
         ListStyle list = new ListStyle();
         list.font = font;
         list.fontColorSelected = Color.valueOf("10202aff");
-        list.fontColorUnselected = TEXT;
+        list.fontColorUnselected = text;
         list.selection = skin.getDrawable("selection");
         list.background = skin.getDrawable("scroll-bg");
         skin.add("list", list);
@@ -220,7 +314,7 @@ public final class DefaultSkin {
 
         SelectBoxStyle selectBox = new SelectBoxStyle();
         selectBox.font = font;
-        selectBox.fontColor = TEXT;
+        selectBox.fontColor = text;
         selectBox.background = skin.getDrawable("field");
         selectBox.backgroundOver = skin.getDrawable("field-focused");
         selectBox.backgroundOpen = skin.getDrawable("field-focused");

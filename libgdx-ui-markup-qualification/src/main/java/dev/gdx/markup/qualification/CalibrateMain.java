@@ -10,11 +10,10 @@ public final class CalibrateMain {
     private CalibrateMain() {
     }
 
-    /** Runs calibration; requires the four qualification system properties. */
+    /** Runs calibration; requires the three qualification system properties. */
     public static void main(String[] args) {
         try (QualificationRunner runner = new QualificationRunner(
                 property("markup.qualification.corpus"),
-                property("markup.qualification.cache"),
                 property("markup.preview.distribution"),
                 property("markup.qualification.output"))) {
             runner.calibrate();

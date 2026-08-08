@@ -596,6 +596,9 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
     }
 
     private void takeScreenshot() {
+        // The OpenGL framebuffer origin is bottom-left, so the raw capture is vertically
+        // flipped; qualification compares recreations against upright references, so the
+        // PNG must be upright too.
         Pixmap pixmap = Pixmap.createFromFrameBuffer(0, 0,
                 Gdx.graphics.getBackBufferWidth(), Gdx.graphics.getBackBufferHeight());
         try {

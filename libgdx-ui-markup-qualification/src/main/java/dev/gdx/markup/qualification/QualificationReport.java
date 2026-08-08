@@ -9,8 +9,18 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
-/** Bounded per-entry qualification outcome and its JSON report. */
+/**
+ * Bounded per-entry qualification outcome and its JSON report.
+ *
+ * <p>Schema version 2 serializes every multi-signal score ({@code coarseLayout}, {@code
+ * geometry}, {@code color}, {@code detail}), every committed threshold, the cell counts, the
+ * verdict, and the exact failed dimensions, so a failing gate can name which visual dimension
+ * regressed without any re-derivation.
+ */
 public final class QualificationReport {
+    /** Report schema version; bumped when the serialized shape changes. */
+    public static final int SCHEMA_VERSION = 2;
+
     private static final ObjectMapper JSON = new ObjectMapper();
 
     /** Stable verdict taxonomy: PASS/FAIL gate CI; skips are environment gaps, not failures. */
@@ -23,20 +33,30 @@ public final class QualificationReport {
         SKIPPED_RENDER,
     }
 
-    /** One corpus entry outcome. */
+    /** One corpus entry outcome: score, thresholds, verdict, failed dimensions, staleness. */
     public record EntryResult(
             String id,
             String license,
-            double threshold,
-            double dice,
-            int referenceCells,
-            int recreationCells,
-            Verdict verdict) {
+            FidelityScore score,
+            FidelityThresholds thresholds,
+            Verdict verdict,
+            List<FidelityComponent> failedDimensions,
+            boolean stale) {
+
+        /** Defensively copies the failed-dimension list so results stay immutable. */
+        public EntryResult {
+            failedDimensions = List.copyOf(failedDimensions);
+        }
+
+        /** Returns whether every required component met its threshold. */
+        public boolean passed() {
+            return verdict == Verdict.PASS && failedDimensions.isEmpty();
+        }
     }
 
     private final List<EntryResult> results;
 
-    /** Wraps the bounded result list. */
+    /** Wraps the bounded result list, preserving corpus order. */
     public QualificationReport(List<EntryResult> results) {
         this.results = List.copyOf(results);
     }
@@ -54,20 +74,34 @@ public final class QualificationReport {
                 .count();
     }
 
-    /** Writes the bounded JSON report (one array node per entry). */
+    /** Writes the bounded schema-v2 JSON report (one object node per entry). */
     public void writeJson(Path reportFile) {
         try {
             ObjectNode root = JSON.createObjectNode();
-            root.put("schemaVersion", 1);
+            root.put("schemaVersion", SCHEMA_VERSION);
             ArrayNode entries = root.putArray("entries");
             for (EntryResult result : results) {
                 ObjectNode node = entries.addObject();
                 node.put("id", result.id());
                 node.put("verdict", result.verdict().name());
-                node.put("dice", result.dice());
-                node.put("threshold", result.threshold());
-                node.put("referenceCells", result.referenceCells());
-                node.put("recreationCells", result.recreationCells());
+                node.put("stale", result.stale());
+                FidelityScore score = result.score();
+                node.put("coarseLayout", round6(score.coarseLayout()));
+                node.put("geometry", round6(score.geometry()));
+                node.put("color", round6(score.color()));
+                node.put("detail", round6(score.detail()));
+                node.put("referenceCells", score.referenceCells());
+                node.put("recreationCells", score.recreationCells());
+                ObjectNode thresholds = node.putObject("thresholds");
+                thresholds.put("geometry", round6(result.thresholds().geometry()));
+                thresholds.put("color", round6(result.thresholds().color()));
+                thresholds.put("detail", round6(result.thresholds().detail()));
+                result.thresholds().coarseBaseline().ifPresent(
+                        coarse -> thresholds.put("coarseLayout", round6(coarse)));
+                ArrayNode failed = node.putArray("failedDimensions");
+                for (FidelityComponent component : result.failedDimensions()) {
+                    failed.add(component.name());
+                }
                 node.put("license", result.license());
             }
             Files.createDirectories(reportFile.getParent());
@@ -84,12 +118,21 @@ public final class QualificationReport {
         StringBuilder out = new StringBuilder();
         for (EntryResult result : results) {
             out.append("qualification: ").append(result.id()).append(' ')
-                    .append(result.verdict().name()).append(" dice=")
-                    .append(compact(result.dice())).append(" threshold=")
-                    .append(compact(result.threshold()));
+                    .append(result.verdict().name());
             if (result.verdict() == Verdict.PASS || result.verdict() == Verdict.FAIL) {
-                out.append(" cells=").append(result.referenceCells()).append('/')
-                        .append(result.recreationCells());
+                FidelityScore score = result.score();
+                out.append(" geometry=").append(compact(score.geometry()))
+                        .append(" color=").append(compact(score.color()))
+                        .append(" detail=").append(compact(score.detail()))
+                        .append(" thresholds=")
+                        .append(compact(result.thresholds().geometry())).append('/')
+                        .append(compact(result.thresholds().color())).append('/')
+                        .append(compact(result.thresholds().detail()))
+                        .append(" cells=").append(score.referenceCells()).append('/')
+                        .append(score.recreationCells());
+                if (!result.failedDimensions().isEmpty()) {
+                    out.append(" failed=").append(result.failedDimensions());
+                }
             }
             out.append('\n');
         }
@@ -98,6 +141,11 @@ public final class QualificationReport {
                 .append(results.stream().filter(r -> r.verdict() == Verdict.FAIL).count())
                 .append(" failed\n");
         return out.toString();
+    }
+
+    /** Rounds to six decimals so repeated writes are byte-identical. */
+    private static double round6(double value) {
+        return Math.round(value * 1_000_000.0) / 1_000_000.0;
     }
 
     private static String compact(double value) {

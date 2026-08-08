@@ -88,7 +88,7 @@ jobs:
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
       - name: Install Linux virtual display
         run: sudo apt-get update && sudo apt-get install --yes xvfb
-      - name: Run the game-UI qualification
+      - name: Run the game-UI qualification (strict multi-signal gate)
         run: xvfb-run -a ./gradlew :libgdx-ui-markup-qualification:test -PstrictQualification=true --warning-mode=fail
       - name: Retain qualification evidence
         if: failure()
@@ -99,6 +99,9 @@ jobs:
           retention-days: 14
           path: |
             libgdx-ui-markup-qualification/build/qualification/**
+            libgdx-ui-markup-qualification/build/test-results/**
+            libgdx-ui-markup-qualification/corpus/**
+            libgdx-ui-markup-qualification/src/test/resources/negative/**
             **/build/test-results/**
 
   supply-chain:

@@ -1,0 +1,13 @@
+{
+  "background": "#211008ff",
+  "panel": "#211818ff",
+  "panel-alt": "#285118ff",
+  "accent": "#c4933bff",
+  "accent-over": "#e0b65bff",
+  "accent-down": "#8d6728ff",
+  "text": "#e5dcc5ff",
+  "muted": "#b1a58aff",
+  "field-focused": "#344848ff",
+  "selection": "#455448ff",
+  "disabled": "#5b5b5bff"
+}

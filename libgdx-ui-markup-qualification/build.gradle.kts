@@ -4,8 +4,6 @@ dependencies {
 
 val qualificationProperties = mapOf(
     "markup.qualification.corpus" to layout.projectDirectory.dir("corpus").asFile.absolutePath,
-    "markup.qualification.cache" to
-        layout.buildDirectory.dir("qualification/reference-images").get().asFile.absolutePath,
     "markup.qualification.output" to
         layout.buildDirectory.dir("qualification/output").get().asFile.absolutePath,
     "markup.preview.distribution" to project(":libgdx-ui-markup-preview").layout.buildDirectory

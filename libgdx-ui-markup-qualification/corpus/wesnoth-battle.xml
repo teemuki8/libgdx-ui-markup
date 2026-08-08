@@ -1,44 +1,77 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Recreation of the Battle for Wesnoth gameplay layout: a quiet map area with unit labels
-     and HP bars, and a right-hand terrain/unit sidebar with an XP bar. -->
+<!-- Recreates the Wesnoth battle HUD: a dense green battlefield dominates the canvas,
+     framed by a narrow bronze command strip, dark minimap/sidebar, and bottom turn control. -->
 <ui>
-  <table id="root" width="1280" height="720">
-    <row/>
-    <table id="map" fill="true" expand="true" pad="10" align="left top">
+  <table id="root" width="1280" height="720" class="backdrop" pad="0">
+    <table id="command-bar" class="panel" width="1280" height="22" pad="2" colspan="3" align="left center">
       <row/>
-      <label id="unit-label" text="Elvish Archer (21/21 HP)"/>
-      <row/>
-      <progressbar id="unit-hp" min="0" max="21" value="21" width="200" height="14"/>
-      <row/>
-      <table id="spacer-1" height="140"/>
-      <row/>
-      <label id="enemy-label" text="Orcish Grunt (12/12 HP)"/>
-      <row/>
-      <progressbar id="enemy-hp" min="0" max="12" value="12" width="200" height="14"/>
-      <row/>
-      <table id="spacer-2" height="180"/>
-      <row/>
-      <label id="village-label" text="Village (0 gold)"/>
-      <row/>
-      <table id="spacer-3" height="120"/>
-      <row/>
-      <label id="gold-label" text="Gold: 42"/>
+      <button id="menu" text="Menu" name="Menu" width="72" height="18"/>
+      <button id="actions" text="Actions" name="Actions" width="82" height="18"/>
+      <label id="turn-gold" class="title" text="SWORD 7     GOLD 6     VILLAGES 8/16     INCOME +18     TIME 20:01" width="700"/>
     </table>
-    <table id="sidebar" class="panel" width="230" fill="true" pad="12" align="center center">
+    <row/>
+    <label id="map-gutter" text="." width="60" height="698" class="backdrop"/>
+    <table id="battlefield-frame" width="1090" height="698" pad="0">
       <row/>
-      <label id="side-title" class="title" text="Terrain"/>
+      <table id="battlefield" class="panel-alt" width="1090" height="698" pad="8" align="left top">
+        <table width="1134" height="104" pad="3">
+          <table class="panel-alt" width="378" height="98" pad="4"><label id="ridge-1" class="heading" text="^ ^ ^   ^ ^" width="350" align="left"/><row/><label id="forest-1" class="section" text="##  ###  . . ." width="350" align="right"/><row/><label class="section" text=". . ^ ^ . ." width="350" align="center"/></table>
+          <table class="disabled-bg" width="378" height="98" pad="4"><label id="castle-north-text" class="heading" text="[==] CASTLE [==]" width="350" align="center"/><row/><label id="castle-gate" class="section" text="[__] . . ." width="350" align="left"/><row/><label class="heading" text="^ ^ ^   ^ ^" width="350" align="right"/></table>
+          <table class="field-focused-bg" width="378" height="98" pad="4"><label id="river-west-text" class="section" text="~  ~  ~  ~  ~" width="350" align="left"/><row/><label class="section" text="~ ~ ~ ~ ~ ~" width="350" align="right"/><row/><label class="heading" text=". . ~ ~ . ." width="350" align="center"/></table>
+        </table>
+        <row/>
+        <table width="1134" height="104" pad="3">
+          <table class="selection-bg" width="378" height="98" pad="4"><label id="forest-2" class="section" text="###  ^ ^ ^  ####" width="350" align="left"/><row/><label class="section" text=". . ##  ^ ^" width="350" align="right"/><row/><label class="heading" text="^ ^  ##  ^ ^" width="350" align="center"/></table>
+          <table class="panel-alt" width="378" height="98" pad="4"><label id="red-units" class="title" text="FLAG  FLAG" width="350" align="center"/><row/><label id="battle-line" class="heading" text="5   X X   5" width="350" align="left"/><row/><label class="section" text=". .  X  . ." width="350" align="right"/></table>
+          <table class="field-focused-bg" width="378" height="98" pad="4"><label id="river-east-text" class="section" text="~  ~  ~  ~" width="350" align="right"/><row/><label class="section" text="~ ~ ~ ~ ~" width="350" align="left"/><row/><label class="heading" text=". ~ ~ . ~" width="350" align="center"/></table>
+        </table>
+        <row/>
+        <table width="1134" height="104" pad="3">
+          <table class="selection-bg" width="280" height="98" pad="4"><label class="section" text="##  ^ ^  ##" width="250" align="left"/><row/><label class="heading" text=". . X . ." width="250" align="right"/><row/><label class="section" text="^ ^  ###" width="250" align="center"/></table>
+          <table class="panel-alt" width="570" height="98" pad="4"><label id="unit-label" class="title" text="X Elvish Archer  21/21 HP" width="540" align="center"/><row/><progressbar id="unit-hp" min="0" max="21" value="21" width="260" height="12"/><row/><label id="enemy-label" class="title" text="Orcish Grunt  12/12 HP" width="540" align="center"/><row/><progressbar id="enemy-hp" min="0" max="12" value="12" width="220" height="12"/></table>
+          <table class="field-focused-bg" width="284" height="98" pad="4"><label class="section" text="~ ~  . . ~" width="250" align="right"/><row/><label class="heading" text=". X . ~ ~" width="250" align="left"/><row/><label class="section" text="~ ~  ^ ^" width="250" align="center"/></table>
+        </table>
+        <row/>
+        <row/>
+        <row/>
+        <table width="1134" height="104" pad="3">
+          <table class="panel" width="378" height="98" pad="4"><label id="village-west-text" class="heading" text="V  VILLAGE" width="350" align="center"/><row/><label id="village-west-gold" class="section" text="income +2" width="350" align="left"/><row/><label class="section" text=". . V . ." width="350" align="right"/></table>
+          <table class="disabled-bg" width="378" height="98" pad="4"><label class="heading" text="^ ^ ^   ###" width="350" align="left"/><row/><label class="section" text="###  ^ ^" width="350" align="right"/><row/><label class="heading" text="^ . ^ . ^" width="350" align="center"/></table>
+          <table class="selection-bg" width="378" height="98" pad="4"><label class="section" text="##  . .  ^ ^" width="350" align="right"/><row/><label class="section" text=". . ## ##" width="350" align="left"/><row/><label class="heading" text="^ ^ . . ^" width="350" align="center"/></table>
+        </table>
+        <row/>
+        <table width="1134" height="104" pad="3">
+          <table class="selection-bg" width="378" height="98" pad="4"><label id="forest-3" class="section" text="####  ^ ^  ##" width="350" align="right"/><row/><label class="section" text="## . . ^ ^" width="350" align="left"/><row/><label class="heading" text="^ ^ ^  ###" width="350" align="center"/></table>
+          <table class="panel-alt" width="378" height="98" pad="4"><progressbar id="frontline-hp" min="0" max="100" value="72" width="280" height="14"/><row/><label id="ridge-2" class="heading" text="^ ^  ###  ^ ^" width="350" align="center"/><row/><label class="section" text=". . X X . ." width="350" align="left"/></table>
+          <table class="field-focused-bg" width="378" height="98" pad="4"><label id="river-south-text" class="section" text="~  ~  ~  ~  ~" width="350" align="left"/><row/><label class="section" text="~ ~ ~ ~ ~ ~" width="350" align="right"/><row/><label class="heading" text=". . ~ ~ . ." width="350" align="center"/></table>
+        </table>
+        <row/>
+        <row/>
+        <table width="1134" height="36" pad="3"><label id="battlefield-status" class="heading" text="Maaf · Dune Rider · HP 31/39 · MP 0/7" align="center"/></table>
+    </table>
+    </table>
+    <table id="sidebar" class="panel" width="130" height="698" pad="6" align="left top">
       <row/>
-      <label id="terrain-forest" text="Forest (defense 60%)"/>
+      <label id="minimap" class="panel-alt" text=". . . . .\n.  o  . o\n. . ^ . .\no . .  F .\n. . . . ." width="112" height="120" align="center"/>
       <row/>
-      <label id="terrain-village" text="Village (income +2)"/>
+      <label id="clock" class="title" text="20:10" width="112" height="24" align="center"/>
       <row/>
-      <label id="terrain-mountain" text="Mountains (defense 70%)"/>
+      <label id="terrain-title" class="title" text="Road (flat)" width="112" height="24"/>
       <row/>
-      <label id="unit-info" text="Unit: Elvish Archer"/>
+      <label id="terrain-detail" class="section" text="defense 40%\nmove cost 1" width="112" height="38"/>
       <row/>
-      <progressbar id="unit-xp" min="0" max="100" value="65" width="180" height="14"/>
+      <label id="unit-info" class="heading" text="Maaf" width="112" height="24"/>
       <row/>
-      <label id="turn-info" text="Turn 3 — Player 1"/>
+      <label id="unit-detail" class="section" text="Dune Rider\nHP 31/39\nXP 8/24\nMP 0/7" width="112" height="70"/>
+      <row/>
+      <progressbar id="unit-xp" min="0" max="24" value="8" width="108" height="12"/>
+      <row/>
+      <label id="attack-title" class="heading" text="Attacks" width="112" height="22"/>
+      <row/>
+      <label id="attack-detail" class="section" text="5×2 mace\n7×3 composite bow" width="112" height="46"/>
+      <row/>
+      <label id="status" class="section" text="Player 1 · Turn 3" width="112" align="left"/>
+      <button id="end-turn" text="End Turn" name="End turn" width="112" height="20"/>
     </table>
   </table>
 </ui>
