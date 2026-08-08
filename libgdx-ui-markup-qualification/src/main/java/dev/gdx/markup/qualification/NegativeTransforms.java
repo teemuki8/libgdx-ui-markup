@@ -182,16 +182,38 @@ final class NegativeTransforms {
         return out;
     }
 
-    /** All five negatives in a stable order, for calibration and fixture generation. */
+    /**
+     * Spatial color inversion: the left and right halves are exchanged. The global color
+     * histogram is unchanged (the same colors in the same counts) and the gray structure is
+     * preserved for equal-luma region pairs, so only the cell-local color component can
+     * detect it — the calibration treats it as a COLOR negative so a spatial color
+     * inversion can never pass a low threshold.
+     */
+    static BufferedImage swapRegions(BufferedImage source) {
+        int width = source.getWidth();
+        int height = source.getHeight();
+        int half = width / 2;
+        BufferedImage out = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int sx = x < half ? x + half : x - half;
+                out.setRGB(x, y, source.getRGB(sx, y));
+            }
+        }
+        return out;
+    }
+
+    /** All six negatives in a stable order, for calibration and fixture generation. */
     static BufferedImage[] all(BufferedImage source) {
         return new BufferedImage[] {
-            flip(source), translate(source), hueRotate(source), blur(source), scale(source),
+            flip(source), translate(source), hueRotate(source), blur(source),
+            scale(source), swapRegions(source),
         };
     }
 
     /** Human-readable names aligned with {@link #all}. */
     static String[] names() {
-        return new String[] {"flip", "translate", "hue", "blur", "scale"};
+        return new String[] {"flip", "translate", "hue", "blur", "scale", "color-swap"};
     }
 
     private static int clampIndex(int index, int length) {

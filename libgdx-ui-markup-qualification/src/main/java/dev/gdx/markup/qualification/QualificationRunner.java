@@ -316,7 +316,7 @@ public final class QualificationRunner implements AutoCloseable {
             if ("flip".equals(name) || "translate".equals(name) || "scale".equals(name)) {
                 geometryNegatives.add(negativeScore.geometry());
             }
-            if ("hue".equals(name)) {
+            if ("hue".equals(name) || "color-swap".equals(name)) {
                 colorNegatives.add(negativeScore.color());
             }
             if ("blur".equals(name) || "scale".equals(name)) {

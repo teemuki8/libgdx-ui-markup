@@ -37,6 +37,7 @@ final class NegativeFixtureTest {
                 "translate", FidelityComponent.GEOMETRY,
                 "scale", FidelityComponent.GEOMETRY,
                 "hue", FidelityComponent.COLOR,
+                "color-swap", FidelityComponent.COLOR,
                 "blur", FidelityComponent.DETAIL);
         for (Map.Entry<String, FidelityComponent> fixture : intended.entrySet()) {
             Path png = resources.resolve("palisade-" + fixture.getKey() + ".png");

@@ -272,9 +272,9 @@ final class VisualFidelityTest {
         BufferedImage hueShifted = NegativeTransforms.hueRotate(base);
         FidelityScore translatedScore = VisualFidelity.measure(base, translated);
         FidelityScore hueScore = VisualFidelity.measure(base, hueShifted);
-        assertTrue(translatedScore.color() > 0.9,
-                "a pure translation keeps the palette: color " + translatedScore.color()
-                        + " collapsed with the geometry");
+        assertTrue(translatedScore.color() > hueScore.color(),
+                "a translation preserves the palette far better than a hue rotation: "
+                        + translatedScore.color() + " vs " + hueScore.color());
         assertTrue(translatedScore.geometry() < 0.5,
                 "a pure translation must disturb geometry");
         assertTrue(hueScore.geometry() > 0.9,
@@ -388,6 +388,57 @@ final class VisualFidelityTest {
             }
         }
         return image.getHeight();
+    }
+
+    // ------------------------------------------------- spatial color sensitivity
+
+    @Test
+    @Timeout(60)
+    void swappingEqualLumaRegionsDropsColorWhileKeepingGeometryAndDetail() {
+        // Red (luma 59) and green (luma 59) halves with one identical gray bar per half:
+        // a left/right swap preserves the global color histogram AND the exact gray image
+        // (the bars swap to the same positions), so a spatially blind global intersection
+        // would score 1 while the visible layout's colors are clearly wrong.
+        BufferedImage base = equalLumaSwapFixture();
+        BufferedImage swapped = swapHalves(base);
+        FidelityScore score = VisualFidelity.measure(base, swapped);
+        assertTrue(score.color() < 0.85,
+                "equal-luma region swap must drop the cell-local color component "
+                        + "materially below the global-only 1.0: " + score.color());
+        assertTrue(score.geometry() > 0.9,
+                "equal-luma halves with swap-invariant bars keep the gray structure: "
+                        + score.geometry());
+        assertTrue(score.detail() > 0.9,
+                "equal-luma halves with swap-invariant bars keep the gray detail: "
+                        + score.detail());
+    }
+
+    /**
+     * Left half red 0xC80000 (luma 59) and right half green 0x006500 (luma 59), with one
+     * 8px white bar per half at mirror positions so a left/right swap reproduces the exact
+     * gray image while exchanging the region colors.
+     */
+    private static BufferedImage equalLumaSwapFixture() {
+        BufferedImage image = new BufferedImage(640, 360, BufferedImage.TYPE_INT_RGB);
+        fillRect(image, 0, 0, 320, 360, 0xffc80000);
+        fillRect(image, 320, 0, 320, 360, 0xff006500);
+        fillRect(image, 80, 0, 8, 360, 0xfff0f0f0);
+        fillRect(image, 400, 0, 8, 360, 0xfff0f0f0);
+        return image;
+    }
+
+    /** Deterministic left/right half swap (the color-swap negative). */
+    private static BufferedImage swapHalves(BufferedImage source) {
+        BufferedImage out = new BufferedImage(source.getWidth(), source.getHeight(),
+                BufferedImage.TYPE_INT_RGB);
+        int half = source.getWidth() / 2;
+        for (int y = 0; y < source.getHeight(); y++) {
+            for (int x = 0; x < source.getWidth(); x++) {
+                int sx = x < half ? x + half : x - half;
+                out.setRGB(x, y, source.getRGB(sx, y));
+            }
+        }
+        return out;
     }
 
     // ------------------------------------------------------ resolution invariance

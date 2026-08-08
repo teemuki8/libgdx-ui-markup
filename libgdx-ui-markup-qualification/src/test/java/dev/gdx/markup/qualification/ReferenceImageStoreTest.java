@@ -173,6 +173,63 @@ final class ReferenceImageStoreTest {
     }
 
     /**
+     * Transport whose exchanges block until {@link #release()} and whose {@link #close()}
+     * does NOT unblock them: it models a transport whose abort cannot release an in-flight
+     * exchange, so the fetch owner stays active past the close drain deadline.
+     */
+    private static final class StubbornTransport implements ReferenceImageStore.Transport {
+        private final CountDownLatch release = new CountDownLatch(1);
+        private final ReferenceImageStore.Response response;
+        private final List<URI> requested = new ArrayList<>();
+
+        StubbornTransport(ReferenceImageStore.Response response) {
+            this.response = response;
+        }
+
+        int requestCount() {
+            return requested.size();
+        }
+
+        void release() {
+            release.countDown();
+        }
+
+        @Override
+        public ReferenceImageStore.Response get(URI uri, List<InetAddress> approved)
+                throws IOException {
+            requested.add(uri);
+            try {
+                release.await();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IOException("interrupted", interrupted);
+            }
+            return response;
+        }
+
+        @Override
+        public void close() {
+            // Deliberately does not release the in-flight exchange.
+        }
+    }
+
+    /**
+     * Clock that alternates: even reads report 0, odd reads report 31s, so the store's close
+     * drain wait always observes an already-expired deadline and times out without waiting.
+     */
+    private static ReferenceImageStore.Clock alternatingExpiringClock() {
+        return new ReferenceImageStore.Clock() {
+            private int calls;
+
+            @Override
+            public long nanoTime() {
+                calls++;
+                return calls % 2 == 0 ? 0L : TimeUnit.SECONDS.toNanos(31);
+            }
+        };
+    }
+
+    /**
      * Scripted transport whose exchanges block until {@link #release()} (or {@link #close()},
      * which aborts in-flight exchanges the same way the store's close does). Concurrent tests
      * use it to deterministically park every caller before the fetch completes.
@@ -1130,6 +1187,56 @@ final class ReferenceImageStoreTest {
             assertEquals(1, transport.requestCount(),
                     "the shared typed failure must be fetched exactly once");
         }
+    }
+
+    @Test
+    void closeKeepsFailingWhileAnOwnerSurvivesThenSucceedsWhenDrained() throws Exception {
+        String url = "https://" + ALLOWED_HOST + "/ref.png";
+        StubbornTransport transport = new StubbornTransport(ok(PNG_2X2));
+        ReferenceImageStore store = new ReferenceImageStore(transport, publicResolver(),
+                Set.of(ALLOWED_HOST), alternatingExpiringClock(),
+                ReferenceImageStore.CacheLimits.DEFAULT);
+        CorpusEntry entry = canonicalEntry(url);
+        java.util.concurrent.atomic.AtomicReference<Throwable> ownerOutcome =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Thread owner = Thread.ofVirtual().start(() -> {
+            try {
+                store.reference(entry);
+                ownerOutcome.set(new AssertionError("unexpected result after close"));
+            } catch (Throwable failure) {
+                ownerOutcome.set(failure);
+            }
+        });
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (transport.requestCount() == 0 && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertEquals(1, transport.requestCount(),
+                "the fetch owner must be parked inside the transport");
+        // The first close times out with the owner still active: it must fail loudly.
+        ReferenceException first = assertThrows(ReferenceException.class, store::close);
+        assertEquals(ReferenceException.Kind.IO, first.kind());
+        assertTrue(first.getCause() != null
+                        && first.getCause().getMessage().contains("did not drain"),
+                "the first close must name the undrained owners: " + first);
+        // A second close while the owner is STILL alive must keep failing — a prior
+        // timed-out close must never let a later close silently succeed.
+        ReferenceException second = assertThrows(ReferenceException.class, store::close);
+        assertEquals(ReferenceException.Kind.IO, second.kind());
+        assertTrue(second.getCause() != null
+                        && second.getCause().getMessage().contains("did not drain"),
+                "the retry close must still report the undrained owners: " + second);
+        // Release the owner: it finishes with the typed CLOSED outcome and drains.
+        transport.release();
+        owner.join(10_000);
+        assertClosedOutcome(ownerOutcome.get(), "the fetch owner");
+        // A later close now confirms every owner drained: idempotent terminal success.
+        store.close();
+        assertEquals(0, store.cachedEntryCount(),
+                "close must keep the cache empty after terminal success");
+        assertThrows(IllegalStateException.class, () -> store.reference(entry),
+                "no active work may remain after terminal close");
+        assertFalse(owner.isAlive(), "the fetch owner must have ended");
     }
 
     @Test

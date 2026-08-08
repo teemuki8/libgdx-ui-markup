@@ -288,25 +288,66 @@ public final class VisualFidelity {
 
     // --------------------------------------------------------------------- color
 
+    /** Color grid geometry: 8x5 cells over the fixed analysis canvas. */
+    static final int COLOR_GRID_COLS = 8;
+    static final int COLOR_GRID_ROWS = 5;
+
     /**
-     * Quantized RGB histogram intersection over normalized bin proportions:
-     * {@code sum min(histA[i]/totalA, histB[i]/totalB)}. Normalizing by each image's own
-     * total makes the score invariant to resolution — a reference subsampled to 960x540 and
-     * a recreation rendered at 1280x720 with identical color proportions intersect to 1.0
-     * instead of being capped by the raw-count ratio (0.5625). A hue-rotated or re-paletted
-     * recreation still drops because its bin proportions move.
+     * Color fidelity: half global and half cell-local quantized histogram intersection over
+     * normalized bin proportions. The global term catches palette shifts (hue rotation); the
+     * cell-local term (mean over an 8x5 grid, reusing two fixed 4096-int buffers) catches
+     * spatial color inversions — e.g. equal-luma red/green regions swapped left/right keep
+     * the global histogram and the gray structure identical while the visible layout's
+     * colors are plainly wrong.
      */
     private static double color(Pixels a, Pixels b) {
+        return 0.5 * globalColor(a, b) + 0.5 * cellColor(a, b);
+    }
+
+    /** Whole-image 4-bit histogram intersection over normalized bin proportions. */
+    private static double globalColor(Pixels a, Pixels b) {
         int bins = 1 << (3 * COLOR_BITS);
         int[] histA = new int[bins];
         int[] histB = new int[bins];
-        long totalA = fillHistogram(a, histA);
-        long totalB = fillHistogram(b, histB);
-        if (totalA == 0 || totalB == 0) {
-            return 0.0;
+        long totalA = fillHistogram(a, histA, 0, a.width(), 0, a.height());
+        long totalB = fillHistogram(b, histB, 0, b.width(), 0, b.height());
+        return intersection(histA, totalA, histB, totalB);
+    }
+
+    /** Mean per-cell histogram intersection over the bounded coarse color grid. */
+    private static double cellColor(Pixels a, Pixels b) {
+        int bins = 1 << (3 * COLOR_BITS);
+        int[] histA = new int[bins];
+        int[] histB = new int[bins];
+        double total = 0;
+        long counted = 0;
+        for (int row = 0; row < COLOR_GRID_ROWS; row++) {
+            int ay0 = row * a.height() / COLOR_GRID_ROWS;
+            int ay1 = (row + 1) * a.height() / COLOR_GRID_ROWS;
+            int by0 = row * b.height() / COLOR_GRID_ROWS;
+            int by1 = (row + 1) * b.height() / COLOR_GRID_ROWS;
+            for (int col = 0; col < COLOR_GRID_COLS; col++) {
+                int ax0 = col * a.width() / COLOR_GRID_COLS;
+                int ax1 = (col + 1) * a.width() / COLOR_GRID_COLS;
+                int bx0 = col * b.width() / COLOR_GRID_COLS;
+                int bx1 = (col + 1) * b.width() / COLOR_GRID_COLS;
+                java.util.Arrays.fill(histA, 0);
+                java.util.Arrays.fill(histB, 0);
+                long totalA = fillHistogram(a, histA, ax0, ax1, ay0, ay1);
+                long totalB = fillHistogram(b, histB, bx0, bx1, by0, by1);
+                if (totalA > 0 && totalB > 0) {
+                    total += intersection(histA, totalA, histB, totalB);
+                    counted++;
+                }
+            }
         }
+        return counted == 0 ? 1.0 : total / counted;
+    }
+
+    /** Normalized-proportion histogram intersection of two counted histograms. */
+    private static double intersection(int[] histA, long totalA, int[] histB, long totalB) {
         double intersection = 0;
-        for (int i = 0; i < bins; i++) {
+        for (int i = 0; i < histA.length; i++) {
             double shareA = histA[i] / (double) totalA;
             double shareB = histB[i] / (double) totalB;
             intersection += Math.min(shareA, shareB);
@@ -314,12 +355,14 @@ public final class VisualFidelity {
         return intersection;
     }
 
-    private static long fillHistogram(Pixels pixels, int[] histogram) {
+    /** Fills the 4-bit quantized histogram of one bounded region of the pixels. */
+    private static long fillHistogram(Pixels pixels, int[] histogram, int x0, int x1,
+            int y0, int y1) {
         long total = 0;
-        for (int y = 0; y < pixels.height(); y++) {
-            for (int x = 0; x < pixels.width(); x++) {
+        int shift = 8 - COLOR_BITS;
+        for (int y = y0; y < y1; y++) {
+            for (int x = x0; x < x1; x++) {
                 int rgb = pixels.rgb(x, y);
-                int shift = 8 - COLOR_BITS;
                 int r = ((rgb >> 16) & 0xff) >> shift;
                 int g = ((rgb >> 8) & 0xff) >> shift;
                 int b = (rgb & 0xff) >> shift;
