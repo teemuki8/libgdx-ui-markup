@@ -732,6 +732,89 @@ final class RunnerDeadlineTest {
     }
 
     @Test
+    @Timeout(40)
+    void unjoinedDrainSuppressesTheInFlightDeadlineFailure() throws Exception {
+        Fixture fixture = corpus();
+        RealtimeMutableClock clock = new RealtimeMutableClock();
+        // The child does not finish within the run budget and only dies on force, so a
+        // DeadlineExceededException is in flight when the wedged stdio drains then fail the
+        // render fatal; the drain fatal must suppress, not replace, that in-flight failure.
+        ScriptedProcess child = ScriptedProcess.scripted(clock,
+                ScriptedProcess.Behavior.EXITS_ON_FORCE, 30 * SECOND);
+        child.wedgeDrains();
+        ScriptedLauncher launcher = new ScriptedLauncher(List.of(child));
+        QualificationRunner runner = runner(fixture, clock, launcher, Duration.ofSeconds(2),
+                new WorkBudget(8, 1_000_000, 100));
+        try {
+            UnkillableChildException fatal = assertThrows(UnkillableChildException.class,
+                    runner::run);
+            assertTrue(fatal.getMessage().contains("drain"),
+                    "the fatal must name the unjoined drain: " + fatal.getMessage());
+            boolean suppressedDeadline = false;
+            for (Throwable suppressed : fatal.getSuppressed()) {
+                if (suppressed instanceof DeadlineExceededException) {
+                    suppressedDeadline = true;
+                }
+            }
+            assertTrue(suppressedDeadline,
+                    "the in-flight deadline failure must be suppressed under the drain fatal");
+            child.releaseDrains();
+        } finally {
+            child.releaseDrains();
+            runner.close();
+        }
+    }
+
+    @Test
+    @Timeout(30)
+    void laterInvocationOnARunnerWithRetainedWorkIsRejected() throws Exception {
+        Fixture fixture = corpus();
+        MutableClock clock = new MutableClock();
+        ScriptedProcess unkillable = ScriptedProcess.scripted(clock,
+                ScriptedProcess.Behavior.NEVER_EXITS, 30 * SECOND);
+        ScriptedLauncher launcher = new ScriptedLauncher(List.of(unkillable));
+        QualificationRunner runner = runner(fixture, clock, launcher, Duration.ofSeconds(10),
+                new WorkBudget(8, 1_000_000, 100));
+        try {
+            assertThrows(UnkillableChildException.class, runner::run);
+            IllegalStateException rejected = assertThrows(IllegalStateException.class,
+                    runner::run);
+            assertTrue(rejected.getMessage().contains("unfinished"),
+                    "a later run must be rejected while owned work is retained: "
+                            + rejected.getMessage());
+            unkillable.release();
+            runner.close();
+            assertTrue(unkillable.exited(),
+                    "close() must confirm the retained child once it can die");
+        } finally {
+            runner.close();
+        }
+    }
+
+    @Test
+    @Timeout(30)
+    void joinDrainsNeverWaitsPastTheDeadline() throws Exception {
+        Fixture fixture = corpus();
+        ScriptedLauncher launcher = new ScriptedLauncher(List.of());
+        Thread wedged = Thread.ofPlatform().daemon().name("wedged-drain").start(() -> {
+            while (true) {
+                LockSupport.park();
+                Thread.interrupted();   // ignore cancellation on purpose
+            }
+        });
+        try (QualificationRunner runner = runner(fixture, System::nanoTime, launcher, HOUR,
+                new WorkBudget(8, 1_000_000, 100))) {
+            long deadline = System.nanoTime() + 1;   // less than a millisecond of budget
+            long start = System.nanoTime();
+            List<Thread> live = runner.joinDrains(List.of(wedged), deadline);
+            assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) < 5,
+                    "the join must not wait past the deadline");
+            assertEquals(List.of(wedged), live,
+                    "a drain that cannot be confirmed within the deadline stays retained");
+        }
+    }
+
+    @Test
     @Timeout(30)
     void zeroDeadlineRunReturnsABoundedEmptyReport() throws Exception {
         Fixture fixture = corpus();
