@@ -1116,8 +1116,13 @@ public final class ReferenceImageStore implements AutoCloseable {
             } catch (NumberFormatException failure) {
                 throw new IOException("malformed chunk size: " + sizeLine, failure);
             }
-            if (chunkSize < 0 || body.size() + chunkSize > MAX_BYTES) {
-                throw new IOException("chunked body exceeds the " + MAX_BYTES + " byte cap");
+            // Subtraction-before-conversion bound: body.size() is int and the accumulated body
+            // is already capped, so MAX_BYTES - body.size() cannot overflow, while the old
+            // body.size() + chunkSize sum wraps negative for chunk sizes near Long.MAX_VALUE and
+            // let the (int) cast below allocate a negative array instead of failing as framing.
+            if (chunkSize < 0 || chunkSize > MAX_BYTES - body.size()) {
+                throw new IOException("invalid chunked size (negative or exceeding the "
+                        + MAX_BYTES + " byte cap)");
             }
             if (chunkSize == 0) {
                 int trailerBytes = 0;

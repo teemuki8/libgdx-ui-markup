@@ -1357,6 +1357,66 @@ final class ReferenceImageStoreTest {
                 () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
     }
 
+    // ---------------------------------------------------------------- chunked size bounds
+
+    @Test
+    void rejectsChunkSizeAtLongMax() {
+        // With one body byte already buffered, body.size() + Long.MAX_VALUE wraps negative and
+        // the old sum check passed; the (int) cast then allocated a negative array. The bound
+        // must be computed by subtraction so the cap rejects it as a typed framing failure.
+        byte[] raw = ("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                + "1\r\na\r\n7fffffffffffffff\r\n0\r\n\r\n").getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsChunkSizeJustBelowLongMax() {
+        // Long.MAX_VALUE - 1 with two buffered body bytes also overflows the old sum check and
+        // must be rejected before the (int) cast goes negative.
+        byte[] raw = ("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                + "2\r\nab\r\n7ffffffffffffffe\r\n0\r\n\r\n").getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsNegativeChunkSize() {
+        // Long.parseLong("ffffffffffffffff", 16) is -1: a negative size is a framing failure,
+        // never an allocation.
+        byte[] raw = ("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                + "ffffffffffffffff\r\n0\r\n\r\n").getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void rejectsChunkSizeOneOverRemainingBudget() {
+        // A 5-byte first chunk leaves MAX_BYTES - 5; one octet over that remaining budget must
+        // fail before any payload read.
+        String over = Long.toHexString(ReferenceImageStore.MAX_BYTES - 5 + 1);
+        byte[] raw = ("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                + "5\r\nhello\r\n" + over + "\r\n0\r\n\r\n").getBytes(StandardCharsets.US_ASCII);
+        assertThrows(IOException.class,
+                () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
+    }
+
+    @Test
+    void acceptsChunkExactlyAtCap() throws IOException {
+        byte[] payload = new byte[(int) ReferenceImageStore.MAX_BYTES];
+        Arrays.fill(payload, (byte) 'x');
+        ByteArrayOutputStream raw = new ByteArrayOutputStream(payload.length + 32);
+        raw.write(("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                + Long.toHexString(ReferenceImageStore.MAX_BYTES) + "\r\n")
+                .getBytes(StandardCharsets.US_ASCII));
+        raw.write(payload);
+        raw.write("\r\n0\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
+        ReferenceImageStore.Response parsed = ReferenceImageStore.parseResponse(
+                new ByteArrayInputStream(raw.toByteArray()));
+        assertArrayEquals(payload, parsed.body(),
+                "a single chunk exactly at the cap must parse end to end");
+    }
+
     @Test
     void rejectsOversizedHeaderLine() {
         byte[] raw = ("HTTP/1.1 200 OK\r\nX-Filler: "
