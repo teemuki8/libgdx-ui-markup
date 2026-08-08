@@ -6,9 +6,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
@@ -29,7 +31,7 @@ public final class CorpusManifest {
     public static final int MAX_STRING_LENGTH = 4096;
     /** Maximum length of an entry id. */
     public static final int MAX_ID_LENGTH = 64;
-    /** Maximum aggregate string work across all entries (sum of all string lengths). */
+    /** Maximum aggregate string work across all entries and the optional comment. */
     public static final long MAX_AGGREGATE_WORK = 64 * 1024;
 
     private static final ObjectMapper JSON = new ObjectMapper()
@@ -49,7 +51,20 @@ public final class CorpusManifest {
 
     /** Parses one manifest file; the corpus must contain at least one entry. */
     public static CorpusManifest load(Path manifestFile) {
-        byte[] bytes = readBounded(manifestFile);
+        try (InputStream in = Files.newInputStream(manifestFile)) {
+            return load(in, manifestFile);
+        } catch (IOException failure) {
+            throw new ManifestException(ManifestException.Kind.IO,
+                    "cannot read corpus manifest " + manifestFile, failure);
+        }
+    }
+
+    /**
+     * Parses a manifest from a stream through the same bounded read as {@link #load(Path)};
+     * package-private so tests can simulate input that grows past the byte cap mid-read.
+     */
+    static CorpusManifest load(InputStream in, Path manifestFile) {
+        byte[] bytes = readBounded(in, manifestFile);
         JsonNode root;
         try {
             root = JSON.readValue(bytes, JsonNode.class);
@@ -65,6 +80,10 @@ public final class CorpusManifest {
         String comment = root.hasNonNull("comment")
                 ? textField(root, "comment", "manifest")
                 : null;
+        if (comment != null && comment.length() > MAX_STRING_LENGTH) {
+            throw new ManifestException(ManifestException.Kind.STRING_TOO_LONG,
+                    "comment exceeds " + MAX_STRING_LENGTH + " characters");
+        }
         JsonNode entriesNode = root.get("entries");
         if (entriesNode == null) {
             throw new ManifestException(ManifestException.Kind.MISSING_FIELD,
@@ -83,7 +102,7 @@ public final class CorpusManifest {
                     "corpus manifest declares no entries");
         }
         List<CorpusEntry> parsed = new ArrayList<>(entriesNode.size());
-        long aggregateWork = 0;
+        long aggregateWork = stringLength(comment);
         for (JsonNode node : entriesNode) {
             if (!node.isObject()) {
                 throw new ManifestException(ManifestException.Kind.WRONG_TYPE,
@@ -145,20 +164,32 @@ public final class CorpusManifest {
         return entries;
     }
 
-    private static byte[] readBounded(Path manifestFile) {
+    /**
+     * Reads at most {@code MAX_MANIFEST_BYTES + 1} bytes with overflow-safe growth and rejects
+     * at limit + 1, before any larger buffer, string, or parse tree is materialized.
+     */
+    private static byte[] readBounded(InputStream in, Path manifestFile) {
         try {
-            long size = Files.size(manifestFile);
-            if (size > MAX_MANIFEST_BYTES) {
-                throw new ManifestException(ManifestException.Kind.TOO_LARGE,
-                        "corpus manifest is " + size + " bytes, cap is " + MAX_MANIFEST_BYTES);
+            int capacity = Math.min(MAX_MANIFEST_BYTES + 1, 8192);
+            byte[] bytes = new byte[capacity];
+            int total = 0;
+            while (true) {
+                if (total == bytes.length) {
+                    if (total == MAX_MANIFEST_BYTES + 1) {
+                        throw new ManifestException(ManifestException.Kind.TOO_LARGE,
+                                "corpus manifest exceeds " + MAX_MANIFEST_BYTES
+                                        + " bytes: " + manifestFile);
+                    }
+                    bytes = Arrays.copyOf(bytes,
+                            Math.min(MAX_MANIFEST_BYTES + 1, bytes.length * 2));
+                }
+                int read = in.read(bytes, total, bytes.length - total);
+                if (read < 0) {
+                    break;
+                }
+                total += read;
             }
-            byte[] bytes = Files.readAllBytes(manifestFile);
-            if (bytes.length > MAX_MANIFEST_BYTES) {
-                throw new ManifestException(ManifestException.Kind.TOO_LARGE,
-                        "corpus manifest is " + bytes.length + " bytes, cap is "
-                                + MAX_MANIFEST_BYTES);
-            }
-            return bytes;
+            return Arrays.copyOf(bytes, total);
         } catch (IOException failure) {
             throw new ManifestException(ManifestException.Kind.IO,
                     "cannot read corpus manifest " + manifestFile, failure);
@@ -224,12 +255,13 @@ public final class CorpusManifest {
             throw new ManifestException(ManifestException.Kind.WRONG_TYPE,
                     "entry field '" + field + "' must be an integer");
         }
-        long wide = value.longValue();
-        if (wide < Integer.MIN_VALUE || wide > Integer.MAX_VALUE) {
+        // canConvertToInt uses arbitrary precision (BigInteger/BigDecimal), so values that
+        // would silently truncate on narrowing are rejected before any lossy conversion.
+        if (!value.canConvertToInt()) {
             throw new ManifestException(ManifestException.Kind.INVALID_VALUE,
                     "entry field '" + field + "' must fit an int");
         }
-        return (int) wide;
+        return value.intValue();
     }
 
     private static int stringLength(String value) {

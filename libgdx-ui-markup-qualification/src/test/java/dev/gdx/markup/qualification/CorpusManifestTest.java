@@ -8,6 +8,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
+import java.io.InputStream;
+import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -101,6 +103,25 @@ final class CorpusManifestTest {
         Path manifest = writePaddedManifest(CorpusManifest.MAX_MANIFEST_BYTES + 1);
         ManifestException failure = reject(manifest);
         assertEquals(ManifestException.Kind.TOO_LARGE, failure.kind());
+    }
+
+    @Test
+    void loadRejectsStreamGrowingPastByteLimitAtLimitPlusOne() {
+        // Simulates a manifest that grows between an old size() snapshot and the read: the
+        // bounded read must stop at cap + 1 and reject without consuming the rest.
+        long[] served = {0};
+        InputStream growing = new InputStream() {
+            @Override
+            public int read() {
+                served[0]++;
+                return served[0] <= CorpusManifest.MAX_MANIFEST_BYTES + 5 ? 0x20 : -1;
+            }
+        };
+        ManifestException failure = assertThrows(ManifestException.class,
+                () -> CorpusManifest.load(growing, tempDir.resolve("growing.json")));
+        assertEquals(ManifestException.Kind.TOO_LARGE, failure.kind());
+        assertTrue(served[0] <= CorpusManifest.MAX_MANIFEST_BYTES + 1,
+                "consumed " + served[0] + " bytes; cap + 1 detection must stop the read");
     }
 
     @Test
@@ -318,6 +339,65 @@ final class CorpusManifestTest {
         node.put("referenceWidth", 2_147_483_648L);
         ManifestException failure = reject(writeEntries(node));
         assertEquals(ManifestException.Kind.INVALID_VALUE, failure.kind());
+    }
+
+    @Test
+    void rejectsHugePositiveDimensionThatWouldTruncate() throws IOException {
+        ObjectNode node = entry("a", "a.png");
+        // 2^64 + 100 truncates to +100 in long/int arithmetic; the true value must be rejected.
+        node.put("referenceWidth", new BigInteger("18446744073709551716"));
+        ManifestException failure = reject(writeEntries(node));
+        assertEquals(ManifestException.Kind.INVALID_VALUE, failure.kind());
+    }
+
+    @Test
+    void rejectsHugeNegativeDimensionThatWouldTruncate() throws IOException {
+        ObjectNode node = entry("a", "a.png");
+        // -(2^64 - 100) also truncates to +100 in 64-bit arithmetic.
+        node.put("referenceWidth", new BigInteger("-18446744073709551516"));
+        ManifestException failure = reject(writeEntries(node));
+        assertEquals(ManifestException.Kind.INVALID_VALUE, failure.kind());
+    }
+
+    @Test
+    void acceptsBigIntegerDimensionWithinIntRange() throws IOException {
+        ObjectNode node = entry("a", "a.png");
+        node.put("referenceWidth", new BigInteger("1280"));
+        assertEquals(1, CorpusManifest.load(writeEntries(node)).entries().size());
+    }
+
+    @Test
+    void rejectsCommentOverPerStringCap() throws IOException {
+        ObjectNode root = JSON.createObjectNode();
+        root.put("comment", "x".repeat(CorpusManifest.MAX_STRING_LENGTH + 1));
+        root.putArray("entries").add(entry("a", "a.png"));
+        ManifestException failure = reject(writeManifest(root));
+        assertEquals(ManifestException.Kind.STRING_TOO_LONG, failure.kind());
+    }
+
+    @Test
+    void acceptsCommentExactlyAtPerStringCap() throws IOException {
+        ObjectNode root = JSON.createObjectNode();
+        root.put("comment", "x".repeat(CorpusManifest.MAX_STRING_LENGTH));
+        root.putArray("entries").add(entry("a", "a.png"));
+        assertEquals(1, CorpusManifest.load(writeManifest(root)).entries().size());
+    }
+
+    @Test
+    void rejectsAggregateWorkIncludingComment() throws IOException {
+        // 5 max-string entries alone stay under the aggregate cap; the 4096-char comment
+        // pushes the total (4096 + 5 * 12290 = 65546) over the 65536 work cap.
+        ObjectNode root = JSON.createObjectNode();
+        root.put("comment", "x".repeat(CorpusManifest.MAX_STRING_LENGTH));
+        ArrayNode array = root.putArray("entries");
+        for (int i = 0; i < 5; i++) {
+            ObjectNode node = entry("e" + i, "x".repeat(CorpusManifest.MAX_STRING_LENGTH),
+                    "x".repeat(CorpusManifest.MAX_STRING_LENGTH));
+            node.put("markupFile", "x".repeat(CorpusManifest.MAX_STRING_LENGTH));
+            array.add(node);
+        }
+        ManifestException failure = reject(writeManifest(root));
+        assertEquals(ManifestException.Kind.WORK_LIMIT, failure.kind());
     }
 
     @Test
