@@ -1,13 +1,13 @@
 {
-  "background": "#120d18ff",
-  "panel": "#25152dff",
-  "panel-alt": "#35423aff",
-  "accent": "#e84b73ff",
-  "accent-over": "#f2768fff",
-  "accent-down": "#b92f58ff",
-  "text": "#f5e3c2ff",
-  "muted": "#bda8b4ff",
-  "field-focused": "#512b50ff",
-  "selection": "#6b3156ff",
-  "disabled": "#584451ff"
+  "background": "#050509ff",
+  "panel": "#08070dff",
+  "panel-alt": "#171a1aff",
+  "accent": "#dd3b32ff",
+  "accent-over": "#f05a3fff",
+  "accent-down": "#a92a2aff",
+  "text": "#f4f4f4ff",
+  "muted": "#aaa8a8ff",
+  "field-focused": "#47303bff",
+  "selection": "#6a3035ff",
+  "disabled": "#54454cff"
 }
