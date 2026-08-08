@@ -157,6 +157,13 @@ common wiring bug.
 With the controlled clock, the clock drives `stage.act`; do not call `stage.act` separately in
 the MCP path (the preview branches on this).
 
+`WaitEngine` follows the same render-thread rule: its snapshot supplier is invoked on the
+calling (MCP virtual) thread, so route it through the scheduler when it can be called
+off-thread, blocking on the hop — a supplier that reads the Stage directly is a silent
+confinement violation with no error. The preview's `snapshotForWait` does this (direct on the
+render thread, `scheduler.submit(...).join()` otherwise); see the harness getting-started
+guide's "Threading and frame wiring" section for the same wiring.
+
 ## Statuses and what they mean
 
 `ui_runtime_compare` returns a typed status; treat any status other than `EQUAL` as a wiring
