@@ -115,7 +115,11 @@ re-checked against the committed keyring and trust policy:
    the committed keyring and file-exact trust policy stay in force for the whole bootstrap, so
    nothing new is trusted without a signature from a known key. If the bootstrap fails on
    keyserver access, import the new keys from a keyserver manually into
-   `gradle/verification-keyring.gpg` and re-run.
+   `gradle/verification-keyring.gpg` and re-run. If it fails during toolchain resolution
+   (the intellij-platform plugin reads `JvmVendorSpec.IBM_SEMERU`, which Gradle 9.6 removed),
+   point toolchain detection at existing JDK installations with the system property
+   `-Dorg.gradle.java.installations.paths=<jdk21-home>,<jdk25-home>` (use `-D`, not `-P` —
+   the project-property form is deprecated in Gradle 9.6).
 3. Review the generated diff: every new coordinate, checksum, and signer key must come from the
    intended upgrade and a trusted publisher, with each key scoped to its exact
    group/module/version/file entries — no wildcard trust, no `trusted-artifacts`, no
