@@ -21,10 +21,13 @@ data class MarkupStatusLine(
 object MarkupStatusLineParser {
     private val PREFIX = "markup-status:"
     private const val SUPPORTED_SCHEMA_VERSION = 2
+    private const val GENERIC_KIND = "GENERIC"
 
     /**
-     * Parses one status line. Returns {@code null} for output that is not a status line; returns
-     * an error {@link MarkupStatusLine} carrying an actionable message when the line declares an
+     * Parses one status line. Returns {@code null} for output that is not a status line or a
+     * malformed schema-v2 payload (negative nodes, errors without a kind or message, errors
+     * carrying nodes, negative locations, or a generic error with an element path); returns an
+     * error {@link MarkupStatusLine} carrying an actionable message when the line declares an
      * unsupported schema version (the preview distribution is newer or older than the plugin).
      */
     fun parse(line: String): MarkupStatusLine? {
@@ -41,15 +44,51 @@ object MarkupStatusLineParser {
             return unsupported(schemaVersion)
         }
         val ok = boolean(json, "ok") ?: return null
+        val kind = string(json, "kind")
+        val elementPath = string(json, "elementPath")
+        val line = int(json, "line")
+        val column = int(json, "column")
+        val message = string(json, "message")
+        val nodes = int(json, "nodes")
+        if (ok) {
+            if (nodes == null || nodes < 0) {
+                return null
+            }
+            if (kind != null || elementPath != null || message != null
+                || line != null || column != null
+            ) {
+                return null
+            }
+        } else {
+            if (kind == null || kind.isBlank()) {
+                return null
+            }
+            if (message == null) {
+                return null
+            }
+            if (line != null && line < 0) {
+                return null
+            }
+            if (column != null && column < 0) {
+                return null
+            }
+            if (nodes != null && nodes != 0) {
+                return null
+            }
+            val pathEmpty = elementPath == null || elementPath.isEmpty()
+            if (kind == GENERIC_KIND && !pathEmpty) {
+                return null
+            }
+        }
         return MarkupStatusLine(
             schemaVersion = schemaVersion,
             ok = ok,
-            kind = string(json, "kind"),
-            elementPath = string(json, "elementPath"),
-            line = int(json, "line"),
-            column = int(json, "column"),
-            message = string(json, "message"),
-            nodes = int(json, "nodes"),
+            kind = kind,
+            elementPath = elementPath,
+            line = line,
+            column = column,
+            message = message,
+            nodes = nodes,
         )
     }
 

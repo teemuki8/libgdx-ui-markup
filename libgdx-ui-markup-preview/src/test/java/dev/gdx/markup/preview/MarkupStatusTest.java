@@ -2,6 +2,7 @@ package dev.gdx.markup.preview;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -90,6 +91,87 @@ final class MarkupStatusTest {
         assertEquals(0, node.get("line").asInt());
         assertEquals(0, node.get("column").asInt());
         assertEquals("cannot read ui.xml", node.get("message").asText());
+    }
+
+    @Test
+    void successRejectsNegativeNodes() {
+        assertThrows(IllegalArgumentException.class, () -> MarkupStatus.ok(-1));
+    }
+
+    @Test
+    void successRejectsErrorIdentityOrLocation() {
+        assertThrows(IllegalArgumentException.class, () -> new MarkupStatus(
+                MarkupStatus.SCHEMA_VERSION, true, "UNKNOWN_TAG", null, 0, 0, null, 1));
+        assertThrows(IllegalArgumentException.class, () -> new MarkupStatus(
+                MarkupStatus.SCHEMA_VERSION, true, null, null, 5, 0, null, 1));
+    }
+
+    @Test
+    void errorRejectsBlankOrMissingKind() {
+        assertThrows(IllegalArgumentException.class, () -> new MarkupStatus(
+                MarkupStatus.SCHEMA_VERSION, false, "  ", "", 1, 1, "m", 0));
+        assertThrows(IllegalArgumentException.class, () -> new MarkupStatus(
+                MarkupStatus.SCHEMA_VERSION, false, null, "", 1, 1, "m", 0));
+    }
+
+    @Test
+    void errorRejectsMissingMessage() {
+        assertThrows(IllegalArgumentException.class, () -> new MarkupStatus(
+                MarkupStatus.SCHEMA_VERSION, false, "UNKNOWN_TAG", "ui", 1, 1, null, 0));
+    }
+
+    @Test
+    void errorRejectsNegativeLocationOrCarriedNodes() {
+        assertThrows(IllegalArgumentException.class, () -> new MarkupStatus(
+                MarkupStatus.SCHEMA_VERSION, false, "UNKNOWN_TAG", "ui", -1, 1, "m", 0));
+        assertThrows(IllegalArgumentException.class, () -> new MarkupStatus(
+                MarkupStatus.SCHEMA_VERSION, false, "UNKNOWN_TAG", "ui", 1, 1, "m", 3));
+    }
+
+    @Test
+    void genericErrorRejectsNonEmptyElementPath() {
+        assertThrows(IllegalArgumentException.class, () -> new MarkupStatus(
+                MarkupStatus.SCHEMA_VERSION, false, MarkupStatus.GENERIC_KIND, "ui", 1, 1, "m", 0));
+    }
+
+    @Test
+    void pathlessMarkupDiagnosticRemainsValid() throws Exception {
+        // Real parse-level diagnostics (TOO_LARGE, MALFORMED_XML) and CSS property validation
+        // (ResolvedStyle.INVALID_VALUE) carry an empty element path; the status must serialize.
+        MarkupStatus status = MarkupStatus.error(new MarkupException(
+                MarkupException.Kind.TOO_LARGE, "", 0, 0, "input exceeds the limit"));
+        JsonNode node = JSON.readTree(status.json());
+        assertEquals("TOO_LARGE", node.get("kind").asText());
+        assertEquals("", node.get("elementPath").asText());
+        assertEquals("input exceeds the limit", node.get("message").asText());
+    }
+
+    @Test
+    void truncationNeverSplitsASurrogatePair() throws Exception {
+        // Length MAX+1; the emoji's surrogate pair straddles the MAX cut.
+        String message = "x".repeat(MarkupStatus.MAX_STRING_LENGTH - 1) + "😀";
+        MarkupException failure =
+                new MarkupException(MarkupException.Kind.INVALID_VALUE, "ui", 1, 1, message);
+        String emitted = JSON.readTree(MarkupStatus.error(failure).json())
+                .get("message").asText();
+        assertTrue(emitted.length() <= MarkupStatus.MAX_STRING_LENGTH);
+        char last = emitted.charAt(emitted.length() - 1);
+        assertFalse(Character.isHighSurrogate(last) || Character.isLowSurrogate(last),
+                "truncation must not leave a dangling surrogate (length " + emitted.length() + ")");
+        assertEquals("x".repeat(MarkupStatus.MAX_STRING_LENGTH - 1), emitted);
+    }
+
+    @Test
+    void truncationKeepsPairIntactWhenItEndsBeforeTheCut() throws Exception {
+        // Length MAX+1; the pair ends exactly at the cut, so no back-off is needed.
+        String message = "x".repeat(MarkupStatus.MAX_STRING_LENGTH - 2) + "😀" + "y";
+        MarkupException failure =
+                new MarkupException(MarkupException.Kind.INVALID_VALUE, "ui", 1, 1, message);
+        String emitted = JSON.readTree(MarkupStatus.error(failure).json())
+                .get("message").asText();
+        assertEquals(MarkupStatus.MAX_STRING_LENGTH, emitted.length());
+        assertTrue(emitted.endsWith("😀"),
+                "a pair ending exactly at the cut must stay whole: " + emitted.length());
     }
 
     private static MarkupException locatedInvalidValue() {

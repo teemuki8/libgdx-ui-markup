@@ -59,7 +59,15 @@ public record MarkupStatus(
         return new MarkupStatus(SCHEMA_VERSION, false, GENERIC_KIND, "", 0, 0, message, 0);
     }
 
-    /** Validates the version and truncates every string field to the bounded length. */
+    /**
+     * Validates the schema-v2 invariants and truncates every string field to the bounded
+     * length. A success status must not carry any error identity or location and needs
+     * nonnegative nodes; an error status needs a stable nonblank kind, a non-null bounded
+     * message, nonnegative line/column, zero nodes, and carries an element path only when the
+     * kind is not the generic one (generic failures have no location). Pathless markup
+     * diagnostics (parse-level {@code TOO_LARGE}/{@code MALFORMED_XML}, CSS property
+     * validation) are accepted: their empty path means "no element context".
+     */
     public MarkupStatus {
         if (schemaVersion != SCHEMA_VERSION) {
             throw new IllegalArgumentException(
@@ -68,13 +76,54 @@ public record MarkupStatus(
         kind = bound(kind);
         elementPath = bound(elementPath);
         message = bound(message);
+        if (ok) {
+            if (kind != null || elementPath != null || message != null
+                    || line != 0 || column != 0) {
+                throw new IllegalArgumentException(
+                        "success status must not carry kind, path, message, or location");
+            }
+            if (nodes < 0) {
+                throw new IllegalArgumentException(
+                        "success status requires nonnegative nodes");
+            }
+        } else {
+            if (kind == null || kind.isBlank()) {
+                throw new IllegalArgumentException(
+                        "error status requires a stable nonblank kind");
+            }
+            if (message == null) {
+                throw new IllegalArgumentException("error status requires a message");
+            }
+            if (line < 0 || column < 0) {
+                throw new IllegalArgumentException(
+                        "error status requires nonnegative line and column");
+            }
+            if (nodes != 0) {
+                throw new IllegalArgumentException("error status must not carry nodes");
+            }
+            String path = elementPath == null ? "" : elementPath;
+            if (GENERIC_KIND.equals(kind) && !path.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "generic errors carry no element path");
+            }
+        }
     }
 
+    /**
+     * Truncates a value to {@link #MAX_STRING_LENGTH} UTF-16 units, backing off by one unit
+     * when the cut would split a surrogate pair so the result never ends in a dangling
+     * high or low surrogate.
+     */
     private static String bound(String value) {
         if (value == null || value.length() <= MAX_STRING_LENGTH) {
             return value;
         }
-        return value.substring(0, MAX_STRING_LENGTH);
+        int cut = MAX_STRING_LENGTH;
+        if (Character.isHighSurrogate(value.charAt(cut - 1))
+                && Character.isLowSurrogate(value.charAt(cut))) {
+            cut--;
+        }
+        return value.substring(0, cut);
     }
 
     /** Serializes the status line (without the {@code markup-status: } prefix). */

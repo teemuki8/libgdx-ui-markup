@@ -83,4 +83,54 @@ class MarkupStatusLineParserTest {
         assertTrue(message.contains("schema v1"), "message names the schema: $message")
         assertTrue(message.contains("update"), "message tells the user what to do: $message")
     }
+
+    @Test
+    fun rejectsMalformedSuccessPayloads() {
+        assertNull(MarkupStatusLineParser.parse(
+            "markup-status: {\"schemaVersion\":2,\"ok\":true,\"nodes\":-5}"))
+        assertNull(MarkupStatusLineParser.parse(
+            "markup-status: {\"schemaVersion\":2,\"ok\":true}"))
+        assertNull(MarkupStatusLineParser.parse(
+            "markup-status: {\"schemaVersion\":2,\"ok\":true,\"nodes\":5,"
+                + "\"kind\":\"UNKNOWN_TAG\"}"))
+    }
+
+    @Test
+    fun rejectsMalformedErrorPayloads() {
+        assertNull(MarkupStatusLineParser.parse(
+            "markup-status: {\"schemaVersion\":2,\"ok\":false,\"message\":\"boom\"}"))
+        assertNull(MarkupStatusLineParser.parse(
+            "markup-status: {\"schemaVersion\":2,\"ok\":false,\"kind\":\"  \","
+                + "\"message\":\"boom\"}"))
+        assertNull(MarkupStatusLineParser.parse(
+            "markup-status: {\"schemaVersion\":2,\"ok\":false,\"kind\":\"UNKNOWN_TAG\","
+                + "\"elementPath\":\"ui\",\"message\":\"m\",\"line\":-1}"))
+        assertNull(MarkupStatusLineParser.parse(
+            "markup-status: {\"schemaVersion\":2,\"ok\":false,\"kind\":\"UNKNOWN_TAG\","
+                + "\"elementPath\":\"ui\",\"message\":\"m\",\"nodes\":3}"))
+        assertNull(MarkupStatusLineParser.parse(
+            "markup-status: {\"schemaVersion\":2,\"ok\":false,\"kind\":\"GENERIC\","
+                + "\"elementPath\":\"ui\",\"message\":\"m\"}"))
+    }
+
+    @Test
+    fun parsesPathlessMarkupError() {
+        // Parse-level diagnostics (TOO_LARGE, MALFORMED_XML) carry an empty element path.
+        val parsed = MarkupStatusLineParser.parse(
+            "markup-status: {\"schemaVersion\":2,\"ok\":false,"
+                + "\"kind\":\"TOO_LARGE\",\"elementPath\":\"\",\"line\":0,\"column\":0,"
+                + "\"message\":\"markup input exceeds the limit\"}")
+        assertEquals(false, parsed?.ok)
+        assertEquals("TOO_LARGE", parsed?.kind)
+        assertEquals("", parsed?.elementPath)
+        assertEquals("markup input exceeds the limit", parsed?.message)
+    }
+
+    @Test
+    fun unescapesUnicodeSurrogatePair() {
+        val parsed = MarkupStatusLineParser.parse(
+            "markup-status: {\"schemaVersion\":2,\"ok\":false,"
+                + "\"kind\":\"INVALID_VALUE\",\"message\":\"\\uD83D\\uDE00\"}")
+        assertEquals("😀", parsed?.message)
+    }
 }
