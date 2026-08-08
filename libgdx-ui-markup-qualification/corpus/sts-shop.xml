@@ -4,15 +4,15 @@
 <ui>
   <table id="root" class="backdrop" width="1280" height="720">
     <table id="hud" class="panel-alt" width="1280" height="58" expand="true" fill="true" pad="10">
-      <label id="player-name" class="heading" text="MegaCrit   the Defect"/>
-      <label id="player-hp" text="♥ 47/82"/>
-      <label id="player-gold" text="◉ 86"/>
-      <label id="floor" class="title" text="11th Floor"/>
-      <label id="draw-pile" text="Deck 14"/>
+      <label id="player-name" class="heading" text="MegaCrit   the Defect" width="220" align="left"/>
+      <label id="player-hp" text="♥ 47/82" width="130" align="left"/>
+      <label id="player-gold" text="◉ 86" width="110" align="left"/>
+      <label id="floor" class="title" text="11th Floor" width="420" align="center"/>
+      <label id="draw-pile" text="Deck 14" width="150" align="right"/>
     </table>
     <row/>
-    <table id="battlefield" width="1280" height="492" expand="true" fill="true" pad="18">
-      <table id="hero-zone" class="panel" width="300" height="440" pad="18" align="left center">
+    <table id="battlefield" width="1280" height="492" expand="true" fill="true" pad="0">
+      <table id="hero-zone" width="620" height="440" pad="18" align="center center">
         <label id="hero-orb" class="accent-bar" text="●  ◌  ◌"/>
         <row/>
         <label id="hero-name" class="heading" text="THE DEFECT"/>
@@ -33,7 +33,7 @@
         <row/>
         <label id="hero-relic" class="section" text="Focus  1  •  Lightning  3"/>
       </table>
-      <table id="card-zone" class="panel-alt" width="430" height="440" pad="18" align="center center">
+      <table id="card-zone" class="panel-alt" width="300" height="360" pad="18" pad-top="160" align="center top">
         <label id="card-cost" class="title" text="0"/>
         <row/>
         <label id="card-name" class="title" text="Zap+"/>
@@ -46,7 +46,7 @@
         <row/>
         <label id="card-flavor" class="section" text="A spark in the dark."/>
       </table>
-      <table id="enemy-zone" class="panel" width="300" height="440" pad="18" align="right center">
+      <table id="enemy-zone" width="360" height="440" pad="18" align="center center">
         <label id="enemy-name" class="heading" text="THE AWAKENED ONE"/>
         <row/>
         <label id="enemy-intent" class="title" text="7   ⚡"/>
@@ -68,6 +68,7 @@
     <row/>
     <table id="hand" class="panel-alt" width="1280" height="170" expand="true" fill="true" pad="12"
            align="center center">
+      <table id="hand-spacer" width="160" height="1"/>
       <button id="card-strike-left" text="1   Strike" name="Strike" width="180" height="130"/>
       <button id="card-strike" text="1   Strike" name="Strike" width="180" height="130"/>
       <button id="card-dualcast" text="1   Dualcast" name="Dualcast" width="180" height="130"/>
