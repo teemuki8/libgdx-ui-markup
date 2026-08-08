@@ -37,8 +37,9 @@ real game UI screenshots.
    system property), not by a test-side builder. The preview writes upright screenshots (the
    OpenGL framebuffer capture is Y-flipped before the PNG is written).
 3. **Multi-signal fidelity, not pixel matching.** Both images are decoded through the bounded
-   normalized-image path (≤1920 px per side) and scored by three deterministic components
-   over fixed grids, plus a coarse diagnostic:
+   normalized-image path (≤1920 px per side), resampled once to a fixed 640×360 analysis
+   canvas, and scored by three deterministic components over fixed grids, plus a coarse
+   diagnostic:
    - **Geometry** — an 80×45 grid of Sobel-gradient cell energies, classified per image by
      its own mean + 0.75σ. Each cell that is edge-structured in both images contributes its
      directed-gradient orientation similarity (1 − ½·TV over the four gradient-quadrant
@@ -46,9 +47,11 @@ real game UI screenshots.
      `2·Σ orientationSim / (cellsA + cellsB)`; both-empty masks score 1, one-sided 0. The
      orientation weighting rejects a vertical flip (mirrored gradient directions) and the
      positional grid rejects translation and uniform scale.
-   - **Color** — 4-bit-per-channel RGB histogram (4096 bins, primitive int array);
-     `Σ min(hA, hB) / max(totalA, totalB)`. A hue-rotated or re-paletted recreation drops
-     without any geometric dependence.
+   - **Color** — the equal-weighted average of a global and an 8×5 cell-local
+     4-bit-per-channel RGB histogram intersection (4096-bin primitive buffers reused per
+     cell). Normalized bin proportions make the score resolution-invariant; the global half
+     detects hue/re-palette changes and the local half detects palette regions moved to the
+     wrong part of the UI.
    - **Detail** — half grid-local structural fidelity over reference-detail cells
      (unthresholded gradient-energy ratio `min/max` and sharp-edge (≥64) orientation
      similarity; reference-blank cells excluded so a blur cannot raise the average by erasing
@@ -58,12 +61,13 @@ real game UI screenshots.
    - **Coarse layout** — the legacy dilated-region Dice, diagnostic only, never gates.
 4. **Calibrated thresholds from positives and deliberate negatives, no human tuning.** Each
    entry's render is measured (the positive) together with its deterministic deliberate
-   negatives: vertical flip, fixed translation (192×108 px), 120° hue rotation, box blur
-   (radius 8, channels averaged independently — summing packed ARGB integers would corrupt
-   colors and inflate gradient energy), and uniform 0.75 scale centered on the source canvas.
-   Each transformation is a negative for the failure mode it exhibits and only contributes to
-   that component's calibration: flip/translation/scale → geometry, hue → color,
-   blur/scale → detail. The committed threshold per entry and component is the midpoint of
+   negatives: vertical flip, fixed translation (192×108 px), 120° hue rotation, left/right
+   color-region swap, box blur (radius 8, channels averaged independently — summing packed
+   ARGB integers would corrupt colors and inflate gradient energy), and uniform 0.75 scale
+   centered on the source canvas. Each transformation is a negative for the failure mode it
+   exhibits and only contributes to that component's calibration:
+   flip/translation/scale → geometry, hue/color-region-swap → color, blur/scale → detail.
+   The committed threshold per entry and component is the midpoint of
    the observed separation `[maxNegative, minPositive]`, so it sits strictly below the
    positive and strictly above every deliberate negative by exactly half the measured
    separation. Calibration fails loudly (`ReferenceException.Kind.CALIBRATION`) when the
@@ -75,9 +79,9 @@ real game UI screenshots.
    `COLOR_FLOOR`, `DETAIL_FLOOR`, `floor(FidelityComponent)`). Each floor sits above the
    worst threshold a self-transform calibration ever minted (geometry 0.076, color 0.047,
    detail 0.044) so that failure mode can never be committed again, while staying below the
-   final faithful recreations after fixed-canvas scale alignment: Palisade
-   0.146/0.905/0.339, Hades 0.105/0.327/0.124, STS 0.101/0.242/0.178, and
-   Wesnoth 0.119/0.217/0.121 (geometry/color/detail). The effective calibrated threshold is
+   final faithful recreations after fixed-canvas spatial-color alignment: Palisade
+   0.146/0.898/0.339, Hades 0.105/0.249/0.124, STS 0.101/0.216/0.178, and
+   Wesnoth 0.119/0.160/0.121 (geometry/color/detail). The effective calibrated threshold is
    `max(component floor, midpoint)`, so a midpoint that would undercut the floor is lifted to
    it, and a positive that itself scores below the floor refuses calibration outright
    (`calibrate` returns empty and the calibration task fails with a typed
