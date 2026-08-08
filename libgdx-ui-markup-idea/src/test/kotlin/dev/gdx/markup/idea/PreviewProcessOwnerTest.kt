@@ -370,24 +370,48 @@ class PreviewProcessOwnerTest {
 
     @Test
     fun defaultWaitPolicyTimesOutThenConfirmsForceKill() {
-        val process = ProcessBuilder("sh", "-c", "trap '' TERM; while :; do sleep 1; done").start()
+        // Deterministic ladder through the injected process seam: a child that ignores
+        // destroy() must keep timing out, and only the force-kill produces a confirmed
+        // exit. The real-child counterpart is realChildTimesOutThenForceKillIsConfirmed.
+        val fake = FakeProcess(gracefulExit = false)
+        val now = System::nanoTime
+        val wait = PreviewProcessSupervisor.defaultWait(now)
+        assertEquals(
+            WaitOutcome.TIMED_OUT,
+            wait(fake, now() + 300_000_000L),
+            "a live process must time out of the bounded wait")
+        fake.destroy()
+        assertEquals(
+            WaitOutcome.TIMED_OUT,
+            wait(fake, now() + 300_000_000L),
+            "a destroy-ignoring process still times out")
+        fake.destroyForcibly()
+        assertEquals(
+            WaitOutcome.EXITED,
+            wait(fake, now() + 5_000_000_000L),
+            "the final wait must observe the force-kill")
+        assertFalse(fake.alive)
+    }
+
+    @Test
+    fun realChildTimesOutThenForceKillIsConfirmed() {
+        // Platform-neutral integration against a real child: it must time out while live and
+        // be observed exited once force-killed. No destroy()/SIGTERM semantics are asserted
+        // here, because on Windows destroy() is a hard kill — the graceful-escalation
+        // behavior is covered deterministically in defaultWaitPolicyTimesOutThenConfirmsForceKill.
+        val process = newHangingProcess()
         try {
             val now = System::nanoTime
             val wait = PreviewProcessSupervisor.defaultWait(now)
             assertEquals(
                 WaitOutcome.TIMED_OUT,
                 wait(process, now() + 300_000_000L),
-                "a live process must time out of the bounded wait")
-            process.destroy()
-            assertEquals(
-                WaitOutcome.TIMED_OUT,
-                wait(process, now() + 300_000_000L),
-                "an ignored SIGTERM still times out")
+                "a live child must time out of the bounded wait")
             process.destroyForcibly()
             assertEquals(
                 WaitOutcome.EXITED,
                 wait(process, now() + 5_000_000_000L),
-                "the final wait must observe the kill")
+                "the final wait must observe the force-kill")
             assertFalse(process.isAlive)
         } finally {
             process.destroyForcibly()
@@ -561,6 +585,19 @@ class PreviewProcessOwnerTest {
         val fake = process as? FakeProcess
         if (fake != null && !fake.alive) WaitOutcome.EXITED else WaitOutcome.TIMED_OUT
     }
+
+    /** A real child guaranteed to stay alive until force-killed on every platform. */
+    private fun newHangingProcess(): Process {
+        val command = if (isWindows()) {
+            listOf("ping", "-n", "60", "127.0.0.1")
+        } else {
+            listOf("sleep", "60")
+        }
+        return ProcessBuilder(command).start()
+    }
+
+    private fun isWindows(): Boolean =
+        System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
 
     private fun assertNoPreviewThreads() {
         val alive = Thread.getAllStackTraces().keys.filter {
