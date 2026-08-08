@@ -86,7 +86,7 @@ public final class QualificationRunner implements AutoCloseable {
             double threshold = QualificationPolicy.threshold(regions.orElseThrow().dice());
             updated.add(new CorpusEntry(entry.id(), entry.sourceUrl(), entry.referenceFile(),
                     entry.license(), entry.markupFile(), threshold, entry.referenceWidth(),
-                    entry.referenceHeight()));
+                    entry.referenceHeight(), entry.sha256(), entry.bytes(), entry.mediaType()));
             System.out.println("calibration: " + entry.id() + " dice="
                     + compact(regions.orElseThrow().dice()) + " threshold "
                     + compact(entry.threshold()) + " -> " + compact(threshold));

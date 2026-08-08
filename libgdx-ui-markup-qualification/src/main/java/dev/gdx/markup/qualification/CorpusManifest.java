@@ -39,7 +39,8 @@ public final class CorpusManifest {
     private static final Set<String> MANIFEST_FIELDS = Set.of("comment", "entries");
     private static final Set<String> ENTRY_FIELDS = Set.of(
             "id", "sourceUrl", "referenceFile", "license", "markupFile",
-            "threshold", "referenceWidth", "referenceHeight");
+            "threshold", "referenceWidth", "referenceHeight",
+            "sha256", "bytes", "mediaType");
 
     private final String comment;
     private final List<CorpusEntry> entries;
@@ -117,14 +118,26 @@ public final class CorpusManifest {
             double threshold = doubleField(node, "threshold");
             int referenceWidth = intField(node, "referenceWidth");
             int referenceHeight = intField(node, "referenceHeight");
+            String sha256 = optionalTextField(node, "sha256");
+            String mediaType = optionalTextField(node, "mediaType");
+            Long byteCount = optionalLongField(node, "bytes");
+            if (sourceUrl != null) {
+                CorpusEntry.validateSourceUrl(sourceUrl);
+            } else if (sha256 != null || mediaType != null || byteCount != null) {
+                throw new ManifestException(ManifestException.Kind.INVALID_VALUE,
+                        "local entry must not declare remote identity fields "
+                                + "(sha256, bytes, mediaType)");
+            }
             aggregateWork += id.length() + stringLength(sourceUrl) + stringLength(referenceFile)
-                    + license.length() + markupFile.length();
+                    + license.length() + markupFile.length() + stringLength(sha256)
+                    + stringLength(mediaType);
             if (aggregateWork > MAX_AGGREGATE_WORK) {
                 throw new ManifestException(ManifestException.Kind.WORK_LIMIT,
                         "aggregate string work across entries exceeds " + MAX_AGGREGATE_WORK);
             }
             parsed.add(new CorpusEntry(id, sourceUrl, referenceFile, license, markupFile,
-                    threshold, referenceWidth, referenceHeight));
+                    threshold, referenceWidth, referenceHeight, sha256,
+                    byteCount == null ? 0 : byteCount, mediaType));
         }
         return new CorpusManifest(comment, parsed);
     }
@@ -142,6 +155,9 @@ public final class CorpusManifest {
                 node.put("id", entry.id());
                 if (entry.sourceUrl() != null) {
                     node.put("sourceUrl", entry.sourceUrl());
+                    node.put("sha256", entry.sha256());
+                    node.put("bytes", entry.bytes());
+                    node.put("mediaType", entry.mediaType());
                 } else {
                     node.put("referenceFile", entry.referenceFile());
                 }
@@ -266,5 +282,25 @@ public final class CorpusManifest {
 
     private static int stringLength(String value) {
         return value == null ? 0 : value.length();
+    }
+
+    /**
+     * Reads an optional integral JSON field; {@code null} when absent or explicit JSON null.
+     * Arbitrary-precision values that would truncate on narrowing to long are rejected.
+     */
+    private static Long optionalLongField(JsonNode node, String field) {
+        JsonNode value = node.get(field);
+        if (value == null || value.isNull()) {
+            return null;
+        }
+        if (!value.isIntegralNumber()) {
+            throw new ManifestException(ManifestException.Kind.WRONG_TYPE,
+                    "entry field '" + field + "' must be an integer");
+        }
+        if (!value.canConvertToLong()) {
+            throw new ManifestException(ManifestException.Kind.INVALID_VALUE,
+                    "entry field '" + field + "' must fit a long");
+        }
+        return value.longValue();
     }
 }

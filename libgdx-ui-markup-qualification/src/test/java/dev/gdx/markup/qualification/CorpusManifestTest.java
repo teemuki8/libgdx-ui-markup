@@ -205,6 +205,9 @@ final class CorpusManifestTest {
         ObjectNode remote = entry("beta", "beta.png");
         remote.remove("referenceFile");
         remote.put("sourceUrl", "https://example.com/beta.png");
+        remote.put("sha256", "a".repeat(64));
+        remote.put("bytes", 1024);
+        remote.put("mediaType", "image/png");
         array.add(remote);
 
         CorpusManifest manifest = CorpusManifest.load(writeManifest(root));
@@ -216,7 +219,7 @@ final class CorpusManifestTest {
         assertEquals("https://example.com/beta.png", manifest.entries().get(1).sourceUrl());
         assertThrows(UnsupportedOperationException.class,
                 () -> manifest.entries().add(new CorpusEntry("gamma", null, "gamma.png", "MIT",
-                        "gamma.xml", 0.2, 1280, 720)));
+                        "gamma.xml", 0.2, 1280, 720, null, 0, null)));
     }
 
     @Test
@@ -406,6 +409,169 @@ final class CorpusManifestTest {
         Files.writeString(manifest, Files.readString(manifest) + " x");
         ManifestException failure = reject(manifest);
         assertEquals(ManifestException.Kind.INVALID_JSON, failure.kind());
+    }
+
+    // ---------------------------------------------------------------- remote identity
+
+    private static final String VALID_SHA256 = "a".repeat(64);
+
+    /** A valid remote entry whose identity fields can be mutated per test. */
+    private static ObjectNode remoteEntry(String id, String sourceUrl) {
+        ObjectNode node = entry(id, "unused.png");
+        node.remove("referenceFile");
+        node.put("sourceUrl", sourceUrl);
+        node.put("sha256", VALID_SHA256);
+        node.put("bytes", 1024);
+        node.put("mediaType", "image/png");
+        return node;
+    }
+
+    @Test
+    void acceptsRemoteEntryWithFullIdentity() throws IOException {
+        ObjectNode node = remoteEntry("beta", "https://example.com/beta.png");
+        CorpusEntry entry = CorpusManifest.load(writeEntries(node)).entries().get(0);
+        assertEquals("https://example.com/beta.png", entry.sourceUrl());
+        assertEquals(VALID_SHA256, entry.sha256());
+        assertEquals(1024, entry.bytes());
+        assertEquals("image/png", entry.mediaType());
+    }
+
+    @Test
+    void acceptsBytesAtRemoteCap() throws IOException {
+        ObjectNode node = remoteEntry("beta", "https://example.com/beta.png");
+        node.put("bytes", ReferenceImageStore.MAX_BYTES);
+        assertEquals(1, CorpusManifest.load(writeEntries(node)).entries().size());
+    }
+
+    @Test
+    void rejectsHttpSourceUrl() throws IOException {
+        ManifestException failure = reject(writeEntries(remoteEntry("a", "http://example.com/a.png")));
+        assertEquals(ManifestException.Kind.INVALID_VALUE, failure.kind());
+    }
+
+    @Test
+    void rejectsSourceUrlWithUserInfo() throws IOException {
+        ManifestException failure = reject(writeEntries(remoteEntry("a",
+                "https://attacker@example.com/a.png")));
+        assertEquals(ManifestException.Kind.INVALID_VALUE, failure.kind());
+    }
+
+    @Test
+    void rejectsSourceUrlWithFragment() throws IOException {
+        ManifestException failure = reject(writeEntries(remoteEntry("a",
+                "https://example.com/a.png#fragment")));
+        assertEquals(ManifestException.Kind.INVALID_VALUE, failure.kind());
+    }
+
+    @Test
+    void rejectsRemoteEntryMissingSha256() throws IOException {
+        ObjectNode node = remoteEntry("a", "https://example.com/a.png");
+        node.remove("sha256");
+        ManifestException failure = reject(writeEntries(node));
+        assertEquals(ManifestException.Kind.MISSING_FIELD, failure.kind());
+    }
+
+    @Test
+    void rejectsRemoteEntryMissingBytes() throws IOException {
+        ObjectNode node = remoteEntry("a", "https://example.com/a.png");
+        node.remove("bytes");
+        ManifestException failure = reject(writeEntries(node));
+        assertEquals(ManifestException.Kind.INVALID_VALUE, failure.kind());
+    }
+
+    @Test
+    void rejectsRemoteEntryMissingMediaType() throws IOException {
+        ObjectNode node = remoteEntry("a", "https://example.com/a.png");
+        node.remove("mediaType");
+        ManifestException failure = reject(writeEntries(node));
+        assertEquals(ManifestException.Kind.MISSING_FIELD, failure.kind());
+    }
+
+    @Test
+    void rejectsUppercaseSha256() throws IOException {
+        ObjectNode node = remoteEntry("a", "https://example.com/a.png");
+        node.put("sha256", "A".repeat(64));
+        ManifestException failure = reject(writeEntries(node));
+        assertEquals(ManifestException.Kind.INVALID_VALUE, failure.kind());
+    }
+
+    @Test
+    void rejectsShortSha256() throws IOException {
+        ObjectNode node = remoteEntry("a", "https://example.com/a.png");
+        node.put("sha256", "a".repeat(63));
+        ManifestException failure = reject(writeEntries(node));
+        assertEquals(ManifestException.Kind.INVALID_VALUE, failure.kind());
+    }
+
+    @Test
+    void rejectsNonHexSha256() throws IOException {
+        ObjectNode node = remoteEntry("a", "https://example.com/a.png");
+        node.put("sha256", "g" + "a".repeat(63));
+        ManifestException failure = reject(writeEntries(node));
+        assertEquals(ManifestException.Kind.INVALID_VALUE, failure.kind());
+    }
+
+    @Test
+    void rejectsZeroBytes() throws IOException {
+        ObjectNode node = remoteEntry("a", "https://example.com/a.png");
+        node.put("bytes", 0);
+        ManifestException failure = reject(writeEntries(node));
+        assertEquals(ManifestException.Kind.INVALID_VALUE, failure.kind());
+    }
+
+    @Test
+    void rejectsNegativeBytes() throws IOException {
+        ObjectNode node = remoteEntry("a", "https://example.com/a.png");
+        node.put("bytes", -1);
+        ManifestException failure = reject(writeEntries(node));
+        assertEquals(ManifestException.Kind.INVALID_VALUE, failure.kind());
+    }
+
+    @Test
+    void rejectsBytesOverRemoteCap() throws IOException {
+        ObjectNode node = remoteEntry("a", "https://example.com/a.png");
+        node.put("bytes", ReferenceImageStore.MAX_BYTES + 1);
+        ManifestException failure = reject(writeEntries(node));
+        assertEquals(ManifestException.Kind.INVALID_VALUE, failure.kind());
+    }
+
+    @Test
+    void rejectsNonIntegralBytes() throws IOException {
+        ObjectNode node = remoteEntry("a", "https://example.com/a.png");
+        node.put("bytes", 12.5);
+        ManifestException failure = reject(writeEntries(node));
+        assertEquals(ManifestException.Kind.WRONG_TYPE, failure.kind());
+    }
+
+    @Test
+    void rejectsDisallowedMediaType() throws IOException {
+        ObjectNode node = remoteEntry("a", "https://example.com/a.png");
+        node.put("mediaType", "image/gif");
+        ManifestException failure = reject(writeEntries(node));
+        assertEquals(ManifestException.Kind.INVALID_VALUE, failure.kind());
+    }
+
+    @Test
+    void rejectsLocalEntryWithRemoteIdentity() throws IOException {
+        ObjectNode node = entry("a", "a.png");
+        node.put("sha256", VALID_SHA256);
+        ManifestException failure = reject(writeEntries(node));
+        assertEquals(ManifestException.Kind.INVALID_VALUE, failure.kind());
+    }
+
+    @Test
+    void manifestRoundTripsRemoteIdentity() throws IOException {
+        ObjectNode root = JSON.createObjectNode();
+        ArrayNode array = root.putArray("entries");
+        array.add(remoteEntry("beta", "https://example.com/beta.png"));
+        CorpusManifest manifest = CorpusManifest.load(writeManifest(root));
+        Path rewritten = tempDir.resolve("rewritten.json");
+        manifest.write(rewritten, manifest.entries());
+        CorpusEntry roundTripped = CorpusManifest.load(rewritten).entries().get(0);
+        assertEquals("https://example.com/beta.png", roundTripped.sourceUrl());
+        assertEquals(VALID_SHA256, roundTripped.sha256());
+        assertEquals(1024, roundTripped.bytes());
+        assertEquals("image/png", roundTripped.mediaType());
     }
 
     // ---------------------------------------------------------------- ids and paths
