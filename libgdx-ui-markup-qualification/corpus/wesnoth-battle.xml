@@ -18,11 +18,11 @@
         <row/>
         <label id="forest-1" text="##  ###     . . .     ####     . .      ##  ##" width="900" height="30"/>
         <row/>
-        <table id="river-west" class="panel" width="250" height="72" pad="0" align="center center">
+        <table id="river-west" class="field-focused-bg" width="250" height="72" pad="0" align="center center">
           <row/>
           <label id="river-west-text" class="section" text="~  ~  ~  ~  ~  ~" align="center"/>
         </table>
-        <table id="castle-north" class="panel" width="300" height="76" pad="5" align="center center">
+        <table id="castle-north" class="disabled-bg" width="300" height="76" pad="5" align="center center">
           <row/>
           <label id="castle-north-text" class="heading" text="[==]  CASTLE  [==]" align="center"/>
           <row/>
@@ -31,7 +31,7 @@
         <row/>
         <label id="forest-2" text="###       ^ ^ ^       #####       ^ ^       ##" width="900" height="42"/>
         <row/>
-        <table id="river-east" class="panel" width="210" height="86" pad="0" align="right center">
+        <table id="river-east" class="field-focused-bg" width="210" height="86" pad="0" align="right center">
           <row/>
           <label id="river-east-text" class="section" text="~  ~  ~  ~  ~" align="center"/>
         </table>
@@ -52,7 +52,7 @@
           <row/>
           <label id="village-west-gold" class="section" text="income +2" align="center"/>
         </table>
-        <table id="river-south" class="panel" width="300" height="64" pad="0" align="center center">
+        <table id="river-south" class="field-focused-bg" width="300" height="64" pad="0" align="center center">
           <row/>
           <label id="river-south-text" class="section" text="~  ~  ~  ~  ~  ~" align="center"/>
         </table>

@@ -4,6 +4,9 @@
 .backdrop { background: background; }
 .panel { background: panel; padding: 18px; }
 .panel-alt { background: panel-alt; }
+.field-focused-bg { background: field-focused; }
+.selection-bg { background: selection; }
+.disabled-bg { background: panel-alt; }
 .accent-bar { background: accent; }
 .title { font-color: accent; }
 .heading { font-color: text; }
