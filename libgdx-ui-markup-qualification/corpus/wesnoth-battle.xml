@@ -16,8 +16,8 @@
       <table id="battlefield" class="panel-alt" width="1090" height="674" pad="8" align="left top">
         <table width="1134" height="104" pad="3">
           <table class="panel-alt" width="378" height="98" pad="4"><label id="ridge-1" class="heading" text="^ ^ ^   ^ ^" width="350" align="left"/><row/><label id="forest-1" class="section" text="##  ###  . . ." width="350" align="right"/><row/><label class="section" text=". . ^ ^ . ." width="350" align="center"/></table>
-          <table class="field-focused-bg" width="378" height="98" pad="4"><label id="river-west-text" class="section" text="~  ~  ~  ~  ~" width="350" align="left"/><row/><label class="section" text="~ ~ ~ ~ ~ ~" width="350" align="right"/><row/><label class="heading" text=". . ~ ~ . ." width="350" align="center"/></table>
           <table class="disabled-bg" width="378" height="98" pad="4"><label id="castle-north-text" class="heading" text="[==] CASTLE [==]" width="350" align="center"/><row/><label id="castle-gate" class="section" text="[__] . . ." width="350" align="left"/><row/><label class="heading" text="^ ^ ^   ^ ^" width="350" align="right"/></table>
+          <table class="field-focused-bg" width="378" height="98" pad="4"><label id="river-west-text" class="section" text="~  ~  ~  ~  ~" width="350" align="left"/><row/><label class="section" text="~ ~ ~ ~ ~ ~" width="350" align="right"/><row/><label class="heading" text=". . ~ ~ . ." width="350" align="center"/></table>
         </table>
         <row/>
         <table width="1134" height="104" pad="3">
