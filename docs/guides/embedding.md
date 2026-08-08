@@ -147,9 +147,11 @@ The token passed to `HarnessSemanticSink` must **equal** the
 `UiFrameCorrelation.correlationToken()` recorded per frame. The preview uses
 `markup-preview-frame`; an application with its own correlation token must pass **its own**
 token to the sink and record every frame's correlation under that same token. A mismatch is
-silent: the wiring compiles, `ui_runtime_compare` runs, and returns `STALE`/`UNCORRELATED`
-with no diagnostic naming the token. Choose one stable application-scoped value and never
-change it without re-recording.
+silent at compile time but not at runtime: `AgentRuntimeObservationSource` can prove no frame
+for the binding, so `ui_runtime_compare` reports `UNAVAILABLE` — never `STALE`/`UNCORRELATED`
+through this source. The recovery is to record every frame's correlation under the exact token
+passed to the sink (the sink's Javadoc and the statuses section below name the same checks).
+Choose one stable application-scoped value and never change it without re-recording.
 
 ## 4. Serve ui_runtime_compare on the render-thread scheduler
 
@@ -197,8 +199,10 @@ void afterDraw() {           // end of frame
 Draining before advancing means the comparator runs against the clock frame recorded by the
 *previous* frame's correlation — the snapshot it takes is exactly the correlated frame.
 Reversing the order (advance, then drain) yields a snapshot one frame ahead of the recorded
-correlation and degrades the comparison to `STALE`/`UNCORRELATED`. This is the single most
-common wiring bug.
+correlation: the source still proves the older frame, so the comparison degrades to `STALE`
+(never `UNCORRELATED` through this source). If instead the correlation is recorded against a
+frame that is no longer the latest — or the token mismatches — the source can prove nothing
+and the comparison is `UNAVAILABLE`. This loop order is the single most common wiring bug.
 
 With the controlled clock, the clock drives `stage.act`; do not call `stage.act` separately in
 the MCP path (the preview branches on this).
@@ -213,17 +217,27 @@ guide's "Threading and frame wiring" section for the same wiring.
 ## Statuses and what they mean
 
 `ui_runtime_compare` returns a typed status; treat any status other than `EQUAL` as a wiring
-or state problem:
+or state problem. Through `AgentRuntimeObservationSource` (the adapter this guide wires), an
+observation exists only when the correlation is provable, so the comparator reports
+`UNAVAILABLE` for correlation problems, `STALE` only for a snapshot ahead of the proven frame,
+and never `UNCORRELATED`:
 
 | Status | Meaning | Common cause |
 |---|---|---|
 | `EQUAL` | displayed value equals the runtime value on a proven frame | — |
 | `MISMATCH` | displayed value differs from the runtime value on a proven frame | state changed between snapshot and correlation |
-| `STALE` | correlation exists but is not provable for the snapshot frame | loop order wrong (advance before drain), or clock not deterministic |
-| `UNCORRELATED` | no correlation matches the binding's token/frame | token mismatch between sink and `UiFrameCorrelation`, or no correlation recorded for the frame |
+| `STALE` | observation proven for an older frame than the snapshot | loop order wrong (advance before drain), or clock not deterministic |
+| `UNCORRELATED` | no provable frame | not reachable through `AgentRuntimeObservationSource`: its observations always carry a proven frame; a clock-based source (no strict correlation) may emit it |
 | `MISSING` | actor has no runtime binding | `data-runtime-entity` absent, or build ran with a `NoopSink` |
-| `UNAVAILABLE` | observation source cannot observe | `AgentRuntime` not started, or source not wired |
+| `UNAVAILABLE` | the adapter emits no observation for the binding | token mismatch between `HarnessSemanticSink` and `UiFrameCorrelation`; no correlation recorded for the latest frame (correlation recording lagging the frame capture); `AgentRuntime` not started, or source not wired |
 | `AMBIGUOUS` | locator matched multiple actors | markup ids not unique |
+
+**Recovery.** When `ui_runtime_compare` reports `UNAVAILABLE` for a bound actor, verify that
+the exact correlation token passed to `HarnessSemanticSink` equals the
+`UiFrameCorrelation.correlationToken()` recorded for each rendered frame, then drain
+observations before advancing the frame (step 5). The runtime's `framesForUiSession` lists
+which correlations the session actually recorded and under which token; the binding's token is
+the one passed to `HarnessSemanticSink`.
 
 ## Reference implementations
 

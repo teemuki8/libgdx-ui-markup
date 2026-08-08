@@ -29,8 +29,10 @@ import io.github.teemuki8.libgdx.agent.runtime.core.RuntimeValue;
 import io.github.teemuki8.libgdx.agent.runtime.core.RuntimeValues;
 import io.github.teemuki8.libgdx.agent.runtime.core.SessionId;
 import io.github.teemuki8.libgdx.agent.runtime.core.UiCorrelationLimits;
+import io.github.teemuki8.libgdx.agent.runtime.core.UiFrameCorrelation;
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 /** Render-thread runtime source tests; run with {@code xvfb-run} for a real GL context. */
@@ -606,6 +608,106 @@ final class MarkupRuntimeSourceTest {
                         .property("value").orElseThrow();
                 assertEquals("Bob", ((RuntimeValue.StringValue) updated).value(),
                         "widget mirror tracks the live widget, not a one-off readback");
+            }
+            runtime.close();
+        });
+    }
+
+    /**
+     * The harness observation source proves a frame only through a {@link UiFrameCorrelation}
+     * whose token equals the binding's correlation token. Recording every correlation under a
+     * different token therefore leaves the latest frame unprovable: the adapter emits no
+     * observation and {@code ui_runtime_compare} reports {@code UNAVAILABLE} (never
+     * {@code STALE}/{@code UNCORRELATED}) through that source.
+     */
+    @Test
+    void tokenMismatchLeavesTheLatestFrameUncorrelated() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupDocument document = markup.parse(
+                    "<ui><table><textfield id=\"user\" data-runtime-entity=\"user\"/></table></ui>");
+            BuiltUi built = MarkupBuilder.build(document, css.parse(""), skin, new NoopSink());
+            AgentRuntime runtime = AgentRuntime.builder()
+                    .sessionId(SessionId.of("runtime-test")).build();
+            runtime.start();
+            try (MarkupRuntimeSource source = MarkupRuntimeSource.registerWidgetMirror(
+                    runtime, document, built, "markup-preview")) {
+                assertEquals(List.of("user"), source.registeredEntities());
+                runtime.beginFrame(Duration.ofMillis(16).toNanos());
+                runtime.endFrame();
+                runtime.uiCorrelations().recordFrame(new UiFrameCorrelation(
+                        runtime.currentEpoch(),
+                        runtime.latestFrame().orElseThrow().frameId(),
+                        "markup-preview",
+                        Optional.of("1"),
+                        Optional.of("application-owned-token")));
+                runtime.beginFrame(Duration.ofMillis(16).toNanos());
+                runtime.endFrame();
+
+                List<UiFrameCorrelation> correlations = runtime.uiCorrelations()
+                        .framesForUiSession("markup-preview", 64).items();
+                assertEquals(1, correlations.size(),
+                        "the session recorded one correlation, under the application's token");
+                assertTrue(correlations.stream().noneMatch(correlation ->
+                                correlation.correlationToken()
+                                        .equals(Optional.of("markup-preview-frame"))),
+                        "no correlation matches the binding's token, so the observation source "
+                                + "resolves nothing (UNAVAILABLE) for a token mismatch");
+                assertTrue(correlations.stream().noneMatch(correlation ->
+                                correlation.runtimeFrameId().equals(
+                                        runtime.latestFrame().orElseThrow().frameId())),
+                        "the latest frame carries no correlation under the binding's token, so "
+                                + "the observation source cannot prove it (UNAVAILABLE)");
+            }
+            runtime.close();
+        });
+    }
+
+    /**
+     * Reversed drain/frame-order: the frame capture outpaced the correlation recording, so the
+     * correlation describes a frame that is no longer the latest when the observation runs. The
+     * adapter proves frames only by exact runtime-frame id, so the latest frame is unprovable:
+     * it emits no observation and {@code ui_runtime_compare} reports {@code UNAVAILABLE} (never
+     * {@code STALE}/{@code UNCORRELATED}) through that source.
+     */
+    @Test
+    void correlationRecordedForAnOlderFrameLeavesTheLatestFrameUnprovable() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupDocument document = markup.parse(
+                    "<ui><table><textfield id=\"user\" data-runtime-entity=\"user\"/></table></ui>");
+            BuiltUi built = MarkupBuilder.build(document, css.parse(""), skin, new NoopSink());
+            AgentRuntime runtime = AgentRuntime.builder()
+                    .sessionId(SessionId.of("runtime-test")).build();
+            runtime.start();
+            try (MarkupRuntimeSource source = MarkupRuntimeSource.registerWidgetMirror(
+                    runtime, document, built, "markup-preview")) {
+                assertEquals(List.of("user"), source.registeredEntities());
+                runtime.beginFrame(Duration.ofMillis(16).toNanos());
+                runtime.endFrame();
+                runtime.uiCorrelations().recordFrame(new UiFrameCorrelation(
+                        runtime.currentEpoch(),
+                        runtime.latestFrame().orElseThrow().frameId(),
+                        "markup-preview",
+                        Optional.of("1"),
+                        Optional.of("markup-preview-frame")));
+                runtime.beginFrame(Duration.ofMillis(16).toNanos());
+                runtime.endFrame();
+
+                List<UiFrameCorrelation> correlations = runtime.uiCorrelations()
+                        .framesForUiSession("markup-preview", 64).items();
+                assertEquals(1, correlations.size(),
+                        "only the first frame's correlation was recorded before the second capture");
+                assertTrue(correlations.stream().noneMatch(correlation ->
+                                correlation.runtimeFrameId().equals(
+                                        runtime.latestFrame().orElseThrow().frameId())),
+                        "no correlation references the latest frame, so the observation source "
+                                + "cannot prove it (UNAVAILABLE) after a reversed frame order");
+                assertTrue(correlations.stream().allMatch(correlation ->
+                                correlation.correlationToken()
+                                        .equals(Optional.of("markup-preview-frame"))),
+                        "the recorded correlation still carries the matching token; the failure "
+                                + "is the frame-order mismatch, not a token mismatch");
             }
             runtime.close();
         });

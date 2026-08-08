@@ -56,9 +56,13 @@ public final class HarnessSemanticSink implements SemanticSink {
      * which {@code ui_runtime_compare} proves frame equality. Every {@code data-runtime-entity}
      * binding carries this token, and the harness {@code AgentRuntimeObservationSource} resolves
      * bindings only against correlations recorded with the same token. A token that matches
-     * nothing silently degrades {@code ui_runtime_compare} to {@code STALE}/{@code UNCORRELATED}
-     * with no diagnostic naming the token, so choose one stable application-scoped value and
-     * record every frame's correlation under it.
+     * nothing leaves every binding unprovable: the source emits no observation and
+     * {@code ui_runtime_compare} reports {@code UNAVAILABLE} — never {@code STALE} or
+     * {@code UNCORRELATED} through this source. The comparison result still names the binding's
+     * {@code correlationId} (the token to verify against the recorded
+     * {@code UiFrameCorrelation}s); the recovery is to record every frame's correlation under
+     * the exact token passed here, then drain observations before advancing the frame. Choose
+     * one stable application-scoped value and record every frame's correlation under it.
      *
      * <p>The preview uses {@code markup-preview-frame}; an application with its own frame
      * correlation must pass its own token here, not the preview's value. See
