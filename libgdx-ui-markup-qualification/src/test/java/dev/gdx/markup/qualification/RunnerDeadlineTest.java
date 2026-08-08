@@ -27,6 +27,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 import javax.imageio.ImageIO;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -547,6 +548,37 @@ final class RunnerDeadlineTest {
                     "no child may be spawned when the deadline is already spent");
             assertArrayEquals(before, Files.readAllBytes(manifest),
                     "calibration must never commit a partial manifest");
+        }
+    }
+
+    @Test
+    @Timeout(30)
+    void drainJoinRestoresAnInterruptThatArrivesMidJoin() throws Exception {
+        Fixture fixture = corpus();
+        MutableClock clock = new MutableClock();
+        ScriptedLauncher launcher = new ScriptedLauncher(List.of());
+        // A wedged drain that never finishes on its own; only the runner's cancel (interrupt)
+        // ends it, so the bounded join blocks until then.
+        Thread stubborn = Thread.ofPlatform().name("stubborn-drain").start(() -> {
+            while (!Thread.currentThread().isInterrupted()) {
+                LockSupport.park();
+            }
+        });
+        try (QualificationRunner runner = runner(fixture, clock, launcher, HOUR,
+                new WorkBudget(8, 1_000_000, 100))) {
+            Thread caller = Thread.currentThread();
+            // Fire a fresh interrupt while the caller is blocked inside the bounded join.
+            Thread interrupter = Thread.ofPlatform().start(() -> {
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(50));
+                caller.interrupt();
+            });
+            long deadline = clock.nanoTime() + Duration.ofHours(1).toNanos();
+            runner.joinDrains(List.of(stubborn), deadline);
+            assertTrue(Thread.interrupted(),
+                    "an interrupt that arrives during the drain join must be restored");
+            assertFalse(stubborn.isAlive(),
+                    "the wedged drain must be cancelled and confirmed terminal");
+            interrupter.join();
         }
     }
 

@@ -665,9 +665,11 @@ public final class QualificationRunner implements AutoCloseable {
      * finish at the deadline is cancelled (interrupted) instead of being dropped alive. The
      * pipe ends were already closed, so a well-behaved drain unblocks at EOF. Works even when
      * the calling thread is itself interrupted: the interrupt is cleared for the duration of
-     * the join and restored afterwards, so a cancelled run still confirms its drain joins.
+     * the join and restored afterwards — including an interrupt that arrives while a join is
+     * blocking — and a cancelled drain is kept joined within the same deadline so its
+     * termination is confirmed before the handle is dropped.
      */
-    private void joinDrains(List<Thread> drains, long deadlineNanos) {
+    void joinDrains(List<Thread> drains, long deadlineNanos) {
         boolean interrupted = Thread.interrupted();
         try {
             for (Thread drain : drains) {
@@ -680,8 +682,11 @@ public final class QualificationRunner implements AutoCloseable {
                     try {
                         drain.join(Math.max(1, Math.min(remaining / 1_000_000, 10)));
                     } catch (InterruptedException interruptedDuringJoin) {
+                        // A fresh interrupt arrived while joining: remember it so the flag is
+                        // restored, cancel this drain, and keep joining it within the shared
+                        // deadline until it terminates or the deadline is spent.
+                        interrupted = true;
                         drain.interrupt();
-                        break;
                     }
                 }
             }
