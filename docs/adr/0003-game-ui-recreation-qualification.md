@@ -82,9 +82,14 @@ real game UI screenshots.
 
 ## Measured calibration (2026-08-08, strict run twice with byte-identical reports)
 
+The detail local term averages over reference-detail cells only (reference-blank cells are
+outside its scope; reference-detail cells the recreation leaves empty score 0), combined with
+the global gradient-energy ratio. The authoritative verdict additionally fails an entry whose
+structured-cell density leaves the reference band (`STRUCTURE_DENSITY` in failedDimensions).
+
 | entry | geometry | color | detail | coarse (diag) |
 |---|---|---|---|---|
-| palisade-skirmish | 0.201 / thr 0.161 | 0.920 / 0.702 | 0.479 / 0.405 | 0.473 / 0.307 |
+| palisade-skirmish | 0.201 / thr 0.161 | 0.920 / 0.702 | 0.401 / 0.322 | 0.473 / 0.307 |
 | hades-boon | 0.111 / 0.106 | 0.068 / 0.047 | 0.093 / 0.077 | 0.366 / 0.238 |
 | sts-shop | 0.084 / 0.076 | 0.259 / 0.211 | 0.128 / 0.110 | 0.351 / 0.228 |
 | wesnoth-battle | 0.093 / 0.088 | 0.060 / 0.055 | 0.051 / 0.044 | 0.362 / 0.235 |

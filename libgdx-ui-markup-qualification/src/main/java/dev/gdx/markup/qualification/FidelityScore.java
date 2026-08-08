@@ -33,13 +33,15 @@ public record FidelityScore(
         }
     }
 
-    /** Returns the component with the given name, or throws for the diagnostic-only name. */
+    /** Returns the component with the given name, or throws for unmeasured components. */
     public double component(FidelityComponent component) {
         return switch (component) {
             case GEOMETRY -> geometry;
             case COLOR -> color;
             case DETAIL -> detail;
             case COARSE_LAYOUT -> coarseLayout;
+            case STRUCTURE_DENSITY -> throw new IllegalArgumentException(
+                    "STRUCTURE_DENSITY is not a measured score component");
         };
     }
 

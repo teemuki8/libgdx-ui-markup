@@ -40,6 +40,8 @@ public record FidelityThresholds(
             case COARSE_LAYOUT -> coarseLayout == null
                     ? Double.NaN
                     : coarseLayout;
+            case STRUCTURE_DENSITY -> throw new IllegalArgumentException(
+                    "STRUCTURE_DENSITY is not a thresholded component");
         };
     }
 

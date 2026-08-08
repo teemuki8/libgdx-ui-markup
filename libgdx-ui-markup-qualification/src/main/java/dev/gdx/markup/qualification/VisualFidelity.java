@@ -65,7 +65,8 @@ public final class VisualFidelity {
         return measure(pixels(reference), pixels(recreation));
     }
 
-    private static FidelityScore measure(Pixels reference, Pixels recreation) {
+    /** Package-private seam for allocation-bounded tests over counting pixel sources. */
+    static FidelityScore measure(Pixels reference, Pixels recreation) {
         RegionSimilarity.Regions coarse = RegionSimilarity.measure(
                 reference.width(), reference.height(), reference::rgb,
                 recreation.width(), recreation.height(), recreation::rgb);
@@ -91,8 +92,10 @@ public final class VisualFidelity {
      * orientation weighting is what rejects the layout negatives, not grid resolution.
      */
     private static double geometry(Pixels a, Pixels b) {
-        boolean[][] maskA = edgeMask(a);
-        boolean[][] maskB = edgeMask(b);
+        int[] grayA = gray(a);
+        int[] grayB = gray(b);
+        boolean[][] maskA = edgeMask(a, grayA);
+        boolean[][] maskB = edgeMask(b, grayB);
         int countA = 0;
         int countB = 0;
         double orientedIntersection = 0;
@@ -105,7 +108,7 @@ public final class VisualFidelity {
                     countB++;
                 }
                 if (maskA[row][col] && maskB[row][col]) {
-                    orientedIntersection += orientationSimilarity(a, b, row, col);
+                    orientedIntersection += orientationSimilarity(a, grayA, b, grayB, row, col);
                 }
             }
         }
@@ -118,14 +121,17 @@ public final class VisualFidelity {
         return 2.0 * orientedIntersection / (countA + countB);
     }
 
-    /** Directed-gradient orientation similarity of one cell pair, in [0, 1]. */
-    private static double orientationSimilarity(Pixels a, Pixels b, int row, int col) {
+    /**
+     * Directed-gradient orientation similarity of one cell pair, in [0, 1]. The gray arrays
+     * are computed once per image by the caller and reused across every cell, so the metric
+     * reads each pixel a bounded number of times instead of re-decoding per matched cell.
+     */
+    private static double orientationSimilarity(Pixels a, int[] grayA, Pixels b, int[] grayB,
+            int row, int col) {
         int widthA = a.width();
         int heightA = a.height();
         int widthB = b.width();
         int heightB = b.height();
-        int[] grayA = gray(a);
-        int[] grayB = gray(b);
         int[] binA = new int[4];
         int[] binB = new int[4];
         int countA = 0;
@@ -159,10 +165,9 @@ public final class VisualFidelity {
     }
 
     /** Classifies cells as edge-structured using the image's own gradient histogram. */
-    private static boolean[][] edgeMask(Pixels pixels) {
+    private static boolean[][] edgeMask(Pixels pixels, int[] gray) {
         int width = pixels.width();
         int height = pixels.height();
-        int[] gray = gray(pixels);
         double[] cells = new double[GRID_COLS * GRID_ROWS];
         double total = 0;
         for (int row = 0; row < GRID_ROWS; row++) {
@@ -324,13 +329,11 @@ public final class VisualFidelity {
                         }
                     }
                 }
-                if (energyA == 0 && energyB == 0) {
-                    total += 1.0; // blank agreement
-                    counted++;
-                    continue;
+                if (energyA == 0) {
+                    continue; // reference-blank cell: outside the local detail scope
                 }
-                if (energyA == 0 || energyB == 0) {
-                    total += 0.0; // one-sided detail: missing or spurious
+                if (energyB == 0) {
+                    total += 0.0; // missing reference detail
                     counted++;
                     continue;
                 }
@@ -434,7 +437,7 @@ public final class VisualFidelity {
     }
 
     /** Read-only pixel source so metrics never see or mutate the decoded images. */
-    private interface Pixels {
+    interface Pixels {
         int width();
 
         int height();

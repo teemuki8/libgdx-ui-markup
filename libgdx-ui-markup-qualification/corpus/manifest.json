@@ -8,7 +8,7 @@
     "thresholds" : {
       "geometry" : 0.161,
       "color" : 0.702,
-      "detail" : 0.405,
+      "detail" : 0.322,
       "coarseLayout" : 0.307
     },
     "referenceWidth" : 1280,

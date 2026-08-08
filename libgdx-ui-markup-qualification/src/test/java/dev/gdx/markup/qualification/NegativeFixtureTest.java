@@ -50,7 +50,7 @@ final class NegativeFixtureTest {
                 case GEOMETRY -> geometryThreshold;
                 case COLOR -> colorThreshold;
                 case DETAIL -> detailThreshold;
-                case COARSE_LAYOUT -> throw new AssertionError();
+                case COARSE_LAYOUT, STRUCTURE_DENSITY -> throw new AssertionError();
             };
             assertTrue(score.component(component) < threshold,
                     "fixture palisade-" + fixture.getKey() + " must be rejected by "

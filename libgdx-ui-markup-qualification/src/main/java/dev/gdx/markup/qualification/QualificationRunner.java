@@ -64,11 +64,28 @@ public final class QualificationRunner implements AutoCloseable {
                     entry.thresholds(), skipped, List.of());
         }
         FidelityScore score = measured.orElseThrow();
-        List<FidelityComponent> failed =
-                QualificationPolicy.failedComponents(score, entry.thresholds());
+        List<FidelityComponent> failed = failedDimensions(score, entry.thresholds());
         Verdict verdict = failed.isEmpty() ? Verdict.PASS : Verdict.FAIL;
         return new EntryResult(entry.id(), entry.license(), score, entry.thresholds(), verdict,
                 failed);
+    }
+
+    /**
+     * The authoritative failed-dimension list: any required component below its threshold
+     * plus the {@link FidelityComponent#STRUCTURE_DENSITY} invariant (recreation structured
+     * cells outside the reference's density band). Package-private so tests can prove a
+     * report can never PASS an empty or screen-flooding mask.
+     */
+    static List<FidelityComponent> failedDimensions(FidelityScore score,
+            FidelityThresholds thresholds) {
+        List<FidelityComponent> failed =
+                QualificationPolicy.failedComponents(score, thresholds);
+        if (!QualificationPolicy.densityInBand(score.referenceCells(),
+                score.recreationCells())) {
+            failed = new ArrayList<>(failed);
+            failed.add(FidelityComponent.STRUCTURE_DENSITY);
+        }
+        return failed;
     }
 
     /**

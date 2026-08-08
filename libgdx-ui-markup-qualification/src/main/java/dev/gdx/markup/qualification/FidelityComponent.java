@@ -18,7 +18,14 @@ public enum FidelityComponent {
     /** Typography/detail fidelity: grid-local high-frequency magnitude and orientation. */
     DETAIL,
     /** Diagnostic-only dilated-region overlap (never gates). */
-    COARSE_LAYOUT;
+    COARSE_LAYOUT,
+    /**
+     * Recreation structured-cell density outside the reference's band: the recreation either
+     * floods the screen or has almost no structure, either of which could game a
+     * region-overlap score. Not a measured component with a threshold; it appears only in an
+     * entry's failedDimensions and verdict.
+     */
+    STRUCTURE_DENSITY;
 
     /** The components that gate the qualification verdict. */
     public static final List<FidelityComponent> REQUIRED = List.of(GEOMETRY, COLOR, DETAIL);

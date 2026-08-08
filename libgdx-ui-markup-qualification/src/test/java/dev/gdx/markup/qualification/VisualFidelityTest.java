@@ -273,6 +273,92 @@ final class VisualFidelityTest {
         assertTrue(identity.detail() > ceiling, "identity detail must clear the ceiling");
     }
 
+    // --------------------------------------- detail scope and allocation boundedness
+
+    @Test
+    @Timeout(60)
+    void detailScoresOnlyReferenceDetailCellsSparseLocalized() {
+        BufferedImage reference = sparseDetailReference();
+        BufferedImage matching = detailPatchAt(reference, 24, 24);
+        BufferedImage misplaced = detailPatchAt(reference, 460, 250);
+        FidelityScore matchingScore = VisualFidelity.measure(reference, matching);
+        FidelityScore misplacedScore = VisualFidelity.measure(reference, misplaced);
+        assertTrue(matchingScore.detail() > misplacedScore.detail() + 0.2,
+                "a recreation whose detail sits in the reference's detail cells must score "
+                        + "well above one whose detail sits in reference-blank cells: "
+                        + matchingScore.detail() + " vs " + misplacedScore.detail());
+        assertTrue(matchingScore.detail() > 0.5,
+                "the localized matching detail must score high: " + matchingScore.detail());
+    }
+
+    @Test
+    @Timeout(60)
+    void metricsReadEachPixelABoundedNumberOfTimes() {
+        BufferedImage image = syntheticUi();
+        CountingPixels reference = new CountingPixels(image);
+        CountingPixels recreation = new CountingPixels(syntheticUi());
+        VisualFidelity.measure(reference, recreation);
+        long pixels = (long) image.getWidth() * image.getHeight();
+        assertTrue(reference.reads() <= 10 * pixels,
+                "reference pixels must be read a bounded number of times (gray once per "
+                        + "metric, never re-decoded per cell): " + reference.reads()
+                        + " reads for " + pixels + " pixels");
+        assertTrue(recreation.reads() <= 10 * pixels,
+                "recreation pixels must be read a bounded number of times: "
+                        + recreation.reads() + " reads for " + pixels + " pixels");
+    }
+
+    /**
+     * A mostly-blank reference with a single localized text-like detail patch; the patch
+     * occupies a small number of 8x8 grid cells near the top-left.
+     */
+    private static BufferedImage sparseDetailReference() {
+        BufferedImage image = new BufferedImage(640, 360, BufferedImage.TYPE_INT_RGB);
+        fill(image, 0xff10141a);
+        for (int row = 0; row < 6; row++) {
+            fillRect(image, 24, 24 + row * 14, 160, 6, 0xffe8e0c8);
+        }
+        return image;
+    }
+
+    /** Draws a text-like detail patch at the given top-left corner of a dark canvas. */
+    private static BufferedImage detailPatchAt(BufferedImage template, int x0, int y0) {
+        BufferedImage image = new BufferedImage(template.getWidth(), template.getHeight(),
+                BufferedImage.TYPE_INT_RGB);
+        fill(image, 0xff10141a);
+        for (int row = 0; row < 6; row++) {
+            fillRect(image, x0, y0 + row * 14, 160, 6, 0xffe8e0c8);
+        }
+        return image;
+    }
+
+    /** Counts pixel reads through the package-private Pixels seam. */
+    private static final class CountingPixels implements VisualFidelity.Pixels {
+        private final BufferedImage image;
+        private long reads;
+
+        CountingPixels(BufferedImage image) {
+            this.image = image;
+        }
+
+        long reads() {
+            return reads;
+        }
+
+        @Override public int width() {
+            return image.getWidth();
+        }
+
+        @Override public int height() {
+            return image.getHeight();
+        }
+
+        @Override public int rgb(int x, int y) {
+            reads++;
+            return image.getRGB(x, y);
+        }
+    }
+
     // -------------------------------------------------------------------- fixtures
 
     /** A deterministic synthetic canvas: dark background plus light horizontal stripes. */
