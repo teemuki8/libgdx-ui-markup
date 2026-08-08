@@ -94,10 +94,51 @@ public final class QualificationRunner implements AutoCloseable {
         manifest.write(corpusDir.resolve("manifest.json"), updated);
     }
 
+    /**
+     * Resolves a manifest-relative path inside {@code root}, rejecting lexical escape and
+     * symlink escape through real parent paths. Escape attempts fail loudly as typed
+     * diagnostics; a missing file inside the root is a normal "absent" outcome for callers.
+     */
+    static Path resolveInside(Path root, String relative) {
+        Path normalizedRoot = root.toAbsolutePath().normalize();
+        Path candidate = normalizedRoot.resolve(relative).normalize();
+        if (!candidate.startsWith(normalizedRoot)) {
+            throw new ManifestException(ManifestException.Kind.OUTSIDE_ROOT,
+                    "path escapes " + root + ": " + relative);
+        }
+        try {
+            Path realRoot = realPathOf(normalizedRoot);
+            if (!realPathOf(candidate).startsWith(realRoot)) {
+                throw new ManifestException(ManifestException.Kind.SYMLINK_ESCAPE,
+                        "path resolves outside " + root + " via symlink: " + relative);
+            }
+        } catch (IOException failure) {
+            throw new ManifestException(ManifestException.Kind.IO,
+                    "cannot resolve real path under " + root + ": " + relative, failure);
+        }
+        return candidate;
+    }
+
+    /**
+     * Resolves symlinks for the deepest existing ancestor and re-appends the missing tail, so
+     * containment can be verified for paths whose final file does not exist yet.
+     */
+    private static Path realPathOf(Path path) throws IOException {
+        Path existing = path;
+        while (!Files.exists(existing)) {
+            Path parent = existing.getParent();
+            if (parent == null) {
+                throw new IOException("no existing ancestor of " + path);
+            }
+            existing = parent;
+        }
+        return existing.toRealPath().resolve(existing.relativize(path));
+    }
+
     /** Resolves the entry's reference: a committed corpus file or a fetched remote image. */
     private Optional<Path> reference(CorpusEntry entry) {
         if (entry.referenceFile() != null) {
-            Path local = corpusDir.resolve(entry.referenceFile());
+            Path local = resolveInside(corpusDir, entry.referenceFile());
             return Files.isRegularFile(local) ? Optional.of(local) : Optional.empty();
         }
         return store.reference(entry);
@@ -129,9 +170,9 @@ public final class QualificationRunner implements AutoCloseable {
 
     /** Renders one recreation through the preview binary; empty when the process fails. */
     private Optional<Path> render(CorpusEntry entry) {
-        Path xml = corpusDir.resolve(entry.markupFile());
+        Path xml = resolveInside(corpusDir, entry.markupFile());
         Path css = corpusDir.resolve("shared.css");
-        Path screenshot = outputDir.resolve(entry.id() + ".png");
+        Path screenshot = resolveInside(outputDir, entry.id() + ".png");
         Path lib = previewDistribution.resolve("lib");
         if (!Files.isDirectory(lib)) {
             return Optional.empty();

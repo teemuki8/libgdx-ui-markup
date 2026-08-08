@@ -1,19 +1,43 @@
 package dev.gdx.markup.qualification;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 
-/** Loads and rewrites the bounded corpus manifest ({@code manifest.json}). */
+/**
+ * Loads and rewrites the bounded corpus manifest ({@code manifest.json}).
+ *
+ * <p>Loading is strict: the file bytes, entry count, per-string lengths, and aggregate string
+ * work are capped, every field must belong to the bounded schema with the expected JSON type,
+ * and entries are validated by {@link CorpusEntry} before any file is touched.
+ */
 public final class CorpusManifest {
-    private static final ObjectMapper JSON = new ObjectMapper();
+    /** Maximum manifest file size in bytes, including surrounding whitespace. */
+    public static final int MAX_MANIFEST_BYTES = 1024 * 1024;
+    /** Maximum number of corpus entries. */
+    public static final int MAX_ENTRIES = 64;
+    /** Maximum length of any single string field. */
+    public static final int MAX_STRING_LENGTH = 4096;
+    /** Maximum length of an entry id. */
+    public static final int MAX_ID_LENGTH = 64;
+    /** Maximum aggregate string work across all entries (sum of all string lengths). */
+    public static final long MAX_AGGREGATE_WORK = 64 * 1024;
+
+    private static final ObjectMapper JSON = new ObjectMapper()
+            .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+    private static final Set<String> MANIFEST_FIELDS = Set.of("comment", "entries");
+    private static final Set<String> ENTRY_FIELDS = Set.of(
+            "id", "sourceUrl", "referenceFile", "license", "markupFile",
+            "threshold", "referenceWidth", "referenceHeight");
 
     private final String comment;
     private final List<CorpusEntry> entries;
@@ -25,27 +49,65 @@ public final class CorpusManifest {
 
     /** Parses one manifest file; the corpus must contain at least one entry. */
     public static CorpusManifest load(Path manifestFile) {
+        byte[] bytes = readBounded(manifestFile);
+        JsonNode root;
         try {
-            JsonNode root = JSON.readTree(manifestFile.toFile());
-            List<CorpusEntry> parsed = new ArrayList<>();
-            for (JsonNode node : root.path("entries")) {
-                parsed.add(new CorpusEntry(
-                        node.path("id").asText(),
-                        nullable(node, "sourceUrl"),
-                        nullable(node, "referenceFile"),
-                        node.path("license").asText(),
-                        node.path("markupFile").asText(),
-                        node.path("threshold").asDouble(),
-                        node.path("referenceWidth").asInt(),
-                        node.path("referenceHeight").asInt()));
-            }
-            if (parsed.isEmpty()) {
-                throw new IllegalArgumentException("corpus manifest declares no entries");
-            }
-            return new CorpusManifest(root.path("comment").asText(null), parsed);
+            root = JSON.readValue(bytes, JsonNode.class);
         } catch (IOException failure) {
-            throw new UncheckedIOException("cannot read corpus manifest " + manifestFile, failure);
+            throw new ManifestException(ManifestException.Kind.INVALID_JSON,
+                    "cannot parse corpus manifest " + manifestFile, failure);
         }
+        if (!root.isObject()) {
+            throw new ManifestException(ManifestException.Kind.WRONG_TYPE,
+                    "corpus manifest root must be a JSON object");
+        }
+        rejectUnknownFields(root, MANIFEST_FIELDS, "manifest");
+        String comment = root.hasNonNull("comment")
+                ? textField(root, "comment", "manifest")
+                : null;
+        JsonNode entriesNode = root.get("entries");
+        if (entriesNode == null) {
+            throw new ManifestException(ManifestException.Kind.MISSING_FIELD,
+                    "manifest is missing required field 'entries'");
+        }
+        if (!entriesNode.isArray()) {
+            throw new ManifestException(ManifestException.Kind.WRONG_TYPE,
+                    "manifest field 'entries' must be an array");
+        }
+        if (entriesNode.size() > MAX_ENTRIES) {
+            throw new ManifestException(ManifestException.Kind.TOO_MANY_ENTRIES,
+                    "manifest declares " + entriesNode.size() + " entries, cap is " + MAX_ENTRIES);
+        }
+        if (entriesNode.isEmpty()) {
+            throw new ManifestException(ManifestException.Kind.MISSING_FIELD,
+                    "corpus manifest declares no entries");
+        }
+        List<CorpusEntry> parsed = new ArrayList<>(entriesNode.size());
+        long aggregateWork = 0;
+        for (JsonNode node : entriesNode) {
+            if (!node.isObject()) {
+                throw new ManifestException(ManifestException.Kind.WRONG_TYPE,
+                        "each manifest entry must be a JSON object");
+            }
+            rejectUnknownFields(node, ENTRY_FIELDS, "entry");
+            String id = textField(node, "id", "entry");
+            String sourceUrl = optionalTextField(node, "sourceUrl");
+            String referenceFile = optionalTextField(node, "referenceFile");
+            String license = textField(node, "license", "entry");
+            String markupFile = textField(node, "markupFile", "entry");
+            double threshold = doubleField(node, "threshold");
+            int referenceWidth = intField(node, "referenceWidth");
+            int referenceHeight = intField(node, "referenceHeight");
+            aggregateWork += id.length() + stringLength(sourceUrl) + stringLength(referenceFile)
+                    + license.length() + markupFile.length();
+            if (aggregateWork > MAX_AGGREGATE_WORK) {
+                throw new ManifestException(ManifestException.Kind.WORK_LIMIT,
+                        "aggregate string work across entries exceeds " + MAX_AGGREGATE_WORK);
+            }
+            parsed.add(new CorpusEntry(id, sourceUrl, referenceFile, license, markupFile,
+                    threshold, referenceWidth, referenceHeight));
+        }
+        return new CorpusManifest(comment, parsed);
     }
 
     /** Rewrites the manifest with the supplied entries, preserving the corpus comment. */
@@ -73,8 +135,8 @@ public final class CorpusManifest {
             Files.writeString(manifestFile, JSON.writerWithDefaultPrettyPrinter()
                     .writeValueAsString(root));
         } catch (IOException failure) {
-            throw new UncheckedIOException("cannot write corpus manifest " + manifestFile,
-                    failure);
+            throw new ManifestException(ManifestException.Kind.IO,
+                    "cannot write corpus manifest " + manifestFile, failure);
         }
     }
 
@@ -83,7 +145,94 @@ public final class CorpusManifest {
         return entries;
     }
 
-    private static String nullable(JsonNode node, String field) {
-        return node.path(field).isNull() ? null : node.path(field).asText(null);
+    private static byte[] readBounded(Path manifestFile) {
+        try {
+            long size = Files.size(manifestFile);
+            if (size > MAX_MANIFEST_BYTES) {
+                throw new ManifestException(ManifestException.Kind.TOO_LARGE,
+                        "corpus manifest is " + size + " bytes, cap is " + MAX_MANIFEST_BYTES);
+            }
+            byte[] bytes = Files.readAllBytes(manifestFile);
+            if (bytes.length > MAX_MANIFEST_BYTES) {
+                throw new ManifestException(ManifestException.Kind.TOO_LARGE,
+                        "corpus manifest is " + bytes.length + " bytes, cap is "
+                                + MAX_MANIFEST_BYTES);
+            }
+            return bytes;
+        } catch (IOException failure) {
+            throw new ManifestException(ManifestException.Kind.IO,
+                    "cannot read corpus manifest " + manifestFile, failure);
+        }
+    }
+
+    private static void rejectUnknownFields(JsonNode node, Set<String> allowed, String scope) {
+        Iterator<String> names = node.fieldNames();
+        while (names.hasNext()) {
+            String name = names.next();
+            if (!allowed.contains(name)) {
+                throw new ManifestException(ManifestException.Kind.UNKNOWN_FIELD,
+                        scope + " declares unknown field '" + name + "'");
+            }
+        }
+    }
+
+    private static String textField(JsonNode node, String field, String scope) {
+        JsonNode value = node.get(field);
+        if (value == null) {
+            throw new ManifestException(ManifestException.Kind.MISSING_FIELD,
+                    scope + " is missing required field '" + field + "'");
+        }
+        if (!value.isTextual()) {
+            throw new ManifestException(ManifestException.Kind.WRONG_TYPE,
+                    scope + " field '" + field + "' must be a string");
+        }
+        return value.textValue();
+    }
+
+    private static String optionalTextField(JsonNode node, String field) {
+        JsonNode value = node.get(field);
+        if (value == null || value.isNull()) {
+            return null;
+        }
+        if (!value.isTextual()) {
+            throw new ManifestException(ManifestException.Kind.WRONG_TYPE,
+                    "entry field '" + field + "' must be a string");
+        }
+        return value.textValue();
+    }
+
+    private static double doubleField(JsonNode node, String field) {
+        JsonNode value = node.get(field);
+        if (value == null) {
+            throw new ManifestException(ManifestException.Kind.MISSING_FIELD,
+                    "entry is missing required field '" + field + "'");
+        }
+        if (!value.isNumber()) {
+            throw new ManifestException(ManifestException.Kind.WRONG_TYPE,
+                    "entry field '" + field + "' must be a number");
+        }
+        return value.doubleValue();
+    }
+
+    private static int intField(JsonNode node, String field) {
+        JsonNode value = node.get(field);
+        if (value == null) {
+            throw new ManifestException(ManifestException.Kind.MISSING_FIELD,
+                    "entry is missing required field '" + field + "'");
+        }
+        if (!value.isIntegralNumber()) {
+            throw new ManifestException(ManifestException.Kind.WRONG_TYPE,
+                    "entry field '" + field + "' must be an integer");
+        }
+        long wide = value.longValue();
+        if (wide < Integer.MIN_VALUE || wide > Integer.MAX_VALUE) {
+            throw new ManifestException(ManifestException.Kind.INVALID_VALUE,
+                    "entry field '" + field + "' must fit an int");
+        }
+        return (int) wide;
+    }
+
+    private static int stringLength(String value) {
+        return value == null ? 0 : value.length();
     }
 }
