@@ -8,8 +8,10 @@ import dev.gdx.markup.harness.HarnessSemanticSink;
 import dev.gdx.markup.runtime.MarkupRuntimeSource;
 import dev.gdx.uiharness.agentruntime.AgentRuntimeObservationSource;
 import dev.gdx.uiharness.core.locator.StrictResolution;
+import dev.gdx.uiharness.core.model.SemanticSnapshot;
 import dev.gdx.uiharness.core.runtime.RuntimeComparator;
 import dev.gdx.uiharness.core.runtime.RuntimeObservationSource;
+import dev.gdx.uiharness.core.time.Deadline;
 import dev.gdx.uiharness.core.wait.WaitEngine;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3FrameFence;
 import dev.gdx.uiharness.lwjgl3.Lwjgl3ScreenCapture;
@@ -62,8 +64,7 @@ final class PreviewMcp implements AutoCloseable {
         sink = new HarnessSemanticSink(session.semantics(), CORRELATION_TOKEN);
         fence = new Lwjgl3FrameFence(64);
         Lwjgl3ScreenCapture capture = new Lwjgl3ScreenCapture(fence, session::snapshot);
-        WaitEngine waits = new WaitEngine(
-                () -> session.snapshot(clock.revision(), clock.frame()),
+        WaitEngine waits = new WaitEngine(this::snapshotForWait,
                 new StrictResolution(), clock, clock);
         runtime = AgentRuntime.builder().sessionId(SessionId.of(PreviewApp.SESSION_ID)).build();
         runtime.start();
@@ -104,7 +105,22 @@ final class PreviewMcp implements AutoCloseable {
     }
 
     /**
-     * Registers markup-declared {@code data-runtime-entity} actors as agent-runtime value
+     * Snapshots on the render thread: direct when already there, a scheduler hop otherwise.
+     * The wait engine invokes this on the calling (MCP virtual) thread; reading the Stage
+     * directly off the render thread is a silent confinement violation, so off-thread calls
+     * submit the snapshot to the render-thread scheduler and block on the hop.
+     */
+    private SemanticSnapshot snapshotForWait() {
+        if (scheduler.isOwnerThread()) {
+            return session.snapshot(clock.revision(), clock.frame());
+        }
+        return scheduler.submit(
+                () -> session.snapshot(clock.revision(), clock.frame()),
+                Deadline.after(clock, Duration.ofSeconds(30)))
+                .toCompletableFuture().join();
+    }
+
+    /** Registers markup-declared {@code data-runtime-entity} actors as agent-runtime value
      * sources for the freshly built scene (render thread). Old registrations are closed first.
      */
     void attachRuntime(MarkupDocument document, BuiltUi built) {
