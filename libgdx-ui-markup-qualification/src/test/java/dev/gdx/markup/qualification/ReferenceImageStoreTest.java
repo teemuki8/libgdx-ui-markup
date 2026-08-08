@@ -1453,35 +1453,71 @@ final class ReferenceImageStoreTest {
         UserPrincipal mallory = () -> "mallory";
         UserPrincipal system = () -> "NT AUTHORITY\\SYSTEM";
         UserPrincipal administrators = () -> "BUILTIN\\Administrators";
+        UserPrincipal spoofedSystem = () -> "DOMAIN\\systematic-user";
+        UserPrincipal spoofedAdmin = () -> "NotAdministrators";
+        // Only exactly resolved account names are trusted: the current user plus the exact
+        // well-known system/administrators accounts.
+        Set<String> trusted = Set.of(system.getName(), administrators.getName(),
+                currentUser.getName());
 
         // An owner-only ACL is private.
         assertFalse(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
-                List.of(allowAll(owner)), owner, currentUser));
-        // SYSTEM and Administrators full control are trusted system principals.
+                List.of(allowAll(owner)), owner, trusted));
+        // Exact SYSTEM and Administrators accounts are trusted.
         assertFalse(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
-                List.of(allowAll(owner), allowAll(system)), owner, currentUser));
+                List.of(allowAll(owner), allowAll(system)), owner, trusted));
         assertFalse(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
-                List.of(allowAll(owner), allowAll(administrators)), owner, currentUser));
-        // An untrusted principal granted DELETE_CHILD or write permissions can modify entries.
+                List.of(allowAll(owner), allowAll(administrators)), owner, trusted));
+        // Every entry-modifying permission on an untrusted principal is dangerous, including
+        // DACL/owner rewrite (WRITE_ACL, WRITE_OWNER) and delete-child/write.
+        for (AclEntryPermission permission : new AclEntryPermission[]{
+                AclEntryPermission.DELETE_CHILD, AclEntryPermission.WRITE_DATA,
+                AclEntryPermission.APPEND_DATA, AclEntryPermission.DELETE,
+                AclEntryPermission.WRITE_ACL, AclEntryPermission.WRITE_OWNER}) {
+            assertTrue(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
+                    List.of(allowAll(owner), allow(mallory, permission)), owner, trusted),
+                    "untrusted ALLOW " + permission + " must be treated as modification");
+        }
+        // Names that merely contain 'system' or 'administrators' are never trusted.
         assertTrue(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
-                List.of(allowAll(owner), allow(mallory, AclEntryPermission.DELETE_CHILD)),
-                owner, currentUser));
+                List.of(allowAll(owner), allow(spoofedSystem, AclEntryPermission.DELETE_CHILD)),
+                owner, trusted),
+                "a principal whose name merely contains 'system' must not be trusted");
         assertTrue(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
-                List.of(allowAll(owner), allow(mallory, AclEntryPermission.WRITE_DATA)),
-                owner, currentUser));
-        assertTrue(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
-                List.of(allowAll(owner), allow(mallory, AclEntryPermission.DELETE)),
-                owner, currentUser));
+                List.of(allowAll(owner), allow(spoofedAdmin, AclEntryPermission.WRITE_ACL)),
+                owner, trusted),
+                "a principal whose name merely contains 'administrators' must not be trusted");
         // A DENY entry for an untrusted principal is harmless (more restrictive).
         assertFalse(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
                 List.of(allowAll(owner), deny(mallory, AclEntryPermission.WRITE_DATA)),
-                owner, currentUser));
-        // Trusted principals: the current user and well-known system/administrator principals.
-        assertTrue(ReferenceImageStore.AclFilesystemPolicy.principalTrusted(owner, currentUser));
-        assertFalse(ReferenceImageStore.AclFilesystemPolicy.principalTrusted(mallory, currentUser));
-        assertTrue(ReferenceImageStore.AclFilesystemPolicy.principalTrusted(system, currentUser));
-        assertTrue(ReferenceImageStore.AclFilesystemPolicy.principalTrusted(
-                administrators, currentUser));
+                owner, trusted));
+        // Ancestor owners: exactly the current user or an exactly resolved system account.
+        assertTrue(ReferenceImageStore.AclFilesystemPolicy.ownerTrusted(owner, trusted));
+        assertTrue(ReferenceImageStore.AclFilesystemPolicy.ownerTrusted(system, trusted));
+        assertFalse(ReferenceImageStore.AclFilesystemPolicy.ownerTrusted(mallory, trusted));
+        assertFalse(ReferenceImageStore.AclFilesystemPolicy.ownerTrusted(spoofedSystem, trusted),
+                "a spoofed system-named owner must not anchor an ancestor");
+        assertFalse(ReferenceImageStore.AclFilesystemPolicy.ownerTrusted(spoofedAdmin, trusted));
+    }
+
+    @Test
+    void aclTrustsOnlyExactResolvedPrincipalNames() {
+        // The resolved set is the authority: a name is trusted only when it equals a resolved
+        // account name, never by substring or display-name heuristics.
+        Set<String> trusted = Set.of("NT AUTHORITY\\SYSTEM", "BUILTIN\\Administrators");
+        UserPrincipal owner = () -> "alice";
+        assertFalse(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
+                List.of(allowAll(owner), allow(() -> "NT AUTHORITY\\SYSTEM",
+                        AclEntryPermission.DELETE_CHILD)), owner, trusted),
+                "an exactly resolved SYSTEM principal is trusted");
+        assertTrue(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
+                List.of(allowAll(owner), allow(() -> "nt authority\\system",
+                        AclEntryPermission.DELETE_CHILD)), owner, trusted),
+                "case-changed names are different accounts and must not be trusted");
+        assertTrue(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
+                List.of(allowAll(owner), allow(() -> "SYSTEM", AclEntryPermission.DELETE_CHILD)),
+                owner, trusted),
+                "an unresolved bare name must not be trusted");
     }
 
     @Test
@@ -1564,6 +1600,41 @@ final class ReferenceImageStoreTest {
             }
         } catch (IOException ignored) {
             // best-effort test cleanup only
+        }
+    }
+
+    @Test
+    void nullFileKeysAreNeverSame() {
+        assertFalse(ReferenceImageStore.sameFileKey(null, null),
+                "two unprovable file keys must never be treated as the same directory");
+        assertFalse(ReferenceImageStore.sameFileKey(new Object(), null));
+        assertFalse(ReferenceImageStore.sameFileKey(null, new Object()));
+        assertFalse(ReferenceImageStore.sameFileKey(new Object(), new Object()));
+        assertTrue(ReferenceImageStore.sameFileKey("key", "key"));
+    }
+
+    @Test
+    void replacedSessionTreeIsUntouchedAtClose() throws IOException {
+        FakeTransport transport = new FakeTransport(ok(PNG_2X2));
+        ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST);
+        Path session = store.sessionDir();
+        Path moved = session.resolveSibling(session.getFileName() + "-moved");
+        try {
+            Files.write(session.resolve("ref.png"), PNG_2X2); // our verified content
+            Files.move(session, moved); // the original session is relocated
+            Files.createDirectories(session); // an attacker replants the path
+            Files.writeString(session.resolve("precious.bin"), "attacker data");
+            ReferenceException failure = assertThrows(ReferenceException.class, store::close);
+            assertEquals(ReferenceException.Kind.IO, failure.kind(),
+                    "an unrecoverable session path must surface a typed cleanup failure");
+            assertEquals("attacker data", Files.readString(session.resolve("precious.bin")),
+                    "the replacement tree must never be deleted or modified");
+            assertTrue(Files.isDirectory(moved),
+                    "the original session directory must never be deleted through the "
+                            + "replaced path");
+        } finally {
+            deleteTreeQuietly(moved);
+            deleteTreeQuietly(session);
         }
     }
 }

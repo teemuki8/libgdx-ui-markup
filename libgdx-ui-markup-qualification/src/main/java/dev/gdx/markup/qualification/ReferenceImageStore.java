@@ -34,6 +34,7 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.nio.file.attribute.UserPrincipal;
+import java.nio.file.attribute.UserPrincipalLookupService;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
@@ -42,6 +43,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -271,18 +273,60 @@ public final class ReferenceImageStore implements AutoCloseable {
     /**
      * Windows ACL policy. The session parent is provably secure when it is owned by the
      * current user and no untrusted principal is granted entry-modifying permissions
-     * ({@code DELETE_CHILD}, {@code WRITE_DATA}, {@code APPEND_DATA}, {@code DELETE}); an
-     * ancestor is provably secure when additionally its owner is a trusted principal (the
-     * current user, the platform root, or a well-known system/administrators principal).
-     * Session directories are created with an owner-only ACL. When the ACL view cannot be
-     * read the directory is unprovable and refused (fail closed). The decisions are pure
-     * functions of the ACL entries so they are deterministically testable on any platform.
+     * ({@code DELETE_CHILD}, {@code WRITE_DATA}, {@code APPEND_DATA}, {@code DELETE},
+     * {@code WRITE_ACL}, or {@code WRITE_OWNER}); an ancestor is provably secure when
+     * additionally its owner is a trusted principal (the current user or an exactly resolved
+     * well-known system/administrators account). Session directories are created with an
+     * owner-only ACL. When the ACL view cannot be read the directory is unprovable and
+     * refused (fail closed). The decisions are pure functions of the ACL entries and the
+     * exact resolved principal names, so they are deterministically testable on any platform.
      */
     static final class AclFilesystemPolicy implements FilesystemPolicy {
-        /** Permissions that let a principal create, modify, or delete the directory's entries. */
+        /**
+         * Permissions that let a principal create, modify, or delete the directory's entries,
+         * or take or rewrite its DACL/owner and thereby replace the session.
+         */
         static final Set<AclEntryPermission> ENTRY_MODIFY = Set.of(
                 AclEntryPermission.DELETE_CHILD, AclEntryPermission.WRITE_DATA,
-                AclEntryPermission.APPEND_DATA, AclEntryPermission.DELETE);
+                AclEntryPermission.APPEND_DATA, AclEntryPermission.DELETE,
+                AclEntryPermission.WRITE_ACL, AclEntryPermission.WRITE_OWNER);
+
+        private final UserPrincipal currentUser;
+        /**
+         * Exactly resolved principal names trusted for the ancestor policy: the current user
+         * plus every well-known system/administrators account the platform's principal lookup
+         * service can resolve. A name is only trusted when it equals a resolved account name
+         * — display-name or substring matches are never used.
+         */
+        private final Set<String> trustedPrincipalNames;
+
+        AclFilesystemPolicy() {
+            this.currentUser = currentUser();
+            Set<String> trusted = new HashSet<>(resolveTrustedSystemPrincipalNames());
+            trusted.add(currentUser.getName());
+            this.trustedPrincipalNames = Set.copyOf(trusted);
+        }
+
+        /**
+         * Resolves the exact well-known system principals through the principal lookup
+         * service. Only accounts that resolve exactly are trusted; when an account is not
+         * resolvable on this platform it is conservatively not trusted. Package-private for
+         * tests.
+         */
+        static Set<String> resolveTrustedSystemPrincipalNames() {
+            Set<String> trusted = new HashSet<>();
+            UserPrincipalLookupService lookup = FileSystems.getDefault()
+                    .getUserPrincipalLookupService();
+            for (String candidate : List.of("SYSTEM", "NT AUTHORITY\\SYSTEM",
+                    "BUILTIN\\Administrators", "Administrators", "root")) {
+                try {
+                    trusted.add(lookup.lookupPrincipalByName(candidate).getName());
+                } catch (IOException | UnsupportedOperationException unavailable) {
+                    // the well-known account is not resolvable on this platform: not trusted
+                }
+            }
+            return trusted;
+        }
 
         @Override
         public boolean canProbe(Path dir) {
@@ -300,8 +344,9 @@ public final class ReferenceImageStore implements AutoCloseable {
                     return false;
                 }
                 UserPrincipal owner = view.getOwner();
-                return owner.getName().equals(currentUser().getName())
-                        && !allowsNonOwnerModification(view.getAcl(), owner, currentUser());
+                return owner.getName().equals(currentUser.getName())
+                        && !allowsNonOwnerModification(view.getAcl(), owner,
+                                trustedPrincipalNames);
             } catch (IOException | UnsupportedOperationException unprovable) {
                 return false;
             }
@@ -318,8 +363,9 @@ public final class ReferenceImageStore implements AutoCloseable {
                     return false;
                 }
                 UserPrincipal owner = view.getOwner();
-                return principalTrusted(owner, currentUser())
-                        && !allowsNonOwnerModification(view.getAcl(), owner, currentUser());
+                return ownerTrusted(owner, trustedPrincipalNames)
+                        && !allowsNonOwnerModification(view.getAcl(), owner,
+                                trustedPrincipalNames);
             } catch (IOException | UnsupportedOperationException unprovable) {
                 return false;
             }
@@ -339,7 +385,8 @@ public final class ReferenceImageStore implements AutoCloseable {
                 // Verify the private ACL was actually established: the owner must hold every
                 // permission and no untrusted principal may modify the entries.
                 if (!acl.equals(view.getAcl())
-                        || allowsNonOwnerModification(view.getAcl(), owner, owner)) {
+                        || allowsNonOwnerModification(view.getAcl(), owner,
+                                Set.of(owner.getName()))) {
                     throw new IOException("could not establish a private ACL on " + dir);
                 }
                 return dir;
@@ -376,16 +423,17 @@ public final class ReferenceImageStore implements AutoCloseable {
         }
 
         /**
-         * Pure: true when any ALLOW entry grants entry-modifying permissions to a principal
-         * other than the owner that is not a trusted system principal. DENY entries and grants
-         * to the owner or to trusted principals are harmless.
+         * Pure: true when any ALLOW entry grants entry-modifying, DACL-rewriting, or
+         * ownership-taking permissions to a principal other than the owner that is not one of
+         * the exactly resolved trusted principals. DENY entries and grants to the owner or to
+         * trusted principals are harmless.
          */
         static boolean allowsNonOwnerModification(List<AclEntry> acl, UserPrincipal owner,
-                UserPrincipal currentUser) {
+                Set<String> trustedPrincipalNames) {
             for (AclEntry entry : acl) {
                 if (entry.type() == AclEntryType.ALLOW
                         && !entry.principal().getName().equals(owner.getName())
-                        && !principalTrusted(entry.principal(), currentUser)
+                        && !trustedPrincipalNames.contains(entry.principal().getName())
                         && entry.permissions().stream().anyMatch(ENTRY_MODIFY::contains)) {
                     return true;
                 }
@@ -394,22 +442,20 @@ public final class ReferenceImageStore implements AutoCloseable {
         }
 
         /**
-         * Pure: a principal is trusted when it is the current user, the platform root, or a
-         * well-known system/administrators principal. Principals are compared by name, the
-         * portable identity for ACL users.
+         * Pure: an ancestor's owner may anchor the chain only when its name equals the exact
+         * name of the current user or of a resolved well-known system/administrators account.
          */
-        static boolean principalTrusted(UserPrincipal principal, UserPrincipal currentUser) {
-            if (principal.getName().equals(currentUser.getName())) {
-                return true;
-            }
-            String name = principal.getName().toLowerCase(Locale.ROOT);
-            return name.equals("root") || name.contains("system")
-                    || name.contains("administrators");
+        static boolean ownerTrusted(UserPrincipal owner, Set<String> trustedPrincipalNames) {
+            return trustedPrincipalNames.contains(owner.getName());
         }
     }
 
-    /** The anchored session: its path, real-path identity, and a retained directory stream. */
-    record SessionAnchor(Path dir, Path realPath, SecureDirectoryStream<Path> stream) {
+    /**
+     * The anchored session: its path, real-path identity, non-null file key, and retained
+     * directory streams over the session's parent and the session itself.
+     */
+    record SessionAnchor(Path dir, Path realPath, Object fileKey,
+            SecureDirectoryStream<Path> parentStream, SecureDirectoryStream<Path> sessionStream) {
     }
 
     /** A reference whose bytes were authenticated and decoded once into a bounded image. */
@@ -422,6 +468,7 @@ public final class ReferenceImageStore implements AutoCloseable {
     private final Path cacheDir;
     private final Path anchorRealPath;
     private final Object anchorFileKey;
+    private final SecureDirectoryStream<Path> parentStream;
     private final SecureDirectoryStream<Path> sessionStream;
     private final Transport transport;
     private final HostResolver resolver;
@@ -448,8 +495,9 @@ public final class ReferenceImageStore implements AutoCloseable {
         SessionAnchor anchor = createSessionDir(cacheDir);
         this.cacheDir = anchor.dir();
         this.anchorRealPath = anchor.realPath();
-        this.anchorFileKey = fileKeyOf(anchor.dir());
-        this.sessionStream = anchor.stream();
+        this.anchorFileKey = anchor.fileKey();
+        this.parentStream = anchor.parentStream();
+        this.sessionStream = anchor.sessionStream();
         this.transport = transport != null ? transport : this::httpsGet;
         this.resolver = resolver != null ? resolver : this::resolveAll;
         this.allowedHosts = allowedHosts != null ? allowedHosts : DEFAULT_ALLOWED_HOSTS;
@@ -506,9 +554,13 @@ public final class ReferenceImageStore implements AutoCloseable {
                     "session cache directory vanished or was replaced: " + cacheDir);
         }
         try {
-            if (!Objects.equals(fileKeyOf(cacheDir), anchorFileKey)) {
+            Object currentKey = fileKeyOf(cacheDir);
+            // The anchor key is non-null by construction; an unprovable current key is a
+            // mismatch, never proof of identity.
+            if (currentKey == null || !anchorFileKey.equals(currentKey)) {
                 throw new ReferenceException(ReferenceException.Kind.CACHE,
-                        "session cache directory was replaced: " + cacheDir);
+                        "session cache directory was replaced or its identity is unprovable: "
+                                + cacheDir);
             }
             if (!cacheDir.toRealPath().equals(anchorRealPath)) {
                 throw new ReferenceException(ReferenceException.Kind.CACHE,
@@ -527,8 +579,16 @@ public final class ReferenceImageStore implements AutoCloseable {
             return Files.readAttributes(path, BasicFileAttributes.class,
                     LinkOption.NOFOLLOW_LINKS).fileKey();
         } catch (IOException | UnsupportedOperationException unavailable) {
-            return null; // the real-path check below still guards identity
+            return null; // unprovable: never treated as proof of identity
         }
+    }
+
+    /**
+     * Pure identity decision: two file keys prove the same directory only when both are
+     * non-null and equal. A missing key on either side is unprovable, never the same.
+     */
+    static boolean sameFileKey(Object firstKey, Object secondKey) {
+        return firstKey != null && secondKey != null && firstKey.equals(secondKey);
     }
 
     /**
@@ -1347,7 +1407,15 @@ public final class ReferenceImageStore implements AutoCloseable {
                 throw new IOException("session dir identity revalidation failed under " + parent);
             }
             Path realSession = session.toRealPath();
-            return new SessionAnchor(session, realSession, openSecureDirectoryStream(session));
+            Object fileKey = fileKeyOf(session);
+            if (fileKey == null) {
+                // A missing file key means the directory identity is unprovable; a store that
+                // cannot prove its own session identity fails closed instead of operating.
+                throw new IOException("cannot establish the session directory identity "
+                        + "(no file key) under " + parent);
+            }
+            return new SessionAnchor(session, realSession, fileKey,
+                    openSecureDirectoryStream(parent), openSecureDirectoryStream(session));
         } catch (IOException failure) {
             throw new ReferenceException(ReferenceException.Kind.IO,
                     "cannot verify private cache session under " + parent, failure);
@@ -1448,41 +1516,15 @@ public final class ReferenceImageStore implements AutoCloseable {
     @Override
     public void close() {
         List<IOException> failures = new ArrayList<>();
-        if (sessionStream != null) {
-            // The retained stream's directory iterator is stale on some filesystems (for
-            // example btrfs) once the directory has been modified, so cleanup opens a FRESH
-            // stream on the session path and proves it anchors the same directory (file key)
-            // as the retained fd before deleting anything through it. A swapped path deletes
-            // nothing recursively; only the (empty) top-level entry is removed.
-            try (DirectoryStream<Path> fresh = Files.newDirectoryStream(cacheDir)) {
-                if (fresh instanceof SecureDirectoryStream<Path> freshSds) {
-                    if (sameDirectory(freshSds, sessionStream)) {
-                        deleteThroughStream(freshSds, failures);
-                    } else {
-                        failures.add(new IOException("session cache path no longer anchors the "
-                                + "session directory; skipping recursive cleanup: " + cacheDir));
-                    }
-                } else if (sessionPathAnchored()) {
-                    deleteRecursively(cacheDir, failures);
-                } else {
-                    failures.add(new IOException("session cache path is no longer anchored: "
-                            + cacheDir));
-                }
-            } catch (IOException failure) {
-                failures.add(failure);
-            }
+        if (sessionStream != null && parentStream != null) {
+            closeAnchored(failures);
+        } else if (sessionPathAnchored()) {
+            deleteRecursively(cacheDir, failures);
             try {
                 Files.deleteIfExists(cacheDir);
             } catch (IOException failure) {
                 failures.add(failure);
             }
-            try {
-                sessionStream.close();
-            } catch (IOException failure) {
-                failures.add(failure);
-            }
-        } else if (sessionPathAnchored()) {
-            deleteRecursively(cacheDir, failures);
         }
         if (failures.isEmpty()) {
             return;
@@ -1496,17 +1538,103 @@ public final class ReferenceImageStore implements AutoCloseable {
     }
 
     /**
-     * Proves two secure directory streams reference the same directory via their file keys,
-     * so a freshly opened cleanup stream cannot be a swapped or replaced directory.
+     * Anchored cleanup. The retained stream's directory iterator is stale on some filesystems
+     * (for example btrfs) once the directory has been modified, so contents are deleted
+     * through a FRESH stream that is proven — by two non-null equal file keys — to anchor the
+     * same directory as the retained fd. A replaced path is never opened or deleted
+     * recursively: the replacement tree stays untouched, only the retained fd's own contents
+     * may be cleaned, and the session entry is removed relative to the verified parent only
+     * when the entry still carries the anchored identity. Anything unprovable is reported as a
+     * typed cleanup failure instead of being deleted.
+     */
+    private void closeAnchored(List<IOException> failures) {
+        try (DirectoryStream<Path> fresh = Files.newDirectoryStream(cacheDir)) {
+            if (fresh instanceof SecureDirectoryStream<Path> freshSds) {
+                if (sameDirectory(freshSds, sessionStream)) {
+                    deleteThroughStream(freshSds, failures);
+                } else {
+                    failures.add(new IOException("session cache path no longer anchors the "
+                            + "session directory; the replacement tree is untouched: "
+                            + cacheDir));
+                    cleanupRetainedContents(failures);
+                }
+            } else if (sessionPathAnchored()) {
+                deleteRecursively(cacheDir, failures);
+            } else {
+                failures.add(new IOException("session cache path is no longer anchored: "
+                        + cacheDir));
+                cleanupRetainedContents(failures);
+            }
+        } catch (IOException failure) {
+            failures.add(failure);
+        }
+        // Remove the session entry only relative to the verified parent and only when the
+        // entry still carries the anchored identity; otherwise the entry leaks (reported).
+        if (sessionEntryMatchesAnchor()) {
+            try {
+                parentStream.deleteDirectory(Path.of(sessionName()));
+            } catch (IOException failure) {
+                failures.add(failure);
+            }
+        } else {
+            failures.add(new IOException("session entry lost the anchored identity; not "
+                    + "deleting through the parent: " + cacheDir));
+        }
+        try {
+            sessionStream.close();
+        } catch (IOException failure) {
+            failures.add(failure);
+        }
+        try {
+            parentStream.close();
+        } catch (IOException failure) {
+            failures.add(failure);
+        }
+    }
+
+    /** Best-effort cleanup of the original session contents through the retained fd. */
+    private void cleanupRetainedContents(List<IOException> failures) {
+        try {
+            deleteThroughStream(sessionStream, failures);
+        } catch (RuntimeException staleIterator) {
+            failures.add(new IOException("cannot enumerate the retained session contents for "
+                    + "cleanup: " + staleIterator));
+        }
+    }
+
+    private String sessionName() {
+        return cacheDir.getFileName().toString();
+    }
+
+    /**
+     * Proves the session entry inside the verified parent still has the anchored identity:
+     * a non-null file key equal to the anchor key. A missing, replaced, or unprovable entry
+     * is never deleted.
+     */
+    private boolean sessionEntryMatchesAnchor() {
+        try {
+            BasicFileAttributeView view = parentStream.getFileAttributeView(Path.of(sessionName()),
+                    BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
+            return view != null
+                    && sameFileKey(view.readAttributes().fileKey(), anchorFileKey);
+        } catch (IOException | UnsupportedOperationException unprovable) {
+            return false;
+        }
+    }
+
+    /**
+     * Proves two secure directory streams reference the same directory: both must expose a
+     * non-null file key and the keys must be equal. Null on either side is unprovable, never
+     * the same directory.
      */
     private static boolean sameDirectory(SecureDirectoryStream<Path> first,
             SecureDirectoryStream<Path> second) {
         try {
-            BasicFileAttributes firstAttrs = first.getFileAttributeView(
-                    BasicFileAttributeView.class).readAttributes();
-            BasicFileAttributes secondAttrs = second.getFileAttributeView(
-                    BasicFileAttributeView.class).readAttributes();
-            return Objects.equals(firstAttrs.fileKey(), secondAttrs.fileKey());
+            Object firstKey = first.getFileAttributeView(
+                    BasicFileAttributeView.class).readAttributes().fileKey();
+            Object secondKey = second.getFileAttributeView(
+                    BasicFileAttributeView.class).readAttributes().fileKey();
+            return sameFileKey(firstKey, secondKey);
         } catch (IOException | UnsupportedOperationException unprovable) {
             return false;
         }
@@ -1518,7 +1646,7 @@ public final class ReferenceImageStore implements AutoCloseable {
             return false;
         }
         try {
-            return Objects.equals(fileKeyOf(cacheDir), anchorFileKey)
+            return sameFileKey(fileKeyOf(cacheDir), anchorFileKey)
                     && cacheDir.toRealPath().equals(anchorRealPath);
         } catch (IOException | UnsupportedOperationException failure) {
             return false;
