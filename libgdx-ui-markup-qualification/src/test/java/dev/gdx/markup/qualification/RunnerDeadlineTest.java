@@ -194,6 +194,18 @@ final class RunnerDeadlineTest {
             released = true;
         }
 
+        /** Wedges both stdio pipes so the runner's drains can never confirm on their own. */
+        void wedgeDrains() {
+            out.wedge();
+            err.wedge();
+        }
+
+        /** Unblocks wedged stdio pipes so the runner's drains can terminate. */
+        void releaseDrains() {
+            out.release();
+            err.release();
+        }
+
         @Override
         public boolean waitFor(long timeout, TimeUnit unit) throws InterruptedException {
             if (blocking) {
@@ -317,22 +329,39 @@ final class RunnerDeadlineTest {
         }
     }
 
+    /**
+     * Clock that advances both with real time and with scripted {@code advanceBy} calls, so
+     * a bounded deadline expires in real time even while a wedged drain blocks the join.
+     */
+    static final class RealtimeMutableClock extends MutableClock {
+        private final long start = System.nanoTime();
+
+        @Override public synchronized long nanoTime() {
+            return super.nanoTime() + (System.nanoTime() - start);
+        }
+    }
+
     /** Pipe end that blocks until the process exits or the runner closes it. */
     static final class ControllableInputStream extends InputStream {
         private boolean closed;
         private boolean eof;
+        private boolean wedged;
         private int readers;
 
         @Override
         public synchronized int read() {
             readers++;
             try {
-                while (!closed && !eof) {
+                // A wedged reader stays blocked even after close/eof and ignores interrupts,
+                // modelling a drain that cannot be confirmed terminal; release() unblocks it.
+                while (wedged || (!closed && !eof)) {
                     try {
                         wait();
                     } catch (InterruptedException interrupted) {
-                        Thread.currentThread().interrupt();
-                        return -1;
+                        if (!wedged) {
+                            Thread.currentThread().interrupt();
+                            return -1;
+                        }
                     }
                 }
                 return -1;
@@ -343,6 +372,18 @@ final class RunnerDeadlineTest {
 
         synchronized void eof() {
             eof = true;
+            notifyAll();
+        }
+
+        /** Makes the reader stay blocked past close/eof, ignoring cancellation. */
+        synchronized void wedge() {
+            wedged = true;
+            notifyAll();
+        }
+
+        /** Unblocks a wedged reader so the drain can terminate and be confirmed. */
+        synchronized void release() {
+            wedged = false;
             notifyAll();
         }
 
@@ -449,7 +490,7 @@ final class RunnerDeadlineTest {
 
     @Test
     @Timeout(30)
-    void closeFailsLoudlyWhenTheRetainedChildStillWillNotDie() throws Exception {
+    void closeKeepsFailingUntilTheRetainedChildIsReleased() throws Exception {
         Fixture fixture = corpus();
         MutableClock clock = new MutableClock();
         ScriptedProcess unkillable = ScriptedProcess.scripted(clock,
@@ -462,17 +503,24 @@ final class RunnerDeadlineTest {
                     runner::run);
             assertFalse(unkillable.exited(),
                     "the run must fail fatally while the child is still owned");
-            ReferenceException closeFailure = assertThrows(ReferenceException.class,
-                    runner::close);
-            assertEquals(ReferenceException.Kind.IO, closeFailure.kind());
-            assertTrue(closeFailure.getMessage().contains("close"),
-                    "the close failure must name the unresolved owned work: "
-                            + closeFailure.getMessage());
-            assertFalse(unkillable.exited(),
-                    "a child that was never made killable stays alive and close must not "
-                            + "return success while owned work is alive");
+            // Repeated close must keep failing while the owned child is still alive; the
+            // still-live handle is retained, not cleared, so a later close can retry it.
+            for (int attempt = 0; attempt < 2; attempt++) {
+                ReferenceException closeFailure = assertThrows(ReferenceException.class,
+                        runner::close);
+                assertEquals(ReferenceException.Kind.IO, closeFailure.kind());
+                assertTrue(closeFailure.getMessage().contains("close"),
+                        "the close failure must name the unresolved owned work: "
+                                + closeFailure.getMessage());
+                assertFalse(unkillable.exited(),
+                        "close must not fake success while owned work is alive");
+            }
+            // Once the seam is released, a later close retries force and confirms.
+            unkillable.release();
+            runner.close();
+            assertTrue(unkillable.exited(),
+                    "close must confirm the retained child once it can die");
         } finally {
-            // Leave the runner in a closable state for the test teardown.
             runner.close();
         }
     }
@@ -648,6 +696,39 @@ final class RunnerDeadlineTest {
                     "a drain that refuses to end must be retained for close(), not dropped "
                             + "alive at the deadline");
         }
+    }
+
+    @Test
+    @Timeout(30)
+    void unjoinedDrainFailsTheRunFatalAndNoReportIsWritten() throws Exception {
+        Fixture fixture = corpus();
+        // A realtime clock lets the drain-join deadline expire in real time while the wedged
+        // drains block; the run budget is short so the shared deadline is spent quickly.
+        RealtimeMutableClock clock = new RealtimeMutableClock();
+        ScriptedProcess child = ScriptedProcess.scripted(clock,
+                ScriptedProcess.Behavior.EXITS_AFTER, SECOND);
+        child.wedgeDrains();   // the stdio pipes never unblock: the drains cannot confirm
+        ScriptedLauncher launcher = new ScriptedLauncher(List.of(child));
+        Path report = fixture.outputDir().resolve("report.json");
+        QualificationRunner runner = runner(fixture, clock, launcher, Duration.ofSeconds(2),
+                new WorkBudget(8, 1_000_000, 100));
+        try {
+            UnkillableChildException fatal = assertThrows(UnkillableChildException.class,
+                    runner::run);
+            assertTrue(fatal.getMessage().contains("drain"),
+                    "the fatal must name the unjoined drain: " + fatal.getMessage());
+            assertFalse(Files.exists(report),
+                    "no report may be written while owned work is alive");
+            assertTrue(child.exited(),
+                    "the child itself exited; only the stdio drains were wedged");
+            assertFalse(child.streamsClosed() && child.activeDrainReads() == 0,
+                    "the wedged drains are still reading and must stay owned");
+            child.releaseDrains();   // unblock the pipes so close() can confirm the drains
+        } finally {
+            runner.close();
+        }
+        assertEquals(0, child.activeDrainReads(),
+                "close() must cancel and confirm the retained wedged drains");
     }
 
     @Test

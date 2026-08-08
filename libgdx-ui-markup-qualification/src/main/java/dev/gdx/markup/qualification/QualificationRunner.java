@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalDouble;
@@ -74,12 +75,14 @@ public final class QualificationRunner implements AutoCloseable {
     private final ProcessLauncher launcher;
     private final Duration totalBudget;
     private final WorkBudget workLimits;
-    /** Guards the owned-handle lists; close() may run after run()/calibrate() returns. */
+    /** Guards the owned-handle lists and the lifecycle state; close() may run after run(). */
     private final Object ownershipLock = new Object();
     /** Children spawned but not yet confirmed terminal; close() retries force-destroy. */
     private final List<Process> ownedProcesses = new ArrayList<>();
     /** Stdio drains spawned but not yet confirmed joined; close() cancels and re-joins. */
     private final List<Thread> ownedDrains = new ArrayList<>();
+    /** Set once close() begins; no new work may spawn or register afterwards. */
+    private boolean closing;
 
     /** Creates a runner over the corpus, preview distribution, and output dir. */
     public QualificationRunner(Path corpusDir, Path previewDistribution, Path outputDir) {
@@ -118,6 +121,7 @@ public final class QualificationRunner implements AutoCloseable {
      * exhausted; the report then contains exactly the entries that were attempted.
      */
     public QualificationReport run() {
+        ensureIdle();
         CorpusManifest manifest = CorpusManifest.load(corpusDir.resolve("manifest.json"));
         RunBudget run = new RunBudget(clock.nanoTime() + totalBudget.toNanos(),
                 new WorkBudget(workLimits));
@@ -221,6 +225,7 @@ public final class QualificationRunner implements AutoCloseable {
      * partial threshold rewrite would be a meaningless gate.
      */
     public void calibrate() {
+        ensureIdle();
         CorpusManifest manifest = CorpusManifest.load(corpusDir.resolve("manifest.json"));
         RunBudget run = new RunBudget(clock.nanoTime() + totalBudget.toNanos(),
                 new WorkBudget(workLimits));
@@ -556,6 +561,7 @@ public final class QualificationRunner implements AutoCloseable {
         // needed (deadline hit or interrupt) a fresh bounded teardown window covers the
         // destroy/force waits AND the drain joins, so teardown is bounded as a whole.
         long drainDeadline = run.deadlineNanos;
+        Throwable inFlight = null;
         try {
             long waitNanos = Math.min(requireRemaining(run, Step.RENDER, entry.id()),
                     RENDER_PROCESS_CAP.toNanos());
@@ -580,25 +586,44 @@ public final class QualificationRunner implements AutoCloseable {
             }
             return Optional.of(screenshot);
         } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            if (process != null) {
-                drainDeadline = teardownDeadline();
-                if (!forceKill(process, drainDeadline)) {
-                    throw new UnkillableChildException(entry.id());
+            // Hold the interrupt aside while the bounded teardown confirms the child (a
+            // timed process wait on an already-interrupted thread throws immediately), then
+            // restore it afterwards so the run loop stops starting later work.
+            try {
+                if (process != null) {
+                    drainDeadline = teardownDeadline();
+                    if (!forceKill(process, drainDeadline)) {
+                        inFlight = new UnkillableChildException(entry.id());
+                    } else {
+                        unregisterProcess(process);
+                    }
                 }
-                unregisterProcess(process);
+                return Optional.empty();
+            } finally {
+                Thread.currentThread().interrupt();
             }
-            return Optional.empty();
         } catch (IOException failure) {
+            inFlight = failure;
             return Optional.empty();
         } finally {
             if (process != null) {
                 closeQuietly(process.getInputStream());
                 closeQuietly(process.getErrorStream());
             }
-            // Drains that could not be confirmed joined stay owned so close() cancels and
-            // re-joins them; confirmed drains drop out of ownership.
-            retainLiveDrains(drains, joinDrains(drains, drainDeadline));
+            List<Thread> liveDrains = joinDrains(drains, drainDeadline);
+            if (!liveDrains.isEmpty()) {
+                // A drain could not be confirmed terminal within the shared deadline: the
+                // render must not report success or a skip while owned work is alive. Retain
+                // the drains for close() and fail fatally.
+                retainLiveDrains(drains, liveDrains);
+                UnkillableChildException drainFatal =
+                        new UnkillableChildException(entry.id() + " (unjoined stdio drain)");
+                if (inFlight != null) {
+                    drainFatal.addSuppressed(inFlight);
+                }
+                throw drainFatal;
+            }
+            unregisterDrains(drains);
         }
     }
 
@@ -679,33 +704,37 @@ public final class QualificationRunner implements AutoCloseable {
     /**
      * Joins every drain within the given monotonic deadline and returns the drains that could
      * not be confirmed terminal, so the caller retains them for {@link #close()} to cancel
-     * and re-join — a drain is never silently dropped while alive. A drain still alive at the
-     * deadline is cancelled (interrupted) but kept in the result. The pipe ends were already
-     * closed, so a well-behaved drain unblocks at EOF. Works even when the calling thread is
-     * itself interrupted: the interrupt is cleared for the duration of the join and restored
-     * afterwards — including an interrupt that arrives while a join is blocking.
+     * and re-join — a drain is never silently dropped while alive. The deadline is read once
+     * at entry and the real join time is accounted against the remaining budget, so the whole
+     * join is bounded as one. A drain still alive at the deadline is cancelled (interrupted)
+     * but kept in the result. The pipe ends were already closed, so a well-behaved drain
+     * unblocks at EOF. Works even when the calling thread is itself interrupted: the
+     * interrupt is cleared for the duration of the join and restored afterwards — including
+     * an interrupt that arrives while a join is blocking — and a drain cancelled by a
+     * mid-join interrupt is kept joined so its termination is confirmed.
      */
     List<Thread> joinDrains(List<Thread> drains, long deadlineNanos) {
         boolean interrupted = Thread.interrupted();
         List<Thread> live = new ArrayList<>();
         try {
+            long remaining = deadlineNanos - clock.nanoTime();
             for (Thread drain : drains) {
-                while (drain.isAlive()) {
-                    long remaining = deadlineNanos - clock.nanoTime();
-                    if (remaining <= 0) {
-                        drain.interrupt();
-                        live.add(drain);
-                        break;
-                    }
+                while (drain.isAlive() && remaining > 0) {
+                    long sliceMillis = Math.max(1, Math.min(remaining / 1_000_000, 10));
                     try {
-                        drain.join(Math.max(1, Math.min(remaining / 1_000_000, 10)));
+                        drain.join(sliceMillis);
                     } catch (InterruptedException interruptedDuringJoin) {
                         // A fresh interrupt arrived while joining: remember it so the flag is
-                        // restored, cancel this drain, and keep joining it within the shared
-                        // deadline until it terminates or the deadline is spent.
+                        // restored, cancel this drain, and keep joining so it can die and be
+                        // confirmed within the remaining budget.
                         interrupted = true;
                         drain.interrupt();
                     }
+                    remaining -= TimeUnit.MILLISECONDS.toNanos(sliceMillis);
+                }
+                if (drain.isAlive()) {
+                    drain.interrupt();
+                    live.add(drain);
                 }
             }
         } finally {
@@ -716,9 +745,31 @@ public final class QualificationRunner implements AutoCloseable {
         return live;
     }
 
+    /**
+     * Rejects a run/calibrate invocation on a runner that is closing or that still owns
+     * unfinished work from a previous run, so no later invocation can report while an earlier
+     * child or drain is still alive.
+     */
+    private void ensureIdle() {
+        synchronized (ownershipLock) {
+            if (closing) {
+                throw new IllegalStateException("qualification runner is closing/closed");
+            }
+            if (!ownedProcesses.isEmpty() || !ownedDrains.isEmpty()) {
+                throw new IllegalStateException("qualification runner still owns unfinished "
+                        + "child work from a previous run; close the runner first");
+            }
+        }
+    }
+
     /** Records a spawned child as owned until it is confirmed terminal. */
     private void registerProcess(Process process) {
         synchronized (ownershipLock) {
+            if (closing) {
+                process.destroyForcibly();
+                throw new IllegalStateException(
+                        "qualification runner is closing; no new child may be spawned");
+            }
             ownedProcesses.add(process);
         }
     }
@@ -730,18 +781,35 @@ public final class QualificationRunner implements AutoCloseable {
         }
     }
 
+    /** Drops drains that were confirmed joined. */
+    private void unregisterDrains(List<Thread> drains) {
+        synchronized (ownershipLock) {
+            ownedDrains.removeAll(drains);
+        }
+    }
+
     /** Records spawned drains as owned until they are confirmed joined. */
     private void registerDrains(List<Thread> drains) {
         synchronized (ownershipLock) {
+            if (closing) {
+                throw new IllegalStateException(
+                        "qualification runner is closing; no new drains may be started");
+            }
             ownedDrains.addAll(drains);
         }
     }
 
-    /** Confirmed drains drop out of ownership; drains that are still alive stay owned. */
+    /**
+     * Confirmed drains drop out of ownership; drains that are still alive stay owned for
+     * close() to cancel and re-join. No-op once the runner is closing so a late render
+     * cannot re-add drains after close() has already confirmed or failed them.
+     */
     private void retainLiveDrains(List<Thread> drains, List<Thread> live) {
         synchronized (ownershipLock) {
             ownedDrains.removeAll(drains);
-            ownedDrains.addAll(live);
+            if (!closing) {
+                ownedDrains.addAll(live);
+            }
         }
     }
 
@@ -766,63 +834,91 @@ public final class QualificationRunner implements AutoCloseable {
     }
 
     /**
-     * Closes the runner, first confirming that every owned child and drain is terminal. A
-     * child retained because it could not be confirmed dead is force-destroyed again and
-     * waited on within a bounded confirmation window; a drain still alive is cancelled and
-     * re-joined. If any owned work is still alive after the bounded retries, or the
-     * reference store fails to close, {@code close()} throws a typed
-     * {@link ReferenceException} with every failure suppressed instead of returning success
-     * while owned work is alive. Idempotent: the owned lists are drained on the first call.
+     * Closes the runner, first confirming that every owned child and drain is terminal within
+     * a single bounded real-time confirmation deadline. A retained child is force-destroyed
+     * again and waited on; a retained drain is cancelled and re-joined, each drawing only the
+     * remaining confirmation time. Handles that are confirmed are dropped from ownership;
+     * handles still alive at the deadline are RETAINED and the close fails with a typed
+     * {@link ReferenceException} (suppressed per-failure causes), so a repeated close retries
+     * and keeps failing until every owned handle is confirmed — {@code close()} never returns
+     * success while owned work is alive. The caller's interrupt is held aside for the
+     * duration and restored afterwards, so the bounded confirmation waits can actually wait.
+     * Idempotent: once every owned handle is confirmed, later closes only close the store.
      */
     @Override public void close() {
+        boolean interrupted = Thread.interrupted();
         List<Throwable> failures = new ArrayList<>();
-        synchronized (ownershipLock) {
-            for (Process process : ownedProcesses) {
-                if (!process.isAlive()) {
-                    continue;
-                }
-                process.destroyForcibly();
-                try {
-                    if (!process.waitFor(CLOSE_CONFIRMATION.toNanos(), TimeUnit.NANOSECONDS)) {
-                        failures.add(new IOException("child " + process
-                                + " still alive after the close confirmation window"));
-                    }
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    failures.add(new IOException("interrupted confirming child termination "
-                            + process, interrupted));
-                }
-            }
-            ownedProcesses.clear();
-            for (Thread drain : ownedDrains) {
-                drain.interrupt();
-                try {
-                    drain.join(Math.max(1, CLOSE_CONFIRMATION.toMillis()));
-                    if (drain.isAlive()) {
-                        failures.add(new IOException("drain " + drain.getName()
-                                + " still alive after the close confirmation window"));
-                    }
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    failures.add(new IOException("interrupted joining drain " + drain.getName(),
-                            interrupted));
-                }
-            }
-            ownedDrains.clear();
-        }
         try {
-            store.close();
-        } catch (RuntimeException | Error failure) {
-            failures.add(failure);
+            // One absolute monotonic confirmation deadline for the whole close: every process
+            // wait and drain join draws only the remaining time, so close is bounded as a
+            // whole instead of per handle.
+            long closeDeadline = System.nanoTime() + CLOSE_CONFIRMATION.toNanos();
+            synchronized (ownershipLock) {
+                closing = true;
+                Iterator<Process> processes = ownedProcesses.iterator();
+                while (processes.hasNext()) {
+                    Process process = processes.next();
+                    if (!process.isAlive()) {
+                        processes.remove();
+                        continue;
+                    }
+                    process.destroyForcibly();
+                    if (await(process, Math.max(0, closeDeadline - System.nanoTime()))) {
+                        processes.remove();
+                    } else {
+                        // Retain the still-live child so a later close retries it.
+                        failures.add(new IOException("child " + process
+                                + " still alive after the close confirmation deadline"));
+                    }
+                }
+                Iterator<Thread> drainIt = ownedDrains.iterator();
+                while (drainIt.hasNext()) {
+                    Thread drain = drainIt.next();
+                    if (joinDrain(drain, closeDeadline)) {
+                        drainIt.remove();
+                    } else {
+                        // Retain the still-live drain so a later close retries it.
+                        failures.add(new IOException("drain " + drain.getName()
+                                + " still alive after the close confirmation deadline"));
+                    }
+                }
+            }
+            try {
+                store.close();
+            } catch (RuntimeException | Error failure) {
+                failures.add(failure);
+            }
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
         if (!failures.isEmpty()) {
             ReferenceException combined = new ReferenceException(ReferenceException.Kind.IO,
-                    "qualification runner close could not confirm all owned work terminated "
-                            + "(" + failures.size() + " failure(s))");
+                    "qualification runner close could not confirm all owned work terminated ("
+                            + failures.size() + " failure(s))");
             for (Throwable failure : failures) {
                 combined.addSuppressed(failure);
             }
             throw combined;
         }
+    }
+
+    /** Cancels and joins one owned drain within the close deadline; false when still alive. */
+    private static boolean joinDrain(Thread drain, long closeDeadline) {
+        drain.interrupt();
+        while (drain.isAlive()) {
+            long remaining = closeDeadline - System.nanoTime();
+            if (remaining <= 0) {
+                return false;
+            }
+            try {
+                drain.join(Math.max(1, Math.min(remaining / 1_000_000, 10)));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return true;
     }
 }
