@@ -1,42 +1,120 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Recreation of the Hades boon-selection layout: a large ornate centered panel with title,
-     boon choices, a progress row, and a bottom action row over a dark backdrop. -->
+<!-- Recreation of the Hades gameplay screenshot: dark underworld arena, diagonal-feeling tile
+     bands, top Fury health bar, left boon stack, bottom health HUD, and right counters. -->
 <ui>
-  <table id="root" width="1280" height="720">
+  <table id="root" width="1280" height="720" class="backdrop">
+    <table id="boss-strip" height="70" expand="true" align="center center">
+      <row/>
+      <label id="boss-name" class="title" text="MEGERA, THE FURY" width="420" height="24" align="center"/>
+      <row/>
+      <progressbar id="boss-health" min="0" max="100" value="78" width="420" height="18"/>
+    </table>
     <row/>
-    <table id="boon-panel" class="panel" width="960" height="640" expand="true"
-           align="center center">
-      <row/>
-      <label id="boon-title" class="title" text="BOON OF APHRODITE"/>
-      <row/>
-      <label id="boon-name" text="Heartbreak Strike — Common"/>
-      <row/>
-      <label id="boon-desc" text="Your Attack deals more damage and inflicts Weak for 5s."/>
-      <row/>
-      <label id="boon-detail" text="Choose one. Other choices are lost."/>
-      <row/>
-      <checkbox id="boon-opt-1" text="Attack: Heartbreak Strike" label="Attack boon"/>
-      <row/>
-      <checkbox id="boon-opt-2" text="Special: Heartbreak Flourish" label="Special boon"/>
-      <row/>
-      <checkbox id="boon-opt-3" text="Dash: Passion Dash" label="Dash boon"/>
-      <row/>
-      <progressbar id="boon-affection" min="0" max="100" value="35" width="420" height="18"/>
-      <row/>
-      <label id="boon-affection-label" text="Affection: 35 / 100"/>
-      <row/>
-      <table id="boon-actions" align="center center">
+    <table id="arena" height="540" expand="true" align="center center">
+      <table id="left-relics" width="150" height="500" class="panel" pad="8" align="left center">
         <row/>
-        <button id="boon-take" class="primary" text="Take Boon" name="Take Boon" width="300"
-                height="56"/>
-        <button id="boon-leave" text="Leave" name="Leave" width="180" height="56"/>
+        <label id="weapon-slot" class="title" text="⚔" width="90" height="46" align="center"/>
+        <row/>
+        <label id="boon-slot-1" text="ATTACK" width="110" height="50" align="center"/>
+        <row/>
+        <label id="boon-slot-2" text="SPECIAL" width="110" height="50" align="center"/>
+        <row/>
+        <label id="boon-slot-3" text="DASH" width="110" height="50" align="center"/>
+        <row/>
+        <label id="boon-slot-4" text="CAST" width="110" height="50" align="center"/>
+        <row/>
+        <label id="boon-level" class="section" text="LV. 3" width="110" height="28" align="center"/>
+        <row/>
+        <label id="boon-count" text="+1" width="110" height="34" align="center"/>
+      </table>
+      <table id="battlefield" width="900" height="500" class="panel-alt" align="center center">
+        <row/>
+        <table id="tile-row-top" width="820" height="64" class="panel-alt" align="center center">
+          <label id="tile-top-1" text="◇    ◇    ◇    ◇    ◇    ◇" class="section" width="790" align="center"/>
+        </table>
+        <table id="arena-detail-grid" width="820" height="180" class="panel-alt" align="center center">
+          <row/>
+          <label id="arena-line-1" text="▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱" width="790" height="24" align="center"/>
+          <row/>
+          <label id="arena-line-2" class="section" text="◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇" width="790" height="24" align="center"/>
+          <row/>
+          <label id="arena-line-3" text="▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱" width="790" height="24" align="center"/>
+          <row/>
+          <label id="arena-line-4" class="section" text="◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇" width="790" height="24" align="center"/>
+          <row/>
+          <label id="arena-line-5" text="▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱" width="790" height="24" align="center"/>
+        </table>
+        <row/>
+        <row/>
+        <table id="obelisk-left" width="170" height="190" class="panel" align="left center">
+          <row/>
+          <label id="obelisk-left-mark" class="title" text="▣" width="130" height="72" align="center"/>
+          <row/>
+          <label id="obelisk-left-detail" text="TARTARUS" class="section" width="130" align="center"/>
+        </table>
+        <table id="battle-center" width="530" height="230" class="panel-alt" align="center center">
+          <row/>
+          <label id="hero-mark" text="◆   ZAGREUS   ◆" class="title" width="480" height="56" align="center"/>
+          <row/>
+          <label id="battle-flare" text="✦   ✧   ✦   ✧   ✦" width="480" height="48" align="center"/>
+          <row/>
+          <label id="battle-detail" class="section" text="ROOM 12   •   INFERNAL GATE" width="480" height="30" align="center"/>
+        </table>
+        <table id="obelisk-right" width="170" height="190" class="panel" align="right center">
+          <row/>
+          <label id="obelisk-right-mark" class="title" text="▣" width="130" height="72" align="center"/>
+          <row/>
+          <label id="obelisk-right-detail" text="INFERNO" class="section" width="130" align="center"/>
+        </table>
+        <row/>
+        <table id="tile-row-bottom" width="820" height="64" class="panel-alt" align="center center">
+          <label id="tile-bottom-1" text="◇   ◇   ◇   ◇   ◇   ◇   ◇" class="section" width="790" align="center"/>
+        </table>
+        <table id="tile-grid" width="820" height="150" class="panel-alt" align="center center">
+          <row/>
+          <label id="tile-grid-1" class="section" text="◇  ◇  ◇  ◇  ◇  ◇  ◇  ◇  ◇" width="790" height="24" align="center"/>
+          <row/>
+          <label id="tile-grid-2" text="▱    ▱    ▱    ▱    ▱    ▱" width="790" height="24" align="center"/>
+          <row/>
+          <label id="tile-grid-3" class="section" text="◇  ◇  ◇  ◇  ◇  ◇  ◇  ◇  ◇" width="790" height="24" align="center"/>
+          <row/>
+          <label id="tile-grid-4" text="▱    ▱    ▱    ▱    ▱    ▱" width="790" height="24" align="center"/>
+        </table>
+      </table>
+      <table id="right-counters" width="150" height="500" class="panel" pad="8" align="right center">
+        <row/>
+        <label id="counter-gem" class="title" text="◆" width="110" height="42" align="center"/>
+        <row/>
+        <label id="counter-gem-value" text="1 / 1" width="110" height="30" align="center"/>
+        <row/>
+        <label id="counter-coin" class="title" text="◉" width="110" height="42" align="center"/>
+        <row/>
+        <label id="counter-coin-value" text="23" width="110" height="30" align="center"/>
+        <row/>
+        <label id="counter-room" class="section" text="ROOM 12" width="110" height="30" align="center"/>
       </table>
     </table>
     <row/>
-    <table id="bottom-bar" height="64" expand="true" align="center center">
-      <row/>
-      <label id="bottom-text" text="Tartarus — Chamber 12"/>
-      <progressbar id="bottom-xp" min="0" max="100" value="60" width="240" height="14"/>
+    <table id="bottom-hud" height="110" expand="true" class="panel" align="center center">
+      <table id="health-block" width="370" height="78" align="left center">
+        <row/>
+        <label id="health-label" class="title" text="♥   ZAGREUS" width="330" height="24"/>
+        <row/>
+        <progressbar id="health" min="0" max="100" value="23" width="300" height="24"/>
+        <label id="health-value" text="23 / 100" width="90" height="24"/>
+      </table>
+      <table id="bottom-message" width="420" height="78" align="center center">
+        <row/>
+        <label id="room-label" text="TARTARUS  —  CHAMBER 12" class="heading" width="400" height="26" align="center"/>
+        <row/>
+        <label id="room-detail" text="ESCAPE THE UNDERWORLD" class="section" width="400" height="24" align="center"/>
+      </table>
+      <table id="bottom-resource" width="220" height="78" align="right center">
+        <row/>
+        <label id="resource-label" text="OBOL   23" width="190" height="26" align="right"/>
+        <row/>
+        <label id="resource-detail" class="section" text="HEAT  1" width="190" height="24" align="right"/>
+      </table>
     </table>
   </table>
 </ui>
