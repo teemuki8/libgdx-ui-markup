@@ -87,7 +87,9 @@ jobs:
           # configuration; every Gradle invocation (local, CI, release) inherits them.
           grep -qx 'org.gradle.dependency.verification=strict' gradle.properties
           grep -qx 'org.gradle.dependency.verification.console=verbose' gradle.properties
-          grep -q 'LockMode.STRICT' build.gradle.kts
+          # Anchored on the active assignment line: a comment mentioning LockMode.STRICT must
+          # not satisfy the check, and weakening the mode (or deleting the assignment) must fail.
+          grep -q '^[[:space:]]*lockMode = LockMode\.STRICT' build.gradle.kts
           # Workflows must never refresh dependencies, write locks, regenerate verification
           # metadata, or run dependency verification in lenient/off mode. The flag fragments
           # below are assembled from parts so this check can scan its own source without

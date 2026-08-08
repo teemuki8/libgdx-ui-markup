@@ -89,32 +89,41 @@ verification metadata covers the currently resolved graph.
 
 ### Recovery: deliberate dependency upgrades
 
-Upgrading a dependency is a deliberate two-step act: the lock set and the verification metadata
-must be regenerated and reviewed together, then re-verified with a non-writing sweep.
+Upgrading a dependency is a deliberate act. Because strict verification and STRICT locking
+are default-on, a "locks first, then verification metadata" two-step sequence deadlocks: the
+`--write-locks` pass would be rejected by strict verification (the new artifact is not yet in
+`verification-metadata.xml`) before any lock state is written. Instead, bootstrap both in a
+single full-graph invocation that writes locks and verification metadata together, in a fresh
+`GRADLE_USER_HOME` so every artifact, plugin, and settings component is re-downloaded and
+re-checked against the committed keyring and trust policy:
 
 1. Edit the version catalog (`gradle/libs.versions.toml`) or build files.
-2. Regenerate the lock set (local write, never run in CI/release):
-   `./gradlew resolveAndLockAll --write-locks --warning-mode=fail`
-3. Regenerate the verification metadata and export any new signer keys into the committed
-   keyring (local write; a fresh `GRADLE_USER_HOME` re-downloads the whole graph so the result
-   is grounded in an independent bootstrap):
+2. Bootstrap in one pass (local write; these flags never run in CI/release):
    ```bash
    GRADLE_USER_HOME="$(mktemp -d)" ./gradlew --no-daemon \
-     --write-verification-metadata pgp,sha256 --export-keys \
+     --write-locks --write-verification-metadata pgp,sha256 --export-keys \
      help resolveAndLockAll :libgdx-ui-markup-idea:buildPlugin :libgdx-ui-markup-idea:unitTest \
      :libgdx-ui-markup-preview:installDist javadoc \
      :libgdx-ui-markup:publishMavenJavaPublicationToCentralStagingRepository \
      :libgdx-ui-markup-runtime:publishMavenJavaPublicationToCentralStagingRepository \
      :libgdx-ui-markup-harness:publishMavenJavaPublicationToCentralStagingRepository
    ```
-4. Review the generated diff: every new coordinate, checksum, and signer key must come from the
+   The task set is the full CI/release resolution surface from Task 2: settings and project
+   plugin graphs (`help`), every resolvable configuration in every module (`resolveAndLockAll`),
+   the IDEA plugin build and its unit tests, the preview distribution, Javadocs, and the release
+   publication tooling. `--export-keys` imports any new signer keys into the committed keyring;
+   the committed keyring and file-exact trust policy stay in force for the whole bootstrap, so
+   nothing new is trusted without a signature from a known key. If the bootstrap fails on
+   keyserver access, import the new keys from a keyserver manually into
+   `gradle/verification-keyring.gpg` and re-run.
+3. Review the generated diff: every new coordinate, checksum, and signer key must come from the
    intended upgrade and a trusted publisher, with each key scoped to its exact
    group/module/version/file entries — no wildcard trust, no `trusted-artifacts`, no
-   `ignored-keys`.
-5. Commit the lockfiles, `gradle/verification-metadata.xml`, and keyring changes together so the
+   `ignored-keys`. **Never commit before this provenance and key/file-scope review.**
+4. Commit the lockfiles, `gradle/verification-metadata.xml`, and keyring changes together so the
    committed state never mixes an old lock set with new verification metadata.
-6. Verify with the non-writing sweep `./gradlew resolveAndLockAll --warning-mode=fail` and the
-   full candidate gate above.
+5. Verify with the non-writing sweep `./gradlew resolveAndLockAll --warning-mode=fail` and the
+   full candidate gate above; CI/release then enforce the new state exactly as before.
 
 If a dependency is reverted instead, restore the previously reviewed lockfiles and metadata
 verbatim — do not regenerate, because the current graph would then be re-locked against the
