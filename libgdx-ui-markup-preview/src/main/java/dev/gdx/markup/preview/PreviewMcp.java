@@ -62,7 +62,7 @@ final class PreviewMcp implements AutoCloseable {
     private final Scene2dHarness harness;
     private final java.util.concurrent.ExecutorService protocolExecutor;
     private final HarnessMcpServer server;
-    private final TmpDirArtifactPublisher artifacts;
+    private final InMemoryArtifactPublisher artifacts;
     private final AgentRuntime runtime;
     private final Thread terminator;
     /** Committed (live) runtime registration; replaced only by a committed candidate. */
@@ -76,7 +76,7 @@ final class PreviewMcp implements AutoCloseable {
     private boolean runtimeLost;
 
     PreviewMcp(Stage stage) {
-        this(stage, TmpDirArtifactPublisher::new,
+        this(stage, InMemoryArtifactPublisher::new,
                 (protocol, artifacts) -> HarnessMcpServer.open(
                         protocol, artifacts, System.in, System.out),
                 AgentRuntime::start, AutoCloseable::close);
@@ -152,7 +152,7 @@ final class PreviewMcp implements AutoCloseable {
             this.protocolExecutor = protocolExecutor;
             HarnessProtocolService protocol = new HarnessProtocolService(
                     Map.of(PreviewApp.SESSION_ID, protocolSession), clock, protocolExecutor);
-            TmpDirArtifactPublisher artifacts = artifactsFactory.create();
+            InMemoryArtifactPublisher artifacts = artifactsFactory.create();
             acquired.add(artifacts);
             this.artifacts = artifacts;
             HarnessMcpServer server = serverFactory.open(protocol, artifacts);
@@ -204,7 +204,7 @@ final class PreviewMcp implements AutoCloseable {
     /** Test seam: creates the artifact publisher (injectable to prove staged cleanup). */
     @FunctionalInterface
     interface ArtifactsFactory {
-        TmpDirArtifactPublisher create();
+        InMemoryArtifactPublisher create();
     }
 
     /** Test seam: opens the MCP server (injectable to prove staged cleanup). */
@@ -217,6 +217,12 @@ final class PreviewMcp implements AutoCloseable {
     /** Returns the semantic sink bridging markup metadata into the harness facade. */
     HarnessSemanticSink semanticSink() {
         return sink;
+    }
+
+    /** Returns the live in-memory artifact publisher (package-visible seam for the in-process
+     * session readback E2E). */
+    InMemoryArtifactPublisher artifacts() {
+        return artifacts;
     }
 
     /**

@@ -1,5 +1,6 @@
 package dev.gdx.markup.preview;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
@@ -17,6 +18,7 @@ import com.badlogic.gdx.graphics.GL20;
 import com.badlogic.gdx.scenes.scene2d.Stage;
 import com.badlogic.gdx.scenes.scene2d.ui.Skin;
 import dev.gdx.markup.runtime.MarkupRuntimeSource;
+import dev.gdx.uiharness.mcp.ArtifactReference;
 import dev.gdx.uiharness.mcp.HarnessMcpServer;
 import io.github.teemuki8.libgdx.agent.runtime.core.AgentRuntime;
 import io.github.teemuki8.libgdx.agent.runtime.core.EntityId;
@@ -171,6 +173,7 @@ public final class PreviewTestChild {
                 case "mcp-close-all" -> runMcpCloseAll(ui, css);
                 case "mcp-cause-chain" -> runMcpCauseChain(ui, css);
                 case "mcp-init-failure" -> runMcpInitFailure(ui, css);
+                case "mcp-artifact-readback" -> runMcpArtifactReadback(ui, css);
                 default -> fail("unknown scenario " + scenario);
             }
         } catch (Throwable failure) {
@@ -1018,8 +1021,7 @@ public final class PreviewTestChild {
      * clock, runtime, harness, fence, capture, waits — must be closed best-effort and any
      * cleanup failure aggregated (suppressed) onto the primary initialization failure. The
      * injected closer records every close, so the child can prove no acquired resource leaks
-     * and that a successful close after a failed server open still removes the publisher's
-     * session directory.
+     * and that a successful close after a failed server open still closes the publisher.
      */
     private static void runMcpInitFailure(Path ui, Path css) {
         writeFixture(ui, css, ENTITY_UI_A);
@@ -1035,21 +1037,21 @@ public final class PreviewTestChild {
                 try {
                     frame++;
                     if (frame == 1) {
-                        java.util.concurrent.atomic.AtomicReference<TmpDirArtifactPublisher>
+                        java.util.concurrent.atomic.AtomicReference<InMemoryArtifactPublisher>
                                 created = new java.util.concurrent.atomic.AtomicReference<>();
                         java.util.concurrent.atomic.AtomicInteger closes =
                                 new java.util.concurrent.atomic.AtomicInteger();
                         // Server-open failure after the publisher was acquired: the constructor
                         // must close every acquired component (including the publisher, whose
-                        // session directory is deleted) and rethrow the primary failure with
+                        // retained payloads are cleared) and rethrow the primary failure with
                         // the cleanup aggregated. Acquired before the server: clock, scheduler,
                         // session, fence, capture, waits, runtime, harness, protocol executor,
                         // artifacts = 10 components.
                         RuntimeException serverFailure = assertThrows(RuntimeException.class,
                                 () -> new PreviewMcp(probe,
                                         () -> {
-                                            TmpDirArtifactPublisher publisher =
-                                                    new TmpDirArtifactPublisher();
+                                            InMemoryArtifactPublisher publisher =
+                                                    new InMemoryArtifactPublisher();
                                             created.set(publisher);
                                             return publisher;
                                         },
@@ -1068,9 +1070,9 @@ public final class PreviewTestChild {
                                 "the primary server-open failure propagates: "
                                         + serverFailure.getMessage());
                         assertNotNull(created.get(), "the publisher was acquired");
-                        assertFalse(Files.exists(created.get().sessionDir()),
-                                "the acquired publisher's session directory is removed "
-                                        + "during staged constructor cleanup");
+                        assertTrue(created.get().isClosed(),
+                                "the acquired publisher is closed during staged constructor "
+                                        + "cleanup");
                         assertTrue(closes.get() >= 10,
                                 "every acquired component close was attempted: " + closes.get());
                         // Artifact-publisher failure: nothing is acquired past the publisher,
@@ -1136,6 +1138,66 @@ public final class PreviewTestChild {
                 if (probe != null) {
                     probe.dispose();
                 }
+            }
+        });
+    }
+
+    /**
+     * In-process session readback E2E: the real {@code --mcp} app owns the live in-memory
+     * publisher, and the same session publishes through it and reads the payload back while
+     * the session is open — opaque {@code artifact:<digest-prefix>} references, dedupe of
+     * identical bytes, and typed rejection after the session closes.
+     */
+    private static void runMcpArtifactReadback(Path ui, Path css) {
+        writeFixture(ui, css, ENTITY_UI_A);
+        PreviewApp app = new PreviewApp(CliOptions.parse(new String[]{
+                "--ui", ui.toString(), "--css", css.toString(), "--mcp"}));
+        launch(new ApplicationAdapter() {
+            private int frame;
+
+            @Override public void create() {
+                app.create();
+            }
+
+            @Override public void render() {
+                try {
+                    frame++;
+                    if (frame == 1) {
+                        app.render();
+                        PreviewMcp mcp = app.mcp();
+                        assertNotNull(mcp, "the preview runs with --mcp");
+                        InMemoryArtifactPublisher publisher = mcp.artifacts();
+                        assertNotNull(publisher, "the MCP session owns a live publisher");
+                        byte[] payload = "session-readback".getBytes(StandardCharsets.UTF_8);
+                        ArtifactReference reference = publisher.publish("text/plain", payload);
+                        assertTrue(reference.reference().matches("artifact:[0-9a-f]{32}"),
+                                "the live session publishes opaque references: "
+                                        + reference.reference());
+                        assertArrayEquals(payload, publisher.readBack(reference.sha256()),
+                                "the session reads its own payload back in-process while open");
+                        assertEquals(reference.reference(),
+                                publisher.publish("text/plain", payload).reference(),
+                                "re-publishing identical bytes dedupes during the session");
+                        assertEquals(1, publisher.retainedCount(),
+                                "the dedupe retained the payload exactly once");
+                        publisher.close();
+                        assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                                () -> publisher.publish("text/plain", new byte[] {1}),
+                                "publish is rejected after the session closes");
+                        assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                                () -> publisher.readBack(reference.sha256()),
+                                "readBack is rejected after the session closes");
+                        Gdx.app.exit();
+                    } else {
+                        app.render();
+                    }
+                } catch (Throwable thrown) {
+                    fail(messageOf(thrown));
+                }
+            }
+
+            @Override public void dispose() {
+                app.dispose();
             }
         });
     }

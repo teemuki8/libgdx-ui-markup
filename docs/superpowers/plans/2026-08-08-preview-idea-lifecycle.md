@@ -88,17 +88,20 @@
 ### Task 5: Private Quota-Bounded Artifact Storage (#12)
 
 **Files:**
-- Modify: `libgdx-ui-markup-preview/src/main/java/dev/gdx/markup/preview/TmpDirArtifactPublisher.java`
+- Create: `libgdx-ui-markup-preview/src/main/java/dev/gdx/markup/preview/InMemoryArtifactPublisher.java`
+- Delete: `libgdx-ui-markup-preview/src/main/java/dev/gdx/markup/preview/TmpDirArtifactPublisher.java`
 - Modify: `libgdx-ui-markup-preview/src/main/java/dev/gdx/markup/preview/PreviewMcp.java`
-- Test: `libgdx-ui-markup-preview/src/test/java/dev/gdx/markup/preview/TmpDirArtifactPublisherTest.java`
+- Test: `libgdx-ui-markup-preview/src/test/java/dev/gdx/markup/preview/InMemoryArtifactPublisherTest.java` (replaces `TmpDirArtifactPublisherTest.java`)
 
 **Interfaces:**
-- Publisher implements `AutoCloseable` and owns one session directory.
-- Constructor accepts bounded per-file/count/total quotas for deterministic tests; production uses fixed safe defaults.
+- Publisher implements `AutoCloseable` and retains payloads only in bounded per-session memory, keyed by their full SHA-256 digest; `readBack(sha256)` resolves a published digest to a defensive copy in-process.
+- Constructor accepts bounded per-file/count/total quotas for deterministic tests; production uses fixed safe defaults (16 MiB/file, 128 MiB total, 64 artifacts).
 
-- [ ] Add failing tests for private permissions, full-digest unique names, pre-planted symlink, per-file/total/count quota, failed-write cleanup, and close cleanup.
-- [ ] Implement owner-only directory creation, `NOFOLLOW_LINKS` validation, create-new temporary write plus atomic install, synchronized quota accounting, and recursive cleanup constrained to the owned directory.
-- [ ] Make `PreviewMcp.close` close the publisher on every path. Run preview tests and commit `fix: secure preview artifact storage`.
+- [x] Add failing tests for opaque references, full-digest metadata, per-file/total/count quota, dedupe without extra quota, digest-collision rejection (injectable digest seam), defensive copies, concurrent publish accounting, close clearing, and no-filesystem-side-effects.
+- [x] Implement in-memory retention with synchronized quota accounting and close that zeroizes/removes retained payloads and rejects later publish/readback.
+- [x] Make `PreviewMcp.close` close the publisher on every path; run preview and harness suites and commit `fix: retain preview artifacts in memory (cutover from temp-directory storage)`.
+
+> **Hosted report — task 5 (issue #12), 2026-08-08.** Decision: preview artifact retention is in-memory per session, not on disk. A pure-Java review proved that no cross-platform, identity-conditioned directory unlink exists: `SecureDirectoryStream.deleteDirectory(name)` is name-based (no JDK API conditions an unlink on the directory's inode/owner), `renameat2`/`RENAME_EXCHANGE` is not exposed by the JDK, and macOS/Windows lack the Linux-only primitive; the JDK Windows provider additionally returns a null `fileKey` (commit df1d559's ADS token workaround only papered over the unverifiable identity). Every filesystem approach therefore either races or fails closed by refusing cleanup. In-memory retention keeps the public `ArtifactReference.Publisher` contract and opaque `artifact:<128-bit digest prefix>` references, bounds bytes/count exactly, and removes the entire symlink/ACL/fileKey/platform surface. The publisher snapshots the caller's array exactly once before hashing, so concurrent caller-side mutation can never desynchronize the retained bytes from the reference digest (regression: `concurrentCallerMutationCannotCorruptTheRetainedPayload`, which fails the pre-fix hash-then-clone order). Evidence: `TmpDirArtifactPublisher` (directory identity, owner-only ACLs, `SecureDirectoryStream` cleanup, Windows `WindowsDirKey`) and its tests were deleted; `InMemoryArtifactPublisher` + `InMemoryArtifactPublisherTest` (16 tests) cover quotas, dedupe/collision, caller-mutation races, concurrency, defensive copies, close clearing, and no-disk behavior; the preview suite (`xvfb-run -a ./gradlew :libgdx-ui-markup-preview:test`) and the harness E2E (`xvfb-run -a ./gradlew :libgdx-ui-markup-harness:test --rerun`, which now asserts opaque reference metadata and that the live session creates no OS temp entries) are green. In-process session readback is proven by the preview's `artifactPublishedDuringSessionReadsBackInProcess` E2E; the harness protocol has no artifact-read tool, so cross-process byte retrieval is intentionally not asserted.
 
 ### Task 6: IDEA Child Process Ownership (#24)
 
