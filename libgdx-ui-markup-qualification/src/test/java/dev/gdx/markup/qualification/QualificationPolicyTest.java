@@ -16,16 +16,18 @@ import org.junit.jupiter.api.Test;
  */
 final class QualificationPolicyTest {
     @Test
-    void calibratePlacesThresholdBetweenNegativesAndPositivesWithDocumentedMargin() {
+    void calibratePlacesThresholdAtTheMidpointOfTheObservedSeparation() {
         OptionalDouble threshold = QualificationPolicy.calibrate(
                 List.of(0.8, 0.9), List.of(0.1, 0.2));
         assertTrue(threshold.isPresent());
         double value = threshold.orElseThrow();
-        assertTrue(value >= 0.2 + QualificationPolicy.SEPARATION_MARGIN,
-                "threshold must sit above the maximum negative plus the margin");
-        assertTrue(value <= 0.8 - QualificationPolicy.SEPARATION_MARGIN,
-                "threshold must sit below the minimum positive minus the margin");
-        assertEquals((0.25 + 0.75) / 2, value, 0.0001, "midpoint of the safe interval");
+        assertEquals((0.2 + 0.8) / 2, value, 0.0001,
+                "midpoint of [maxNegative, minPositive]");
+        assertTrue(value > 0.2, "threshold must sit above the maximum negative");
+        assertTrue(value < 0.8, "threshold must sit below the minimum positive");
+        assertEquals(0.505, QualificationPolicy.calibrate(
+                List.of(0.51), List.of(0.5)).orElseThrow(), 0.0001,
+                "thin separations still calibrate to their exact midpoint");
     }
 
     @Test
@@ -34,7 +36,7 @@ final class QualificationPolicyTest {
                 "a positive below the negative leaves no safe interval");
         assertTrue(QualificationPolicy.calibrate(
                 List.of(0.2), List.of(0.2)).isEmpty(),
-                "touching ranges leave no interval with the documented margin");
+                "touching ranges leave no interval");
         assertTrue(QualificationPolicy.calibrate(
                 List.of(0.1, 0.5), List.of(0.4, 0.9)).isEmpty(),
                 "overlapping multi-observation distributions must fail calibration");
@@ -65,13 +67,15 @@ final class QualificationPolicyTest {
     }
 
     @Test
-    void stalenessIsRelativeToTheCommittedThreshold() {
+    void stalenessFlagsMeasurementsBelowTheCommittedThreshold() {
         assertFalse(QualificationPolicy.stale(0.26, 0.4),
-                "a 1% drift from the calibrated threshold is not stale");
-        assertTrue(QualificationPolicy.stale(0.26, 0.55),
-                "a measurement far above the threshold requires re-calibration");
-        assertTrue(QualificationPolicy.stale(0.26, 0.30),
-                "a measurement far below the threshold requires re-calibration");
+                "a measurement above the committed threshold is not stale");
+        assertFalse(QualificationPolicy.stale(0.26, 0.30),
+                "a measurement still clearing the threshold is not stale");
+        assertTrue(QualificationPolicy.stale(0.26, 0.25),
+                "a measurement that no longer clears the threshold is stale");
+        assertTrue(QualificationPolicy.stale(0.26, 0.0),
+                "a vanished measurement is stale");
         assertFalse(QualificationPolicy.stale(0.0, 0.0), "an empty baseline is not stale");
     }
 

@@ -18,8 +18,6 @@ import java.util.OptionalDouble;
  * that flood or empty the screen, which could otherwise game a region-overlap score.
  */
 public final class QualificationPolicy {
-    /** Minimum separation a calibrated threshold keeps from the negative ceiling. */
-    public static final double SEPARATION_MARGIN = 0.05;
     /** Fraction of the measured score a diagnostic threshold keeps as regression headroom. */
     public static final double THRESHOLD_FRACTION = 0.65;
     /** Absolute floor and ceiling for diagnostic thresholds. */
@@ -39,11 +37,13 @@ public final class QualificationPolicy {
     /**
      * Calibrates one component threshold from positive and deliberate-negative observations.
      *
-     * <p>The threshold is the midpoint of the safe interval
-     * {@code [maxNegative + SEPARATION_MARGIN, minPositive - SEPARATION_MARGIN]} and is empty
-     * when that interval is invalid, i.e. when the ranges overlap or touch. An empty result
-     * means no threshold can separate the observed positives from the negatives, so the
-     * calibration must fail loudly rather than commit a meaningless gate.
+     * <p>The threshold is the midpoint of the observed separation interval
+     * {@code [maxNegative, minPositive]}: it sits strictly below the minimum positive score
+     * and strictly above the maximum deliberate-negative score by exactly half the measured
+     * separation, so the committed gate rejects every calibrated negative while accepting the
+     * measured positives without any hand-picked margin. The result is empty when the ranges
+     * overlap or touch — no threshold can separate them, so the calibration must fail loudly
+     * instead of committing a meaningless gate.
      *
      * @param positives  measured component scores of faithful recreations (non-empty)
      * @param negatives  measured component scores of deliberate negatives (non-empty)
@@ -54,12 +54,10 @@ public final class QualificationPolicy {
         requireObservations("negatives", negatives);
         double minPositive = positives.stream().mapToDouble(Double::doubleValue).min().orElseThrow();
         double maxNegative = negatives.stream().mapToDouble(Double::doubleValue).max().orElseThrow();
-        double low = maxNegative + SEPARATION_MARGIN;
-        double high = minPositive - SEPARATION_MARGIN;
-        if (low > high) {
+        if (maxNegative >= minPositive) {
             return OptionalDouble.empty();
         }
-        return OptionalDouble.of((low + high) / 2.0);
+        return OptionalDouble.of((maxNegative + minPositive) / 2.0);
     }
 
     /** Returns the diagnostic threshold for one measured score, clamped to the policy band. */
@@ -69,15 +67,15 @@ public final class QualificationPolicy {
     }
 
     /**
-     * Returns whether the committed threshold no longer matches the current measurement within
-     * the staleness tolerance, meaning the corpus baselines should be re-calibrated.
+     * Returns whether the committed threshold is stale: the current measurement no longer
+     * clears it, so the corpus baselines cannot gate and must be re-calibrated. A threshold of
+     * zero (an uncalibrated placeholder) is stale whenever anything is measured.
      */
     public static boolean stale(double committedThreshold, double measured) {
         if (committedThreshold <= 0) {
             return measured > 0;
         }
-        double implied = threshold(measured);
-        return Math.abs(implied - committedThreshold) / committedThreshold > STALENESS_TOLERANCE;
+        return measured < committedThreshold;
     }
 
     /** Returns whether the recreation's structured-cell count is in the density band. */

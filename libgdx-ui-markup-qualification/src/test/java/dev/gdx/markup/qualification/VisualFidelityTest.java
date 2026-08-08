@@ -204,10 +204,10 @@ final class VisualFidelityTest {
         FidelityScore identity = VisualFidelity.measure(base, base);
         FidelityScore hueScore = VisualFidelity.measure(base, hueShifted);
         assertEquals(1.0, identity.color(), 0.0001, "identity color must be 1");
-        assertTrue(hueScore.color() < identity.color() - QualificationPolicy.SEPARATION_MARGIN,
+        assertTrue(hueScore.color() < identity.color() - 0.05,
                 "hue rotation must lower color: " + hueScore.color()
                         + " not below " + (identity.color()
-                        - QualificationPolicy.SEPARATION_MARGIN));
+                        - 0.05));
         assertTrue(hueScore.geometry() > 0.9,
                 "hue rotation must not rely on geometry: geometry " + hueScore.geometry()
                         + " collapsed although the layout is unchanged");

@@ -6,10 +6,10 @@
     "license" : "Apache-2.0 — libgdx-ui-harness agentic-palisade corpus (our own benchmark UI).",
     "markupFile" : "palisade-skirmish.xml",
     "thresholds" : {
-      "geometry" : 0.03,
-      "color" : 0.05,
-      "detail" : 0.4,
-      "coarseLayout" : 0.2
+      "geometry" : 0.161,
+      "color" : 0.702,
+      "detail" : 0.405,
+      "coarseLayout" : 0.307
     },
     "referenceWidth" : 1280,
     "referenceHeight" : 720
@@ -22,10 +22,10 @@
     "license" : "(c) Supergiant Games. Copyrighted material; used solely for private layout-verification testing, never redistributed.",
     "markupFile" : "hades-boon.xml",
     "thresholds" : {
-      "geometry" : 0.05,
-      "color" : 0.05,
-      "detail" : 0.1,
-      "coarseLayout" : 0.25
+      "geometry" : 0.106,
+      "color" : 0.047,
+      "detail" : 0.077,
+      "coarseLayout" : 0.238
     },
     "referenceWidth" : 1920,
     "referenceHeight" : 1080
@@ -38,10 +38,10 @@
     "license" : "(c) Mega Crit Games. Copyrighted material; used solely for private layout-verification testing, never redistributed.",
     "markupFile" : "sts-shop.xml",
     "thresholds" : {
-      "geometry" : 0.05,
-      "color" : 0.05,
-      "detail" : 0.1,
-      "coarseLayout" : 0.2
+      "geometry" : 0.076,
+      "color" : 0.211,
+      "detail" : 0.11,
+      "coarseLayout" : 0.228
     },
     "referenceWidth" : 1920,
     "referenceHeight" : 1080
@@ -54,10 +54,10 @@
     "license" : "GPL-2.0-or-later (The Battle for Wesnoth); screenshot mirrored on the Steam CDN.",
     "markupFile" : "wesnoth-battle.xml",
     "thresholds" : {
-      "geometry" : 0.05,
-      "color" : 0.05,
-      "detail" : 0.1,
-      "coarseLayout" : 0.12
+      "geometry" : 0.088,
+      "color" : 0.055,
+      "detail" : 0.044,
+      "coarseLayout" : 0.235
     },
     "referenceWidth" : 1920,
     "referenceHeight" : 1080

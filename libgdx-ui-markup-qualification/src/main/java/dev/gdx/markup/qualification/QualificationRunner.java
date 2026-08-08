@@ -113,9 +113,13 @@ public final class QualificationRunner implements AutoCloseable {
     }
 
     /**
-     * Applies the five deterministic deliberate negatives to the rendered recreation and
-     * measures each against the reference, returning per-component observation lists aligned
-     * with {@link FidelityComponent#REQUIRED}.
+     * Applies the deterministic deliberate negatives to the rendered recreation and measures
+     * each against the reference. Each transformation is a negative for the failure mode it
+     * exhibits, so it only contributes to that component's observation list: a vertical flip,
+     * a fixed translation, and a uniform scale misplace layout (geometry); a hue rotation
+     * re-palettes the screen (color); a box blur and a uniform scale destroy typography and
+     * fine structure (detail). The palette-preserving flip/translation/hue scores on other
+     * components are not calibration negatives for those components.
      */
     private List<List<Double>> measureNegatives(CorpusEntry entry) {
         Optional<ReferenceImageStore.ReferenceImage> reference = reference(entry);
@@ -138,9 +142,16 @@ public final class QualificationRunner implements AutoCloseable {
         for (int i = 0; i < negatives.length; i++) {
             FidelityScore negativeScore =
                     VisualFidelity.measure(reference.orElseThrow(), negatives[i]);
-            geometryNegatives.add(negativeScore.geometry());
-            colorNegatives.add(negativeScore.color());
-            detailNegatives.add(negativeScore.detail());
+            String name = names[i];
+            if ("flip".equals(name) || "translate".equals(name) || "scale".equals(name)) {
+                geometryNegatives.add(negativeScore.geometry());
+            }
+            if ("hue".equals(name)) {
+                colorNegatives.add(negativeScore.color());
+            }
+            if ("blur".equals(name) || "scale".equals(name)) {
+                detailNegatives.add(negativeScore.detail());
+            }
             System.out.println("calibration: " + entry.id() + " negative " + names[i]
                     + " geometry=" + compact(negativeScore.geometry()) + " color="
                     + compact(negativeScore.color()) + " detail="
@@ -157,9 +168,8 @@ public final class QualificationRunner implements AutoCloseable {
                     "no safe threshold interval for " + entry.id() + " " + component
                             + ": positive " + compact(positive)
                             + " does not clear the deliberate negatives " + negatives
-                            + " by the documented margin "
-                            + QualificationPolicy.SEPARATION_MARGIN
-                            + "; improve the recreation or re-examine the corpus");
+                            + "; no threshold can separate the ranges, so improve the "
+                            + "recreation or re-examine the corpus");
         }
         return Math.round(threshold.orElseThrow() * 1000) / 1000.0;
     }

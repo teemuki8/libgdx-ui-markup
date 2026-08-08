@@ -38,6 +38,8 @@ public final class VisualFidelity {
     public static final int GRID_ROWS = RegionSimilarity.GRID_ROWS;
     /** Sobel magnitude threshold for counting a pixel as typography/detail. */
     static final int DETAIL_EDGE_MAGNITUDE = 16;
+    /** Sobel magnitude threshold for the sharp-edge orientation histogram. */
+    static final int SHARP_EDGE_MAGNITUDE = 64;
     /** Color quantization bits per channel (4 bits -> 4096 fixed bins). */
     static final int COLOR_BITS = 4;
     /** Classifier spread: cells above mean + 0.75 standard deviations are structured. */
@@ -76,13 +78,24 @@ public final class VisualFidelity {
 
     // ------------------------------------------------------------------ geometry
 
-    /** Dice of the thresholded Sobel-gradient cell masks, no dilation. */
+    /**
+     * Orientation-weighted Dice of the thresholded Sobel-gradient cell masks.
+     *
+     * <p>Each cell that is edge-structured in both images contributes its directed-gradient
+     * orientation similarity (1 - 0.5 x total-variation distance of the four-bin gradient
+     * quadrant histograms) instead of a plain 1. A vertical flip mirrors every vertical
+     * edge's gradient direction and a translation or scale moves edges to different cells,
+     * so all three deliberate negatives collapse the weighted overlap while a faithful
+     * recreation keeps most of its aligned cells (whose edge directions match the
+     * reference's). The coarse 80x45 grid keeps approximate recreations measurable; the
+     * orientation weighting is what rejects the layout negatives, not grid resolution.
+     */
     private static double geometry(Pixels a, Pixels b) {
         boolean[][] maskA = edgeMask(a);
         boolean[][] maskB = edgeMask(b);
-        int intersection = 0;
         int countA = 0;
         int countB = 0;
+        double orientedIntersection = 0;
         for (int row = 0; row < GRID_ROWS; row++) {
             for (int col = 0; col < GRID_COLS; col++) {
                 if (maskA[row][col]) {
@@ -92,7 +105,7 @@ public final class VisualFidelity {
                     countB++;
                 }
                 if (maskA[row][col] && maskB[row][col]) {
-                    intersection++;
+                    orientedIntersection += orientationSimilarity(a, b, row, col);
                 }
             }
         }
@@ -102,7 +115,47 @@ public final class VisualFidelity {
         if (countA == 0 || countB == 0) {
             return 0.0;
         }
-        return 2.0 * intersection / (countA + countB);
+        return 2.0 * orientedIntersection / (countA + countB);
+    }
+
+    /** Directed-gradient orientation similarity of one cell pair, in [0, 1]. */
+    private static double orientationSimilarity(Pixels a, Pixels b, int row, int col) {
+        int widthA = a.width();
+        int heightA = a.height();
+        int widthB = b.width();
+        int heightB = b.height();
+        int[] grayA = gray(a);
+        int[] grayB = gray(b);
+        int[] binA = new int[4];
+        int[] binB = new int[4];
+        int countA = 0;
+        int countB = 0;
+        for (int y = row * heightA / GRID_ROWS; y < (row + 1) * heightA / GRID_ROWS; y++) {
+            for (int x = col * widthA / GRID_COLS; x < (col + 1) * widthA / GRID_COLS; x++) {
+                if (sobelMagnitude(grayA, widthA, heightA, x, y) >= DETAIL_EDGE_MAGNITUDE) {
+                    binA[sobelOrientationBin(grayA, widthA, heightA, x, y)]++;
+                    countA++;
+                }
+            }
+        }
+        for (int y = row * heightB / GRID_ROWS; y < (row + 1) * heightB / GRID_ROWS; y++) {
+            for (int x = col * widthB / GRID_COLS; x < (col + 1) * widthB / GRID_COLS; x++) {
+                if (sobelMagnitude(grayB, widthB, heightB, x, y) >= DETAIL_EDGE_MAGNITUDE) {
+                    binB[sobelOrientationBin(grayB, widthB, heightB, x, y)]++;
+                    countB++;
+                }
+            }
+        }
+        if (countA == 0 || countB == 0) {
+            return 0.0;
+        }
+        double totalVariation = 0;
+        for (int i = 0; i < 4; i++) {
+            double shareA = binA[i] / (double) countA;
+            double shareB = binB[i] / (double) countB;
+            totalVariation += Math.abs(shareA - shareB);
+        }
+        return Math.max(0.0, 1.0 - 0.5 * totalVariation);
     }
 
     /** Classifies cells as edge-structured using the image's own gradient histogram. */
@@ -182,7 +235,26 @@ public final class VisualFidelity {
 
     // -------------------------------------------------------------------- detail
 
-    /** Per-cell high-frequency magnitude + orientation, averaged over all cells. */
+    /**
+     * Typography/detail fidelity with a global energy term that a blur cannot game.
+     *
+     * <p>Every local averaging convention rewards blurring a sparse recreation, because
+     * erasing the recreation's detail converts low-scoring cells into "blank agreement".
+     * The score therefore combines a local structural term and a global high-frequency
+     * energy term:
+     *
+     * <ul>
+     *   <li>{@code localMatch} averages, over cells where the reference has detail, the
+     *       unthresholded gradient-energy ratio (min/max) and the sharp-edge orientation
+     *       similarity. Cells where the reference has detail but the recreation has none
+     *       score 0 (missing detail); reference-blank cells are excluded so a blur cannot
+     *       raise the average by erasing spurious recreation detail.
+     *   <li>{@code globalEnergyRatio} is min/max of the two images' total gradient energy.
+     *       Blur reduces the recreation's total high-frequency energy monotonically (box
+     *       blur is an averaging operator), so a blurred recreation always loses on this
+     *       term no matter where its detail was erased or diffused.
+     * </ul>
+     */
     private static double detail(Pixels a, Pixels b) {
         int widthA = a.width();
         int heightA = a.height();
@@ -190,7 +262,32 @@ public final class VisualFidelity {
         int heightB = b.height();
         int[] grayA = gray(a);
         int[] grayB = gray(b);
+        long energyA = 0;
+        long energyB = 0;
+        for (int y = 0; y < heightA; y++) {
+            for (int x = 0; x < widthA; x++) {
+                energyA += sobelMagnitude(grayA, widthA, heightA, x, y);
+            }
+        }
+        for (int y = 0; y < heightB; y++) {
+            for (int x = 0; x < widthB; x++) {
+                energyB += sobelMagnitude(grayB, widthB, heightB, x, y);
+            }
+        }
+        double localMatch = localDetail(a, b, grayA, grayB);
+        double globalEnergyRatio = energyA == 0 && energyB == 0 ? 1.0
+                : Math.min(energyA, energyB) / (double) Math.max(energyA, energyB);
+        return 0.5 * localMatch + 0.5 * globalEnergyRatio;
+    }
+
+    /** Grid-local structural detail over reference-detail cells only. */
+    private static double localDetail(Pixels a, Pixels b, int[] grayA, int[] grayB) {
+        int widthA = a.width();
+        int heightA = a.height();
+        int widthB = b.width();
+        int heightB = b.height();
         double total = 0;
+        long counted = 0;
         for (int row = 0; row < GRID_ROWS; row++) {
             int ay0 = row * heightA / GRID_ROWS;
             int ay1 = (row + 1) * heightA / GRID_ROWS;
@@ -201,60 +298,59 @@ public final class VisualFidelity {
                 int ax1 = (col + 1) * widthA / GRID_COLS;
                 int bx0 = col * widthB / GRID_COLS;
                 int bx1 = (col + 1) * widthB / GRID_COLS;
-                long magA = 0;
-                long magB = 0;
+                long energyA = 0;
+                long energyB = 0;
                 int[] binA = new int[4];
                 int[] binB = new int[4];
-                int countA = 0;
-                int countB = 0;
+                int sharpA = 0;
+                int sharpB = 0;
                 for (int y = ay0; y < ay1; y++) {
                     for (int x = ax0; x < ax1; x++) {
                         int magnitude = sobelMagnitude(grayA, widthA, heightA, x, y);
-                        if (magnitude >= DETAIL_EDGE_MAGNITUDE) {
-                            magA += magnitude;
+                        energyA += magnitude;
+                        if (magnitude >= SHARP_EDGE_MAGNITUDE) {
                             binA[sobelOrientationBin(grayA, widthA, heightA, x, y)]++;
-                            countA++;
+                            sharpA++;
                         }
                     }
                 }
                 for (int y = by0; y < by1; y++) {
                     for (int x = bx0; x < bx1; x++) {
                         int magnitude = sobelMagnitude(grayB, widthB, heightB, x, y);
-                        if (magnitude >= DETAIL_EDGE_MAGNITUDE) {
-                            magB += magnitude;
+                        energyB += magnitude;
+                        if (magnitude >= SHARP_EDGE_MAGNITUDE) {
                             binB[sobelOrientationBin(grayB, widthB, heightB, x, y)]++;
-                            countB++;
+                            sharpB++;
                         }
                     }
                 }
-                total += cellDetail(magA, magB, binA, binB, countA, countB);
+                if (energyA == 0 && energyB == 0) {
+                    total += 1.0; // blank agreement
+                    counted++;
+                    continue;
+                }
+                if (energyA == 0 || energyB == 0) {
+                    total += 0.0; // one-sided detail: missing or spurious
+                    counted++;
+                    continue;
+                }
+                double magnitudeSimilarity =
+                        Math.min(energyA, energyB) / (double) Math.max(energyA, energyB);
+                double orientationSimilarity = 0.0;
+                if (sharpA > 0 && sharpB > 0) {
+                    double totalVariation = 0;
+                    for (int i = 0; i < 4; i++) {
+                        double shareA = binA[i] / (double) sharpA;
+                        double shareB = binB[i] / (double) sharpB;
+                        totalVariation += Math.abs(shareA - shareB);
+                    }
+                    orientationSimilarity = Math.max(0.0, 1.0 - 0.5 * totalVariation);
+                }
+                total += 0.5 * magnitudeSimilarity + 0.5 * orientationSimilarity;
+                counted++;
             }
         }
-        return total / (GRID_COLS * GRID_ROWS);
-    }
-
-    /**
-     * One cell's detail score: blank-blank cells score 1 (matching empty regions), one-sided
-     * detail scores 0, and cells with detail on both sides score the average of the magnitude
-     * ratio and the four-bin orientation similarity.
-     */
-    private static double cellDetail(long magA, long magB, int[] binA, int[] binB,
-            int countA, int countB) {
-        if (countA == 0 && countB == 0) {
-            return 1.0;
-        }
-        if (countA == 0 || countB == 0) {
-            return 0.0;
-        }
-        double magnitudeSimilarity = Math.min(magA, magB) / (double) Math.max(magA, magB);
-        double totalVariation = 0;
-        for (int i = 0; i < 4; i++) {
-            double shareA = binA[i] / (double) countA;
-            double shareB = binB[i] / (double) countB;
-            totalVariation += Math.abs(shareA - shareB);
-        }
-        double orientationSimilarity = 1.0 - 0.5 * totalVariation;
-        return 0.5 * magnitudeSimilarity + 0.5 * orientationSimilarity;
+        return counted == 0 ? 0.0 : total / counted;
     }
 
     // ------------------------------------------------------------- pixel helpers
