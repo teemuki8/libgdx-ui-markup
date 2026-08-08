@@ -27,10 +27,11 @@
         </table>
         <row/>
         <table width="1134" height="104" pad="3">
-          <table class="selection-bg" width="378" height="98" pad="4"><label id="forest-3" class="section" text="####  ^ ^  ##" width="350" align="right"/><row/><label class="section" text="## . . ^ ^" width="350" align="left"/><row/><label class="heading" text="^ ^ ^  ###" width="350" align="center"/></table>
-          <table class="panel-alt" width="378" height="98" pad="4"><progressbar id="frontline-hp" min="0" max="100" value="72" width="280" height="14"/><row/><label id="ridge-2" class="heading" text="^ ^  ###  ^ ^" width="350" align="center"/><row/><label class="section" text=". . X X . ." width="350" align="left"/></table>
-          <table class="field-focused-bg" width="378" height="98" pad="4"><label id="river-south-text" class="section" text="~  ~  ~  ~  ~" width="350" align="left"/><row/><label class="section" text="~ ~ ~ ~ ~ ~" width="350" align="right"/><row/><label class="heading" text=". . ~ ~ . ." width="350" align="center"/></table>
+          <table class="panel-alt" width="567" height="98" pad="4"><label id="unit-label" class="title" text="X Elvish Archer  21/21 HP" align="center"/><progressbar id="unit-hp" min="0" max="21" value="21" width="190" height="12"/></table>
+          <table class="disabled-bg" width="567" height="98" pad="4"><label id="enemy-label" class="title" text="Orcish Grunt  12/12 HP" align="center"/><progressbar id="enemy-hp" min="0" max="12" value="12" width="150" height="12"/></table>
         </table>
+        <row/>
+        <row/>
         <row/>
         <table width="1134" height="104" pad="3">
           <table class="panel" width="378" height="98" pad="4"><label id="village-west-text" class="heading" text="V  VILLAGE" width="350" align="center"/><row/><label id="village-west-gold" class="section" text="income +2" width="350" align="left"/><row/><label class="section" text=". . V . ." width="350" align="right"/></table>
@@ -39,9 +40,11 @@
         </table>
         <row/>
         <table width="1134" height="104" pad="3">
-          <table class="panel-alt" width="567" height="98" pad="4"><label id="unit-label" class="title" text="X Elvish Archer  21/21 HP" align="center"/><progressbar id="unit-hp" min="0" max="21" value="21" width="190" height="12"/></table>
-          <table class="disabled-bg" width="567" height="98" pad="4"><label id="enemy-label" class="title" text="Orcish Grunt  12/12 HP" align="center"/><progressbar id="enemy-hp" min="0" max="12" value="12" width="150" height="12"/></table>
+          <table class="selection-bg" width="378" height="98" pad="4"><label id="forest-3" class="section" text="####  ^ ^  ##" width="350" align="right"/><row/><label class="section" text="## . . ^ ^" width="350" align="left"/><row/><label class="heading" text="^ ^ ^  ###" width="350" align="center"/></table>
+          <table class="panel-alt" width="378" height="98" pad="4"><progressbar id="frontline-hp" min="0" max="100" value="72" width="280" height="14"/><row/><label id="ridge-2" class="heading" text="^ ^  ###  ^ ^" width="350" align="center"/><row/><label class="section" text=". . X X . ." width="350" align="left"/></table>
+          <table class="field-focused-bg" width="378" height="98" pad="4"><label id="river-south-text" class="section" text="~  ~  ~  ~  ~" width="350" align="left"/><row/><label class="section" text="~ ~ ~ ~ ~ ~" width="350" align="right"/><row/><label class="heading" text=". . ~ ~ . ." width="350" align="center"/></table>
         </table>
+        <row/>
         <row/>
         <table width="1134" height="36" pad="3"><label id="battlefield-status" class="heading" text="Maaf · Dune Rider · HP 31/39 · MP 0/7" align="center"/></table>
     </table>
