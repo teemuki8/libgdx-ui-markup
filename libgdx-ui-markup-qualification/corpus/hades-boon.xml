@@ -11,113 +11,87 @@
     </table>
     <row/>
     <table id="arena" height="540" expand="true" align="center center">
-      <table id="left-relics" width="96" height="500" class="panel" pad="6" align="left center">
+      <table id="left-relics" width="150" height="500" class="panel" pad="8" align="left center">
         <row/>
-        <label id="weapon-slot" class="title" text="SWORD" width="78" height="46" align="center"/>
+        <label id="weapon-slot" class="title" text="⚔" width="90" height="46" align="center"/>
         <row/>
-        <label id="boon-slot-1" text="ATTACK" width="78" height="50" align="center"/>
+        <label id="boon-slot-1" text="ATTACK" width="110" height="50" align="center"/>
         <row/>
-        <label id="boon-slot-2" text="SPECIAL" width="78" height="50" align="center"/>
+        <label id="boon-slot-2" text="SPECIAL" width="110" height="50" align="center"/>
         <row/>
-        <label id="boon-slot-3" text="DASH" width="78" height="50" align="center"/>
+        <label id="boon-slot-3" text="DASH" width="110" height="50" align="center"/>
         <row/>
-        <label id="boon-slot-4" text="CAST" width="78" height="50" align="center"/>
+        <label id="boon-slot-4" text="CAST" width="110" height="50" align="center"/>
         <row/>
-        <label id="boon-level" class="section" text="LV. 3" width="78" height="28" align="center"/>
+        <label id="boon-level" class="section" text="LV. 3" width="110" height="28" align="center"/>
         <row/>
-        <label id="boon-count" text="+1" width="78" height="34" align="center"/>
+        <label id="boon-count" text="+1" width="110" height="34" align="center"/>
       </table>
-      <table id="battlefield" width="1080" height="500" class="panel-alt" align="center center">
+      <table id="battlefield" width="900" height="500" class="panel-alt" align="center center">
         <row/>
-        <table id="tile-row-top" width="1000" height="64" class="panel-alt" align="center center">
-          <label id="tile-top-1" text="--+--+--+--+--+--+--+--+--+--+--+--+--" class="section" width="960" align="center"/>
+        <table id="tile-row-top" width="820" height="64" class="panel-alt" align="center center">
+          <label id="tile-top-1" text="◇    ◇    ◇    ◇    ◇    ◇" class="section" width="790" align="center"/>
         </table>
-        <table id="arena-detail-grid" width="1000" height="360" class="panel-alt" align="center center">
+        <table id="arena-detail-grid" width="820" height="180" class="panel-alt" align="center center">
           <row/>
-          <label id="arena-line-1" text="__  /\\  __  /\\  __  /\\  __  /\\  __  /\\  __" width="960" height="24" align="center"/>
+          <label id="arena-line-1" text="▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱" width="790" height="24" align="center"/>
           <row/>
-          <label id="arena-line-2" class="section" text="/\\  __  /\\  __  /\\  __  /\\  __  /\\  __  /\\ " width="960" height="24" align="center"/>
+          <label id="arena-line-2" class="section" text="◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇" width="790" height="24" align="center"/>
           <row/>
-          <label id="arena-line-3" text="__  /\\  __  /\\  __  /\\  __  /\\  __  /\\  __" width="960" height="24" align="center"/>
+          <label id="arena-line-3" text="▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱" width="790" height="24" align="center"/>
           <row/>
-          <label id="arena-line-4" class="section" text="/\\  __  /\\  __  /\\  __  /\\  __  /\\  __  /\\ " width="960" height="24" align="center"/>
+          <label id="arena-line-4" class="section" text="◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇" width="790" height="24" align="center"/>
           <row/>
-          <label id="arena-line-5" text="__  /\\  __  /\\  __  /\\  __  /\\  __  /\\  __" width="960" height="24" align="center"/>
-          <row/>
-          <label id="arena-line-6" class="section" text="--  ++  --  ++  --  ++  --  ++  --  ++  --" width="960" height="24" align="center"/>
-          <row/>
-          <label id="arena-line-7" text="++  --  ++  --  ++  --  ++  --  ++  --  ++" width="960" height="24" align="center"/>
-          <row/>
-          <label id="arena-line-8" class="section" text="--  ++  --  ++  --  ++  --  ++  --  ++  --" width="960" height="24" align="center"/>
-          <row/>
-          <label id="arena-line-9" text="++  --  ++  --  ++  --  ++  --  ++  --  ++" width="960" height="24" align="center"/>
-          <row/>
-          <label id="arena-line-10" class="section" text="--  ++  --  ++  --  ++  --  ++  --  ++  --" width="960" height="24" align="center"/>
-          <row/>
-          <label id="arena-line-11" text="##  ..  ##  ..  ##  ..  ##  ..  ##  ..  ##" width="960" height="24" align="center"/>
-          <row/>
-          <label id="arena-line-12" class="section" text="..  ##  ..  ##  ..  ##  ..  ##  ..  ##  .." width="960" height="24" align="center"/>
-          <row/>
-          <label id="arena-line-13" text="##  ..  ##  ..  ##  ..  ##  ..  ##  ..  ##" width="960" height="24" align="center"/>
-          <row/>
-          <label id="arena-line-14" class="section" text="..  ##  ..  ##  ..  ##  ..  ##  ..  ##  .." width="960" height="24" align="center"/>
-          <row/>
-          <label id="arena-line-15" text="##  ..  ##  ..  ##  ..  ##  ..  ##  ..  ##" width="960" height="24" align="center"/>
-          <row/>
-          <label id="arena-line-16" class="section" text="--  []  --  []  --  []  --  []  --  []  --" width="960" height="20" align="center"/>
-          <row/>
-          <label id="arena-line-17" text="[]  --  []  --  []  --  []  --  []  --  []" width="960" height="20" align="center"/>
-          <row/>
-          <label id="arena-line-18" class="section" text="--  []  --  []  --  []  --  []  --  []  --" width="960" height="20" align="center"/>
+          <label id="arena-line-5" text="▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱  ◇  ▱" width="790" height="24" align="center"/>
         </table>
         <row/>
         <row/>
-        <table id="obelisk-left" width="190" height="190" class="panel" align="left center">
+        <table id="obelisk-left" width="170" height="190" class="panel" align="left center">
           <row/>
-          <label id="obelisk-left-mark" class="title" text="##" width="150" height="72" align="center"/>
+          <label id="obelisk-left-mark" class="title" text="▣" width="130" height="72" align="center"/>
           <row/>
-          <label id="obelisk-left-detail" text="TARTARUS" class="section" width="150" align="center"/>
+          <label id="obelisk-left-detail" text="TARTARUS" class="section" width="130" align="center"/>
         </table>
-        <table id="battle-center" width="560" height="230" class="panel-alt" align="center center">
+        <table id="battle-center" width="530" height="230" class="panel-alt" align="center center">
           <row/>
-          <label id="hero-mark" text="-- ZAGREUS --" class="title" width="510" height="56" align="center"/>
+          <label id="hero-mark" text="◆   ZAGREUS   ◆" class="title" width="480" height="56" align="center"/>
           <row/>
-          <label id="battle-flare" text="*   +   *   +   *   +   *" width="510" height="48" align="center"/>
+          <label id="battle-flare" text="✦   ✧   ✦   ✧   ✦" width="480" height="48" align="center"/>
           <row/>
-          <label id="battle-detail" class="section" text="ROOM 12   -   INFERNAL GATE" width="510" height="30" align="center"/>
+          <label id="battle-detail" class="section" text="ROOM 12   •   INFERNAL GATE" width="480" height="30" align="center"/>
         </table>
-        <table id="obelisk-right" width="190" height="190" class="panel" align="right center">
+        <table id="obelisk-right" width="170" height="190" class="panel" align="right center">
           <row/>
-          <label id="obelisk-right-mark" class="title" text="##" width="150" height="72" align="center"/>
+          <label id="obelisk-right-mark" class="title" text="▣" width="130" height="72" align="center"/>
           <row/>
-          <label id="obelisk-right-detail" text="INFERNO" class="section" width="150" align="center"/>
-        </table>
-        <table id="tile-row-bottom" width="1000" height="64" class="panel-alt" align="center center">
-          <label id="tile-bottom-1" text="--+--+--+--+--+--+--+--+--+--+--+--+--" class="section" width="960" align="center"/>
-        </table>
-        <table id="tile-grid" width="1000" height="150" class="panel-alt" align="center center">
-          <row/>
-          <label id="tile-grid-1" class="section" text="[]  []  []  []  []  []  []  []  []  []  []" width="960" height="24" align="center"/>
-          <row/>
-          <label id="tile-grid-2" text="__    __    __    __    __    __    __    __" width="960" height="24" align="center"/>
-          <row/>
-          <label id="tile-grid-3" class="section" text="[]  []  []  []  []  []  []  []  []  []  []" width="960" height="24" align="center"/>
-          <row/>
-          <label id="tile-grid-4" text="__    __    __    __    __    __    __    __" width="960" height="24" align="center"/>
+          <label id="obelisk-right-detail" text="INFERNO" class="section" width="130" align="center"/>
         </table>
         <row/>
+        <table id="tile-row-bottom" width="820" height="64" class="panel-alt" align="center center">
+          <label id="tile-bottom-1" text="◇   ◇   ◇   ◇   ◇   ◇   ◇" class="section" width="790" align="center"/>
+        </table>
+        <table id="tile-grid" width="820" height="150" class="panel-alt" align="center center">
+          <row/>
+          <label id="tile-grid-1" class="section" text="◇  ◇  ◇  ◇  ◇  ◇  ◇  ◇  ◇" width="790" height="24" align="center"/>
+          <row/>
+          <label id="tile-grid-2" text="▱    ▱    ▱    ▱    ▱    ▱" width="790" height="24" align="center"/>
+          <row/>
+          <label id="tile-grid-3" class="section" text="◇  ◇  ◇  ◇  ◇  ◇  ◇  ◇  ◇" width="790" height="24" align="center"/>
+          <row/>
+          <label id="tile-grid-4" text="▱    ▱    ▱    ▱    ▱    ▱" width="790" height="24" align="center"/>
+        </table>
       </table>
-      <table id="right-counters" width="96" height="500" class="panel" pad="6" align="right center">
+      <table id="right-counters" width="150" height="500" class="panel" pad="8" align="right center">
         <row/>
-        <label id="counter-gem" class="title" text="GEM" width="78" height="42" align="center"/>
+        <label id="counter-gem" class="title" text="◆" width="110" height="42" align="center"/>
         <row/>
-        <label id="counter-gem-value" text="1 / 1" width="78" height="30" align="center"/>
+        <label id="counter-gem-value" text="1 / 1" width="110" height="30" align="center"/>
         <row/>
-        <label id="counter-coin" class="title" text="OBOL" width="78" height="42" align="center"/>
+        <label id="counter-coin" class="title" text="◉" width="110" height="42" align="center"/>
         <row/>
-        <label id="counter-coin-value" text="23" width="78" height="30" align="center"/>
+        <label id="counter-coin-value" text="23" width="110" height="30" align="center"/>
         <row/>
-        <label id="counter-room" class="section" text="ROOM 12" width="78" height="30" align="center"/>
+        <label id="counter-room" class="section" text="ROOM 12" width="110" height="30" align="center"/>
       </table>
     </table>
     <row/>

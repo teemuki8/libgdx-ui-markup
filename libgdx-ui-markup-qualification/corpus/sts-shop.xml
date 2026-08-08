@@ -68,10 +68,10 @@
     <row/>
     <table id="hand" class="panel-alt" width="1280" height="170" expand="true" fill="true" pad="12"
            align="center center">
-      <table id="hand-spacer" width="160" height="1"/>
-      <button id="card-strike-left" text="1   Strike" name="Strike" width="180" height="130"/>
-      <button id="card-strike" text="1   Strike" name="Strike" width="180" height="130"/>
-      <button id="card-dualcast" text="1   Dualcast" name="Dualcast" width="180" height="130"/>
+      <table id="hand-spacer" width="230" height="1"/>
+      <button id="card-strike-left" text="1   Strike" name="Strike" width="240" height="130"/>
+      <button id="card-strike" text="1   Strike" name="Strike" width="140" height="130"/>
+      <button id="card-dualcast" text="1   Dualcast" name="Dualcast" width="120" height="130"/>
       <button id="card-defend" text="1   Defend+" name="Defend" width="180" height="130"/>
       <button id="end-turn" class="primary" text="End Turn" name="End Turn" width="190" height="62"/>
     </table>
