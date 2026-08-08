@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -24,6 +25,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.time.Duration;
 import java.util.Arrays;
 import javax.imageio.ImageIO;
 import org.junit.jupiter.api.Test;
@@ -146,6 +148,52 @@ final class PreviewAppTest {
 
         assertArrayEquals(Files.readAllBytes(clean), Files.readAllBytes(afterGhost),
                 "the target render is byte-identical after a larger/different prior render");
+    }
+
+    /**
+     * A preview run whose application never exits on its own must still terminate: the host
+     * requests a clean exit on the GL thread and joins with a hard deadline instead of leaving
+     * a live non-daemon thread behind to hang the test JVM.
+     */
+    @Test
+    @Timeout(120)
+    void hostForcesExitAndReportsWhenApplicationNeverExits() throws Exception {
+        ApplicationAdapter endless = new ApplicationAdapter() {
+            // Renders forever, never calls Gdx.app.exit().
+        };
+        AssertionError failure = assertThrows(AssertionError.class,
+                () -> PreviewTestHost.run(endless, 64, 64, Duration.ofMillis(250)));
+        assertTrue(failure.getMessage().contains("did not exit"),
+                "failure names the never-exit condition, got: " + failure.getMessage());
+        assertNoPreviewHostThreads();
+    }
+
+    /**
+     * A listener that throws before its normal exit must surface the failure as the assertion
+     * cause and leave no live host thread behind.
+     */
+    @Test
+    @Timeout(120)
+    void hostRethrowsListenerFailureAndLeavesNoLiveThread() throws Exception {
+        IllegalStateException boom = new IllegalStateException("listener-failure-before-exit");
+        ApplicationAdapter failing = new ApplicationAdapter() {
+            @Override public void render() {
+                throw boom;
+            }
+        };
+        AssertionError failure = assertThrows(AssertionError.class,
+                () -> PreviewTestHost.run(failing, 64, 64, Duration.ofSeconds(5)));
+        assertSame(boom, failure.getCause(),
+                "the listener's exception is the assertion cause");
+        assertNoPreviewHostThreads();
+    }
+
+    /** Proves the host joined every thread it spawned before returning. */
+    private static void assertNoPreviewHostThreads() {
+        for (Thread thread : Thread.getAllStackTraces().keySet()) {
+            assertFalse(thread.getName().startsWith(PreviewTestHost.HOST_THREAD_PREFIX),
+                    "a preview host thread is still alive: " + thread.getName());
+        }
     }
 
     private Path fixture(String name) throws Exception {
