@@ -94,8 +94,10 @@ are default-on, a "locks first, then verification metadata" two-step sequence de
 `--write-locks` pass would be rejected by strict verification (the new artifact is not yet in
 `verification-metadata.xml`) before any lock state is written. Instead, bootstrap both in a
 single full-graph invocation that writes locks and verification metadata together, in a fresh
-`GRADLE_USER_HOME` so every artifact, plugin, and settings component is re-downloaded and
-re-checked against the committed keyring and trust policy:
+`GRADLE_USER_HOME` so every artifact, plugin, and settings component is freshly downloaded —
+giving the step-3 provenance review an independent, cache-free basis. Note that the bootstrap
+runs in observation mode (see below): the fresh download is for independent review, not
+because write mode enforces the committed trust policy.
 
 1. Edit the version catalog (`gradle/libs.versions.toml`) or build files.
 2. Bootstrap in one pass (local write; these flags never run in CI/release):
