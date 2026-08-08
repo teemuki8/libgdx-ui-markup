@@ -67,7 +67,7 @@ final class QualificationPolicyTest {
     void componentFloorsAreExplicitImmutablePerComponentConstants() {
         assertEquals(0.10, QualificationPolicy.GEOMETRY_FLOOR, 0.0);
         assertEquals(0.15, QualificationPolicy.COLOR_FLOOR, 0.0);
-        assertEquals(0.08, QualificationPolicy.DETAIL_FLOOR, 0.0);
+        assertEquals(0.10, QualificationPolicy.DETAIL_FLOOR, 0.0);
         assertEquals(QualificationPolicy.GEOMETRY_FLOOR,
                 QualificationPolicy.floor(FidelityComponent.GEOMETRY), 0.0);
         assertEquals(QualificationPolicy.COLOR_FLOOR,
@@ -92,10 +92,10 @@ final class QualificationPolicyTest {
         assertEquals(0.15, QualificationPolicy.calibrate(FidelityComponent.COLOR,
                 List.of(0.25), List.of(0.0)).orElseThrow(), 0.0001,
                 "a color midpoint below 0.15 must lift to the floor");
-        // detail floor 0.08: raw midpoint 0.075 lifts to the floor
-        assertEquals(0.08, QualificationPolicy.calibrate(FidelityComponent.DETAIL,
+        // detail floor 0.10: raw midpoint 0.075 lifts to the floor
+        assertEquals(0.10, QualificationPolicy.calibrate(FidelityComponent.DETAIL,
                 List.of(0.15), List.of(0.0)).orElseThrow(), 0.0001,
-                "a detail midpoint below 0.08 must lift to the floor");
+                "a detail midpoint below 0.10 must lift to the floor");
         // the lifted threshold still sits strictly below the measured positive
         assertTrue(QualificationPolicy.calibrate(FidelityComponent.COLOR,
                         List.of(0.25), List.of(0.0)).orElseThrow() < 0.25,
@@ -115,8 +115,8 @@ final class QualificationPolicyTest {
                         List.of(0.14), List.of(0.0)).isEmpty(),
                 "a color positive below 0.15 cannot be calibrated");
         assertTrue(QualificationPolicy.calibrate(FidelityComponent.DETAIL,
-                        List.of(0.07), List.of(0.0)).isEmpty(),
-                "a detail positive below 0.08 cannot be calibrated");
+                        List.of(0.09), List.of(0.0)).isEmpty(),
+                "a detail positive below 0.10 cannot be calibrated");
         assertTrue(QualificationPolicy.calibrate(FidelityComponent.COLOR,
                         List.of(0.14, 0.9), List.of(0.0)).isEmpty(),
                 "the weakest positive governs: one sub-floor observation refuses calibration");
@@ -132,7 +132,7 @@ final class QualificationPolicyTest {
         assertEquals(0.15, QualificationPolicy.calibrate(FidelityComponent.COLOR,
                 List.of(0.15), List.of(0.10)).orElseThrow(), 0.0001,
                 "a positive exactly on the color floor commits the floor itself");
-        assertEquals(0.08, QualificationPolicy.calibrate(FidelityComponent.DETAIL,
+        assertEquals(0.10, QualificationPolicy.calibrate(FidelityComponent.DETAIL,
                 List.of(0.10), List.of(0.06)).orElseThrow(), 0.0001,
                 "a detail midpoint exactly on the floor commits the floor itself");
         // the boundary is exact: one ulp below the floor refuses calibration
@@ -141,7 +141,7 @@ final class QualificationPolicyTest {
                 "one ulp below the geometry floor must refuse calibration");
         // at the floor, overlap still refuses: no threshold can separate touching ranges
         assertTrue(QualificationPolicy.calibrate(FidelityComponent.DETAIL,
-                        List.of(0.08), List.of(0.08)).isEmpty(),
+                        List.of(0.10), List.of(0.10)).isEmpty(),
                 "touching ranges at the floor still leave no safe interval");
     }
 
@@ -241,9 +241,15 @@ final class QualificationPolicyTest {
         assertTrue(QualificationPolicy.stale(FidelityComponent.COLOR,
                         0.17, 0.24, List.of(0.0)),
                 "color: the floor-lifted implied 0.15 is an 11.8% fall from committed 0.17");
+        // A raw detail midpoint below the floor is lifted to it: committed 0.10 vs raw
+        // midpoint 0.08 (a 20% drop under the old formula) is not stale once lifted.
+        assertFalse(QualificationPolicy.stale(FidelityComponent.DETAIL,
+                        0.10, 0.12, List.of(0.04)),
+                "detail: the raw midpoint 0.08 is lifted to the floor 0.10, matching the "
+                        + "committed floor threshold");
         // An unchanged implied threshold exactly on the floor is not stale.
         assertFalse(QualificationPolicy.stale(FidelityComponent.DETAIL,
-                        0.08, 0.10, List.of(0.06)),
+                        0.10, 0.12, List.of(0.08)),
                 "detail: the implied midpoint exactly on the floor matches the committed "
                         + "floor threshold");
     }
