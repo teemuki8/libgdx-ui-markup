@@ -742,6 +742,176 @@ final class TmpDirArtifactPublisherTest {
         }
     }
 
+    /**
+     * The renamed original's contents must not be deleted when the identity source reports it
+     * re-owned between the pre-deletion verification and the fresh scan/open (same inode,
+     * fileKey unchanged): the fresh-fd cleanup re-verifies BOTH fileKey and owner — and the
+     * seam — immediately before deletion and refuses, reporting the leak.
+     */
+    @Test
+    void renamedOriginalReOwnedInScanWindowIsRefusedByFreshOwnerCheck() throws Exception {
+        TmpDirArtifactPublisher publisher =
+                new TmpDirArtifactPublisher(1024, 4096, 4, tempDir, null);
+        Path sessionDir = publisher.sessionDir();
+        Path moved = null;
+        try {
+            byte[] payload = {1};
+            publisher.publish("text/plain", payload);
+            String digest = sha256(payload);
+            Path sentinel = sessionDir.resolve("sentinel.txt");
+            Files.writeString(sentinel, "keep-me");
+            moved = tempDir.resolve("moved-" + System.nanoTime());
+            Files.move(sessionDir, moved);
+            Files.createDirectory(sessionDir); // replant a fresh real directory at the old name
+            // Report the located original (the moved inode, by fileKey so the comparison is
+            // canonical-path independent) as re-owned by a foreign principal — exactly the
+            // scan/open window the fresh-fd check must close. Every other path keeps the real
+            // owner so the pre-deletion verification (over the replanted name) still passes.
+            TmpDirArtifactPublisher.IdentitySource real =
+                    new TmpDirArtifactPublisher.RealIdentitySource();
+            Path reOwned = moved;
+            publisher.identitySource = new TmpDirArtifactPublisher.IdentitySource() {
+                @Override public Object fileKey(Path path) throws java.io.IOException {
+                    return real.fileKey(path);
+                }
+
+                @Override public java.nio.file.attribute.UserPrincipal owner(Path path)
+                        throws java.io.IOException {
+                    try {
+                        if (Files.readAttributes(path, BasicFileAttributes.class,
+                                java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                                .fileKey().equals(Files.readAttributes(reOwned,
+                                        BasicFileAttributes.class,
+                                        java.nio.file.LinkOption.NOFOLLOW_LINKS)
+                                        .fileKey())) {
+                            return new FakePrincipal("someone-else");
+                        }
+                    } catch (java.io.IOException ignored) {
+                        // unreadable path: fall through to the real owner
+                    }
+                    return real.owner(path);
+                }
+            };
+            // Close must refuse the fresh-fd re-ownership: nothing may be deleted from the
+            // re-owned original, and the replacement is never touched either.
+            RuntimeException cleanup = assertThrows(RuntimeException.class, publisher::close,
+                    "close reports the re-owned renamed original as a leak");
+            assertTrue(cleanup.getMessage().contains("re-owned")
+                            || cleanup.getMessage().contains("owner")
+                            || cleanup.getMessage().contains("refusing")
+                            || cleanup.getMessage().contains("unable to open the verified"),
+                    "the leak message names the re-ownership refusal: " + cleanup.getMessage());
+            assertEquals("keep-me", Files.readString(moved.resolve("sentinel.txt")),
+                    "the re-owned original's sentinel survives the fresh-fd owner refusal");
+            assertArrayEquals(payload, Files.readAllBytes(moved.resolve(digest)),
+                    "the re-owned original's published artifact survives the fresh-fd owner refusal");
+            assertTrue(Files.isDirectory(sessionDir), "the replacement is untouched");
+            try (Stream<Path> children = Files.list(sessionDir)) {
+                assertTrue(children.findAny().isEmpty(), "the replacement received nothing");
+            }
+        } finally {
+            publisher.identitySource = new TmpDirArtifactPublisher.RealIdentitySource();
+            try {
+                publisher.close(); // real identity: cleans both remaining trees or re-reports
+            } catch (RuntimeException expected) {
+                // already closed or the re-ownership leak is re-reported
+            }
+            try {
+                Files.deleteIfExists(sessionDir);
+                if (moved != null) {
+                    try (Stream<Path> walk = Files.walk(moved)) {
+                        walk.sorted((x, y) -> y.compareTo(x)).forEach(path -> {
+                            try {
+                                Files.deleteIfExists(path);
+                            } catch (Exception ignored) {
+                                // best-effort cleanup of the moved original
+                            }
+                        });
+                    }
+                }
+            } catch (Exception ignored) {
+                // best-effort cleanup
+            }
+        }
+    }
+
+    /**
+     * A real-directory replacement swapped in after the anchors were lost (a failed first
+     * close) must never be traversed or deleted by a retried close: the retry re-proves the
+     * session identity and fails closed, leaving the replacement and its contents intact.
+     */
+    @Test
+    void retriedCloseAfterReplacementSwapNeverDeletesTheReplacement() throws Exception {
+        boolean posix = FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
+        Assumptions.assumeTrue(posix, "POSIX permissions are required to force a deletion failure");
+        TmpDirArtifactPublisher publisher =
+                new TmpDirArtifactPublisher(1024, 4096, 4, tempDir, null);
+        Path sessionDir = publisher.sessionDir();
+        try {
+            publisher.publish("text/plain", new byte[] {1});
+            // Force the first close to fail mid-cleanup so both anchors are lost.
+            Files.setPosixFilePermissions(sessionDir,
+                    PosixFilePermissions.fromString("r-x------"));
+            RuntimeException first = assertThrows(RuntimeException.class, publisher::close,
+                    "the first close fails while the directory is not writable");
+            assertTrue(Files.isDirectory(sessionDir), "the session directory survives the failure");
+            // Swap in a real replacement directory with sentinel contents at the captured name.
+            Files.setPosixFilePermissions(sessionDir,
+                    PosixFilePermissions.fromString("rwx------"));
+            try (Stream<Path> children = Files.list(sessionDir)) {
+                children.forEach(path -> {
+                    try {
+                        Files.deleteIfExists(path);
+                    } catch (Exception ignored) {
+                        // best-effort cleanup of the leftover artifact
+                    }
+                });
+            }
+            Files.deleteIfExists(sessionDir);
+            Files.createDirectory(sessionDir);
+            Path sentinel = sessionDir.resolve("replacement-sentinel.txt");
+            Files.writeString(sentinel, "keep-me");
+            // The retried close must refuse to touch the replacement: identity re-verification
+            // fails closed on the fileKey change and the leak is reported, never deleted.
+            RuntimeException retry = assertThrows(RuntimeException.class, publisher::close,
+                    "a retried close reports the replaced session as a leak");
+            assertTrue(retry.getMessage().contains("replaced")
+                            || retry.getMessage().contains("re-owned")
+                            || retry.getMessage().contains("owner changed"),
+                    "the leak message names the replacement: " + retry.getMessage());
+            assertTrue(Files.isDirectory(sessionDir), "the replacement directory is never deleted");
+            assertEquals("keep-me", Files.readString(sentinel),
+                    "the replacement's sentinel contents are never deleted");
+        } finally {
+            try {
+                Files.setPosixFilePermissions(sessionDir,
+                        PosixFilePermissions.fromString("rwx------"));
+            } catch (Exception ignored) {
+                // best-effort permission restore
+            }
+            try {
+                if (Files.exists(sessionDir, LinkOption.NOFOLLOW_LINKS)) {
+                    try (Stream<Path> walk = Files.walk(sessionDir)) {
+                        walk.sorted((x, y) -> y.compareTo(x)).forEach(path -> {
+                            try {
+                                Files.deleteIfExists(path);
+                            } catch (Exception ignored) {
+                                // best-effort cleanup
+                            }
+                        });
+                    }
+                }
+            } catch (Exception ignored) {
+                // best-effort cleanup
+            }
+            try {
+                publisher.close(); // already closed; a retry re-reports the leak
+            } catch (RuntimeException expected) {
+                // the replaced-session leak was already reported
+            }
+        }
+    }
+
     @Test
     void precomputedFileAttributesUseCapturedSessionOwner() throws Exception {
         java.nio.file.attribute.UserPrincipal realOwner =
