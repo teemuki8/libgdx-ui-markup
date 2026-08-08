@@ -60,7 +60,11 @@ final class TmpDirArtifactPublisherTest {
                 new TmpDirArtifactPublisher(1024, 4096, 4, tempDir, null)) {
             ArtifactReference reference = publisher.publish("image/png", content);
             Path sessionDir = publisher.sessionDir();
-            assertTrue(sessionDir.startsWith(tempDir), "the session dir lives in the given parent");
+            // The publisher anchors the session in the canonical parent (toRealPath), so a
+            // temp dir reached through a symlink (e.g. macOS /var -> /private/var) must be
+            // compared in canonical form.
+            assertTrue(sessionDir.startsWith(tempDir.toRealPath()),
+                    "the session dir lives in the canonical given parent: " + sessionDir);
             assertTrue(sessionDir.getFileName().toString().startsWith("gdx-markup-"),
                     "the session dir name is unpredictable: " + sessionDir.getFileName());
             assertTrue(Files.isDirectory(sessionDir, LinkOption.NOFOLLOW_LINKS),
