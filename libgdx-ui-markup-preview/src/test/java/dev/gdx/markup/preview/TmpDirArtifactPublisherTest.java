@@ -623,6 +623,122 @@ final class TmpDirArtifactPublisherTest {
     }
 
     @Test
+    void renamedOriginalReOwnedReplantIsRefusedWithSentinelIntact() throws Exception {
+        TmpDirArtifactPublisher publisher =
+                new TmpDirArtifactPublisher(1024, 4096, 4, tempDir, null);
+        Path sessionDir = null;
+        Path moved = null;
+        try {
+            sessionDir = publisher.sessionDir();
+            byte[] payload = {1};
+            publisher.publish("text/plain", payload);
+            String digest = sha256(payload);
+            Path sentinel = sessionDir.resolve("sentinel.txt");
+            Files.writeString(sentinel, "keep-me");
+            // Rename the original away, then simulate re-owning it (identity seam reports a
+            // different owner), then replant the old name with a fresh directory.
+            moved = tempDir.resolve("moved-" + System.nanoTime());
+            Files.move(sessionDir, moved);
+            publisher.identitySource = new TmpDirArtifactPublisher.IdentitySource() {
+                @Override public Object fileKey(Path path) throws java.io.IOException {
+                    return Files.readAttributes(path, BasicFileAttributes.class,
+                            java.nio.file.LinkOption.NOFOLLOW_LINKS).fileKey();
+                }
+
+                @Override public java.nio.file.attribute.UserPrincipal owner(Path path) {
+                    return new FakePrincipal("someone-else");
+                }
+            };
+            Files.createDirectory(sessionDir); // replant a fresh real directory at the old name
+            // The anchored-original identity cannot be proven (re-owned): cleanup must delete
+            // NOTHING — neither the renamed original's children nor the replacement — and
+            // report the leak with the verification failure aggregated as the cause.
+            RuntimeException cleanup = assertThrows(RuntimeException.class, publisher::close,
+                    "close reports the re-owned renamed original as a leak");
+            assertTrue(cleanup.getMessage().contains("replaced")
+                            || cleanup.getMessage().contains("re-owned")
+                            || cleanup.getMessage().contains("owner changed"),
+                    "the leak message names the re-ownership: " + cleanup.getMessage());
+            assertTrue(cleanup.getCause() instanceof ArtifactReference.ArtifactUnavailableException,
+                    "the verification failure is aggregated as the cause: " + cleanup.getCause());
+            // The renamed original's sentinel contents remain intact (nothing was deleted).
+            assertEquals("keep-me", Files.readString(moved.resolve("sentinel.txt")),
+                    "the renamed original's sentinel child survives with intact contents");
+            assertArrayEquals(payload, Files.readAllBytes(moved.resolve(digest)),
+                    "the renamed original's published artifact survives with intact contents");
+            // The replanted replacement received nothing and was never deleted.
+            assertTrue(Files.isDirectory(sessionDir), "the replacement is untouched");
+            try (Stream<Path> children = Files.list(sessionDir)) {
+                assertTrue(children.findAny().isEmpty(), "the replacement received nothing");
+            }
+        } finally {
+            publisher.identitySource = new TmpDirArtifactPublisher.RealIdentitySource();
+            try {
+                publisher.close(); // real identity: cleans both remaining trees or re-reports
+            } catch (RuntimeException expected) {
+                // already closed or the re-ownership leak is re-reported
+            }
+            try {
+                Files.deleteIfExists(sessionDir);
+                try (Stream<Path> walk = Files.walk(moved)) {
+                    walk.sorted((x, y) -> y.compareTo(x)).forEach(path -> {
+                        try {
+                            Files.deleteIfExists(path);
+                        } catch (Exception ignored) {
+                            // best-effort cleanup of the moved original
+                        }
+                    });
+                }
+            } catch (Exception ignored) {
+                // best-effort cleanup
+            }
+        }
+    }
+
+    @Test
+    void renamedOriginalValidOwnerCleansContentsAndReportsLeak() throws Exception {
+        TmpDirArtifactPublisher publisher =
+                new TmpDirArtifactPublisher(1024, 4096, 4, tempDir, null);
+        Path moved = null;
+        try {
+            Path sessionDir = publisher.sessionDir();
+            publisher.publish("text/plain", new byte[] {1});
+            // Rename the original away (real identity: same inode and owner through the
+            // retained fd, so the anchored-original identity is valid); the old name is gone.
+            moved = tempDir.resolve("moved-" + System.nanoTime());
+            Files.move(sessionDir, moved);
+            // The contents may be cleaned through the anchored fd, but close must NOT succeed
+            // silently: the captured inode is still linked elsewhere (the renamed directory),
+            // so the cleanup failure is typed as a renamed-original leak.
+            RuntimeException cleanup = assertThrows(RuntimeException.class, publisher::close,
+                    "close reports the renamed original directory as a leak");
+            assertTrue(cleanup.getMessage().contains("renamed")
+                            || cleanup.getMessage().contains("moved")
+                            || cleanup.getMessage().contains("leak"),
+                    "the leak message names the renamed original: " + cleanup.getMessage());
+            assertFalse(Files.exists(sessionDir, LinkOption.NOFOLLOW_LINKS),
+                    "the old session name stays gone");
+            try (Stream<Path> movedChildren = Files.list(moved)) {
+                assertTrue(movedChildren.findAny().isEmpty(),
+                        "the renamed original's contents were cleaned through the retained fd");
+            }
+            assertTrue(Files.isDirectory(moved),
+                    "the renamed original directory itself remains linked (the reported leak)");
+        } finally {
+            try {
+                Files.deleteIfExists(moved); // the leaked renamed original
+            } catch (Exception ignored) {
+                // best-effort cleanup
+            }
+            try {
+                publisher.close(); // already closed; a retry re-reports the leak
+            } catch (RuntimeException expected) {
+                // the renamed-original leak was already reported
+            }
+        }
+    }
+
+    @Test
     void precomputedFileAttributesUseCapturedSessionOwner() throws Exception {
         java.nio.file.attribute.UserPrincipal realOwner =
                 Files.getOwner(tempDir, java.nio.file.LinkOption.NOFOLLOW_LINKS);
