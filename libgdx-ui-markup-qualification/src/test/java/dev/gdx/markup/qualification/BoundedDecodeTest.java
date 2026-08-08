@@ -21,40 +21,35 @@ import org.junit.jupiter.api.Test;
  * Decoding fetched bytes must never touch disk. {@link BoundedDecode} uses an explicit
  * in-memory {@code ImageInputStream}; {@code ImageIO.createImageInputStream} would instead wrap
  * a {@code ByteArrayInputStream} in a file-cached stream that writes an {@code imageio*.tmp}
- * file while decoding. The tests redirect {@code java.io.tmpdir} to an isolated directory and
- * watch it for ImageIO cache-file creation.
+ * cache file. Each test points ImageIO's cache directory at an isolated directory, watches it
+ * for {@code imageio*} creates during the decode, and restores the previous cache directory.
  */
 final class BoundedDecodeTest {
     private static final byte[] PNG_2X2 = png(2, 2);
 
     @Test
     void decodesFetchedBytesWithoutWritingImageIOCacheFiles() throws Exception {
-        withIsolatedTmpDir(tmp -> {
+        withIsolatedCacheDir(tmp -> {
             try (WatchService watcher = FileSystems.getDefault().newWatchService()) {
                 tmp.register(watcher, StandardWatchEventKinds.ENTRY_CREATE);
                 BufferedImage decoded = BoundedDecode.decode(PNG_2X2);
                 assertEquals(2, decoded.getWidth());
                 assertEquals(2, decoded.getHeight());
-                List<String> created = drainCreated(watcher);
-                assertTrue(created.stream().noneMatch(name -> name.startsWith("imageio")),
-                        "decoding fetched bytes must not create ImageIO cache files, saw: "
-                                + created);
+                assertNoImageIOCacheFiles(watcher);
             }
         });
     }
 
     @Test
     void readsHeaderOfFetchedBytesWithoutWritingImageIOCacheFiles() throws Exception {
-        withIsolatedTmpDir(tmp -> {
+        withIsolatedCacheDir(tmp -> {
             try (WatchService watcher = FileSystems.getDefault().newWatchService()) {
                 tmp.register(watcher, StandardWatchEventKinds.ENTRY_CREATE);
                 BoundedDecode.Header header = BoundedDecode.header(PNG_2X2);
                 assertEquals(2, header.width());
                 assertEquals(2, header.height());
                 assertTrue(header.formatName().equalsIgnoreCase("png"));
-                List<String> created = drainCreated(watcher);
-                assertTrue(created.stream().noneMatch(name -> name.startsWith("imageio")),
-                        "reading a header must not create ImageIO cache files, saw: " + created);
+                assertNoImageIOCacheFiles(watcher);
             }
         });
     }
@@ -62,29 +57,28 @@ final class BoundedDecodeTest {
     // ---------------------------------------------------------------- helpers
 
     @FunctionalInterface
-    private interface TmpDirAction {
-        void run(Path tmp) throws Exception;
+    private interface CacheDirAction {
+        void run(Path cacheDir) throws Exception;
     }
 
-    /** Redirects {@code java.io.tmpdir} to a fresh isolated dir for the action's duration. */
-    private static void withIsolatedTmpDir(TmpDirAction action) throws Exception {
-        Path isolated = Files.createTempDirectory("bounded-decode-tmp");
-        String previous = System.getProperty("java.io.tmpdir");
-        System.setProperty("java.io.tmpdir", isolated.toString());
+    /**
+     * Points {@link ImageIO}'s file cache at a fresh isolated directory for the action's
+     * duration, so any ImageIO file-cached stream created meanwhile would visibly land there.
+     */
+    private static void withIsolatedCacheDir(CacheDirAction action) throws Exception {
+        Path isolated = Files.createTempDirectory("bounded-decode-cache");
+        java.io.File previous = ImageIO.getCacheDirectory();
+        ImageIO.setCacheDirectory(isolated.toFile());
         try {
             action.run(isolated);
         } finally {
-            if (previous == null) {
-                System.clearProperty("java.io.tmpdir");
-            } else {
-                System.setProperty("java.io.tmpdir", previous);
-            }
+            ImageIO.setCacheDirectory(previous);
             deleteRecursively(isolated);
         }
     }
 
-    /** Drains one watch key's queued create events (polling for the synchronous decode). */
-    private static List<String> drainCreated(WatchService watcher) throws Exception {
+    /** Fails if any {@code imageio*.tmp} cache file was created in the watched directory. */
+    private static void assertNoImageIOCacheFiles(WatchService watcher) throws Exception {
         List<String> created = new ArrayList<>();
         var key = watcher.poll(2, TimeUnit.SECONDS);
         if (key != null) {
@@ -94,7 +88,8 @@ final class BoundedDecodeTest {
                 }
             }
         }
-        return created;
+        assertTrue(created.stream().noneMatch(name -> name.startsWith("imageio")),
+                "decoding fetched bytes must not create ImageIO cache files, saw: " + created);
     }
 
     private static void deleteRecursively(Path root) throws IOException {
