@@ -17,11 +17,13 @@ import java.util.concurrent.TimeUnit;
  * ever outlives a test. All waits are bounded {@code waitFor}/{@code join}/{@code wait} calls
  * — no sleeps.
  *
- * <p>Cleanup is interruption-resilient: whenever the parent must terminate a child or join its
- * pumps, a pending thread interrupt is recorded and cleared first, every bounded wait then
- * runs to its real deadline, and the interrupt status is reasserted after cleanup. An
- * interrupted {@link #await()} therefore still kills the stuck child and joins the pumps, and
- * reports {@link InterruptedException} — never a fake timeout.
+ * <p>Cleanup is interruption-resilient: every bounded wait helper ({@link #awaitProcess},
+ * {@link #joinPumps}) records any interrupt it receives and retries the wait with the
+ * monotonic remaining time until the child exits or the deadline elapses, reasserting the
+ * interrupt once when it completes. An interrupted {@link #await()} therefore still runs the
+ * full terminate → bounded wait → force-kill → final wait ladder and joins the pumps, then
+ * reports {@link InterruptedException} — never a fake timeout — with the interrupt status
+ * preserved.
  */
 final class PreviewTestProcess implements AutoCloseable {
     private static final int MAX_CAPTURE_CHARS = 64 * 1024;
@@ -86,17 +88,17 @@ final class PreviewTestProcess implements AutoCloseable {
                 return process.exitValue();
             }
         } catch (InterruptedException interrupted) {
-            // The child may be stuck; complete the ladder and pump joins before reporting.
-            // waitFor already consumed the interrupt, so cleanup has no pending flag; reassert
-            // it after cleanup so the caller observes the interruption.
+            // The child may be stuck; complete the ladder and pump joins before reporting. The
+            // wait helpers retry on repeated interrupts with their monotonic deadlines, so this
+            // cleanup cannot be aborted; reassert the consumed interrupt for the caller.
             try {
-                cleanupInterruptionResilient(this::terminateAndJoin);
+                terminateAndJoin();
             } finally {
                 Thread.currentThread().interrupt();
             }
             throw new InterruptedException("interrupted while awaiting preview child");
         }
-        cleanupInterruptionResilient(this::terminateAndJoin);
+        terminateAndJoin();
         throw new AssertionError("preview child did not exit within " + deadline
                 + "; terminated (exit " + process.exitValue() + "); stderr: " + stderr);
     }
@@ -135,14 +137,13 @@ final class PreviewTestProcess implements AutoCloseable {
     }
 
     @Override public void close() {
-        // Interruption-resilient and never silent: a child that survives the ladder raises an
-        // AssertionError (added as suppressed when the test body already failed).
-        cleanupInterruptionResilient(() -> {
-            if (process.isAlive()) {
-                terminateLadder();
-            }
-            joinPumps();
-        });
+        // Interruption-resilient and never silent: every wait retries through interrupts with
+        // its monotonic deadline, and a child that survives the ladder raises an AssertionError
+        // (added as suppressed when the test body already failed).
+        if (process.isAlive()) {
+            terminateLadder();
+        }
+        joinPumps();
     }
 
     private void terminateAndJoin() {
@@ -150,57 +151,77 @@ final class PreviewTestProcess implements AutoCloseable {
         joinPumps();
     }
 
-    /**
-     * Runs {@code cleanup} immune to a pending interrupt: records/clears the interrupt so
-     * every bounded wait inside runs to its real deadline, then reasserts the interrupt
-     * status after cleanup.
-     */
-    private static void cleanupInterruptionResilient(Runnable cleanup) {
-        boolean interrupted = Thread.interrupted();
-        try {
-            cleanup.run();
-        } finally {
-            interrupted |= Thread.interrupted();
-            if (interrupted) {
-                Thread.currentThread().interrupt();
-            }
-        }
-    }
-
     /** Terminate → bounded wait → force-kill → final wait; throws if the child survives. */
     private void terminateLadder() {
         process.destroy();
-        boolean dead = awaitProcess(TERMINATE_WAIT);
-        if (!dead) {
-            process.destroyForcibly();
-            dead = awaitProcess(FORCE_KILL_WAIT);
+        if (awaitProcess(TERMINATE_WAIT)) {
+            return;
         }
-        if (!dead || process.isAlive()) {
+        process.destroyForcibly();
+        if (!awaitProcess(FORCE_KILL_WAIT)) {
             throw new AssertionError("preview child survived terminate/force-kill");
         }
     }
 
     /**
-     * Bounded wait for child exit. On interrupt, clears the flag (the cleanup wrapper owns
-     * reassertion) and reports the live state: never dead-while-alive, so a stuck child still
-     * escalates to force-kill and the final wait still runs.
+     * Interruption-resilient bounded wait for child exit: retries {@code waitFor} after any
+     * interrupt with the monotonic remaining time, so repeated interrupts can never abort the
+     * wait before its real deadline; reasserts a consumed interrupt once, when the wait
+     * completes. Returns {@code true} iff the process exited within {@code wait} — the same
+     * polarity as {@code Process.waitFor}, never a live-state report.
      */
     private boolean awaitProcess(Duration wait) {
-        try {
-            return process.waitFor(wait.toMillis(), TimeUnit.MILLISECONDS);
-        } catch (InterruptedException interrupted) {
-            Thread.interrupted(); // clear; cleanupInterruptionResilient reasserts
-            return process.isAlive();
+        long deadlineNanos = System.nanoTime() + wait.toNanos();
+        boolean interrupted = false;
+        while (true) {
+            long remaining = deadlineNanos - System.nanoTime();
+            if (remaining <= 0) {
+                boolean exited = !process.isAlive();
+                if (interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+                return exited;
+            }
+            try {
+                boolean exited = process.waitFor(remaining, TimeUnit.NANOSECONDS);
+                if (interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+                return exited;
+            } catch (InterruptedException e) {
+                interrupted = true;
+            }
         }
     }
 
     private void joinPumps() {
         for (Thread pump : new Thread[] {stdoutPump, stderrPump}) {
-            try {
-                pump.join(PUMP_JOIN_WAIT.toMillis());
-            } catch (InterruptedException interrupted) {
-                Thread.interrupted(); // clear; cleanupInterruptionResilient reasserts
+            joinPump(pump);
+        }
+    }
+
+    /**
+     * Interruption-resilient bounded join: retries the join after any interrupt with the
+     * monotonic remaining time until the pump dies or the join deadline elapses, then
+     * reasserts a consumed interrupt once.
+     */
+    private void joinPump(Thread pump) {
+        long deadlineNanos = System.nanoTime() + PUMP_JOIN_WAIT.toNanos();
+        boolean interrupted = false;
+        while (true) {
+            long remaining = deadlineNanos - System.nanoTime();
+            if (remaining <= 0) {
+                break;
             }
+            try {
+                TimeUnit.NANOSECONDS.timedJoin(pump, remaining);
+                break;
+            } catch (InterruptedException e) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
         }
     }
 

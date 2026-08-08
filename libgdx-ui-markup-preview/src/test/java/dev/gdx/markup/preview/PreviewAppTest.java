@@ -24,7 +24,9 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 import javax.imageio.ImageIO;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -186,10 +188,11 @@ final class PreviewAppTest {
     }
 
     /**
-     * Interrupting the parent while it waits on a stuck child must not skip cleanup: the
+     * Interrupting the parent while it waits on a stuck child — repeatedly, including while
+     * cleanup is running — must not skip or abort cleanup: every bounded wait in the
      * termination ladder (terminate → bounded wait → force-kill → final wait) and the pump
-     * joins complete with real bounded waits, the interrupt status is preserved afterwards,
-     * and the child process is dead.
+     * joins retries on interrupts with its monotonic remaining deadline, the interrupt status
+     * is preserved afterwards, and the child process and both pumps are dead.
      */
     @Test
     @Timeout(120)
@@ -206,13 +209,26 @@ final class PreviewAppTest {
             }
         }, "preview-test-awaiting");
         awaiting.start();
+        Thread reinterrupter = null;
         try {
             assertTrue(
                     child.awaitStdoutContaining("preview-child: stuck started",
                             Duration.ofSeconds(30)),
                     "the stuck child reports it started (observable start)");
+            // Hammer the awaiting thread with interrupts while it runs the termination ladder,
+            // so every bounded wait in cleanup must retry on interrupts instead of aborting
+            // its phase. Paced by parkNanos, not a condition wait; daemon so a failed test
+            // can never hang the JVM.
+            reinterrupter = new Thread(() -> {
+                while (awaiting.isAlive() && !Thread.currentThread().isInterrupted()) {
+                    awaiting.interrupt();
+                    LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+                }
+            }, "preview-test-reinterrupter");
+            reinterrupter.setDaemon(true);
+            reinterrupter.start();
             awaiting.interrupt();
-            awaiting.join(30_000);
+            awaiting.join(60_000);
             assertFalse(awaiting.isAlive(), "the awaiting thread finished cleanup and returned");
             assertTrue(awaitFailure.get() instanceof InterruptedException,
                     "an interrupted wait reports InterruptedException, got: " + awaitFailure.get());
@@ -220,6 +236,10 @@ final class PreviewAppTest {
             assertFalse(child.isAlive(), "the stuck child was terminated by the ladder");
             assertNoChildPumps();
         } finally {
+            if (reinterrupter != null) {
+                reinterrupter.interrupt();
+                reinterrupter.join(10_000);
+            }
             child.close();
         }
         assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
