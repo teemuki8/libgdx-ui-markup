@@ -31,7 +31,6 @@
         <row/>
         <label id="hero-power" text="Block  12   Buffs  2   Orbs  3"/>
         <row/>
-        <label id="hero-relic" class="section" text="Focus  1  •  Lightning  3"/>
       </table>
       <table id="card-zone" class="panel-alt" width="240" height="300" pad="18" pad-top="160" align="center top">
         <label id="card-cost" class="title" text="0"/>
@@ -62,7 +61,6 @@
         <label id="enemy-block" text="Block  7   Debuffs  1   Vulnerable"/>
         <row/>
         <label id="enemy-armor" class="section" text="Intent  •  Attack  •  Damage  7"/>
-        <row/>
       </table>
     </table>
     <row/>
