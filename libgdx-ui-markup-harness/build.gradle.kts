@@ -1,6 +1,12 @@
 dependencies {
     api(project(":libgdx-ui-markup"))
     api(libs.harness.scene2d)
+    // Test-scoped only: the end-to-end test file exercises the published
+    // AgentRuntimeObservationSource in-process to pin which correlation statuses are reachable,
+    // and registers an authoritative markup source through MarkupRuntimeSource to prove
+    // MISMATCH. The published harness artifact stays agent-runtime-free.
+    testImplementation(libs.harness.agent.runtime)
+    testImplementation(project(":libgdx-ui-markup-runtime"))
     testImplementation(libs.harness.protocol)
     testImplementation(libs.jackson.databind)
     testImplementation(libs.gdx.backend.lwjgl3)

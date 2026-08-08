@@ -2,8 +2,9 @@
 
 This guide covers production wiring: markup inside an application-owned game (as opposed to the
 preview app). By the end you have a render-thread-built Scene2D UI whose markup-declared
-`data-runtime-entity` widgets are agent-runtime value sources, bound into the harness semantics
-facade, and provably frame-correlated through the harness `ui_runtime_compare` tool.
+`data-runtime-entity` elements are bound into the harness semantics facade and the agent
+runtime, with an explicitly chosen value authority, provably frame-correlated through the
+harness `ui_runtime_compare` tool.
 
 The reference implementation is the preview (`libgdx-ui-markup-preview`,
 `dev.gdx.markup.preview.PreviewMcp`); the compilable proof is the harness end-to-end test
@@ -53,12 +54,21 @@ stage.addActor(ui.root());
 Size the root group to the viewport: harness actionability tests parent intersection and
 `Group.hit`, so a zero-sized root rejects every actor (the preview does this explicitly).
 
-## 2. Register runtime entities against the agent runtime
+## 2. Register runtime bindings and value authority separately
 
-Every element with `data-runtime-entity` becomes an agent-runtime value source whose named
-property (default `value`) reads the widget's live state, plus a `UiBinding` to the actor's
-control id. Registration reads live actors, so it also runs on the render thread, after the
-build:
+A `data-runtime-entity` element declares two independent contracts: the **actor binding**
+(which entity property the actor's control id correlates with) and the **value authority**
+(where the entity property's runtime value comes from). The `HarnessSemanticSink` in step 1
+handles the semantic facade; `MarkupRuntimeSource` handles the runtime side. Registration reads
+live actors, so it runs on the render thread, after the build. Choose the authority explicitly;
+the 0.2.x `register(...)` convenience delegates to widget-mirror mode.
+
+### Authoritative mode — production domain state
+
+Register the entity with your own supplier, resolved once per `data-runtime-entity` element
+during registration. The resolver runs on the render thread and must return a non-null
+`Supplier<RuntimeValue>` for every entity; returning `null` fails registration during preflight
+with a located `MarkupException` and no runtime mutation:
 
 ```java
 AgentRuntime runtime = AgentRuntime.builder()
@@ -66,18 +76,54 @@ AgentRuntime runtime = AgentRuntime.builder()
         .build();
 runtime.start();                       // the runtime owns its capture thread
 
-MarkupRuntimeSource runtimeSource =
-        MarkupRuntimeSource.register(runtime, document, ui, APP_SESSION_ID);
+MarkupRuntimeSource runtimeSource = MarkupRuntimeSource.registerAuthoritative(
+        runtime, document, ui, APP_SESSION_ID,
+        (entityId, propertyId, actor) -> () -> RuntimeValues.string(domainValue(entityId)));
 ```
 
-The source reports a bounded registration line, e.g.
-`markup-runtime: {"entities":1,"bindings":1}` (the preview prints it to stderr). On a UI
-rebuild, close the old source before registering the new actor tree:
+The entity property now reports the domain model, not the widget. `ui_runtime_compare` returns
+`EQUAL` when the widget displays that value and `MISMATCH` when it does not — that is the
+divergence detection production wants. The supplier is evaluated by the agent-runtime capture
+thread on every frame, so it must be thread-safe or capture stable state.
+
+### Bindings-only mode — application-registered entities
+
+If the application already registers the entity (a shared domain service or another value
+source), markup needs only the correlation:
+
+```java
+MarkupRuntimeSource runtimeSource =
+        MarkupRuntimeSource.registerBindings(runtime, document, ui, APP_SESSION_ID);
+```
+
+This installs the `UiBinding` per `data-runtime-entity` element without registering an entity or
+widget supplier (`registeredEntities()` is empty). The comparison reports `MISSING` until the
+application registers the referenced entity.
+
+### Widget-mirror mode — preview convenience, explicitly non-authoritative
+
+`registerWidgetMirror(...)` (which the 0.2.x `register(...)` delegates to) reads the widget's
+live state back as the property value; the preview selects it explicitly. It validates
+transport and correlation plumbing only: `EQUAL` proves the pipeline, not the data, and it
+**cannot detect a UI displaying the wrong model value**. Do not present actor readback as domain
+truth.
+
+```java
+MarkupRuntimeSource runtimeSource = MarkupRuntimeSource.registerWidgetMirror(
+        runtime, document, ui, APP_SESSION_ID);
+```
+
+On a UI rebuild, close the old source before registering the new actor tree in any mode:
 
 ```java
 runtimeSource.close();
-runtimeSource = MarkupRuntimeSource.register(runtime, newDocument, rebuiltUi, APP_SESSION_ID);
+runtimeSource = MarkupRuntimeSource.registerAuthoritative(
+        runtime, newDocument, rebuiltUi, APP_SESSION_ID,
+        (entityId, propertyId, actor) -> () -> RuntimeValues.string(domainValue(entityId)));
 ```
+
+The preview prints a bounded registration line naming the mode, e.g.
+`markup-runtime: {"mode":"widget-mirror","entities":1,"bindings":1}`.
 
 ## 3. Record one UiFrameCorrelation per rendered frame
 
@@ -101,9 +147,11 @@ The token passed to `HarnessSemanticSink` must **equal** the
 `UiFrameCorrelation.correlationToken()` recorded per frame. The preview uses
 `markup-preview-frame`; an application with its own correlation token must pass **its own**
 token to the sink and record every frame's correlation under that same token. A mismatch is
-silent: the wiring compiles, `ui_runtime_compare` runs, and returns `STALE`/`UNCORRELATED`
-with no diagnostic naming the token. Choose one stable application-scoped value and never
-change it without re-recording.
+silent at compile time but not at runtime: `AgentRuntimeObservationSource` can prove no frame
+for the binding, so `ui_runtime_compare` reports `UNAVAILABLE` — never `STALE`/`UNCORRELATED`
+through this source. The recovery is to record every frame's correlation under the exact token
+passed to the sink (the sink's Javadoc and the statuses section below name the same checks).
+Choose one stable application-scoped value and never change it without re-recording.
 
 ## 4. Serve ui_runtime_compare on the render-thread scheduler
 
@@ -151,8 +199,10 @@ void afterDraw() {           // end of frame
 Draining before advancing means the comparator runs against the clock frame recorded by the
 *previous* frame's correlation — the snapshot it takes is exactly the correlated frame.
 Reversing the order (advance, then drain) yields a snapshot one frame ahead of the recorded
-correlation and degrades the comparison to `STALE`/`UNCORRELATED`. This is the single most
-common wiring bug.
+correlation: the source still proves the older frame, so the comparison degrades to `STALE`
+(never `UNCORRELATED` through this source). If instead the correlation is recorded against a
+frame that is no longer the latest — or the token mismatches — the source can prove nothing
+and the comparison is `UNAVAILABLE`. This loop order is the single most common wiring bug.
 
 With the controlled clock, the clock drives `stage.act`; do not call `stage.act` separately in
 the MCP path (the preview branches on this).
@@ -167,17 +217,27 @@ guide's "Threading and frame wiring" section for the same wiring.
 ## Statuses and what they mean
 
 `ui_runtime_compare` returns a typed status; treat any status other than `EQUAL` as a wiring
-or state problem:
+or state problem. Through `AgentRuntimeObservationSource` (the adapter this guide wires), an
+observation exists only when the correlation is provable, so the comparator reports
+`UNAVAILABLE` for correlation problems, `STALE` only for a snapshot ahead of the proven frame,
+and never `UNCORRELATED`:
 
 | Status | Meaning | Common cause |
 |---|---|---|
 | `EQUAL` | displayed value equals the runtime value on a proven frame | — |
 | `MISMATCH` | displayed value differs from the runtime value on a proven frame | state changed between snapshot and correlation |
-| `STALE` | correlation exists but is not provable for the snapshot frame | loop order wrong (advance before drain), or clock not deterministic |
-| `UNCORRELATED` | no correlation matches the binding's token/frame | token mismatch between sink and `UiFrameCorrelation`, or no correlation recorded for the frame |
+| `STALE` | observation proven for an older frame than the snapshot | loop order wrong (advance before drain), or clock not deterministic |
+| `UNCORRELATED` | no provable frame | not reachable through `AgentRuntimeObservationSource`: its observations always carry a proven frame; a clock-based source (no strict correlation) may emit it |
 | `MISSING` | actor has no runtime binding | `data-runtime-entity` absent, or build ran with a `NoopSink` |
-| `UNAVAILABLE` | observation source cannot observe | `AgentRuntime` not started, or source not wired |
+| `UNAVAILABLE` | the adapter emits no observation for the binding | token mismatch between `HarnessSemanticSink` and `UiFrameCorrelation`; no correlation recorded for the latest frame (correlation recording lagging the frame capture); `AgentRuntime` not started, or source not wired |
 | `AMBIGUOUS` | locator matched multiple actors | markup ids not unique |
+
+**Recovery.** When `ui_runtime_compare` reports `UNAVAILABLE` for a bound actor, verify that
+the exact correlation token passed to `HarnessSemanticSink` equals the
+`UiFrameCorrelation.correlationToken()` recorded for each rendered frame, then drain
+observations before advancing the frame (step 5). The runtime's `framesForUiSession` lists
+which correlations the session actually recorded and under which token; the binding's token is
+the one passed to `HarnessSemanticSink`.
 
 ## Reference implementations
 

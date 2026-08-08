@@ -121,15 +121,18 @@ final class PreviewMcp implements AutoCloseable {
     }
 
     /** Registers markup-declared {@code data-runtime-entity} actors as agent-runtime value
-     * sources for the freshly built scene (render thread). Old registrations are closed first.
+     * sources for the freshly built scene (render thread), explicitly in widget-mirror mode: the
+     * property supplier reads the widget's live state back, which validates transport and
+     * correlation only and cannot detect a UI/domain divergence. Old registrations are closed
+     * first.
      */
     void attachRuntime(MarkupDocument document, BuiltUi built) {
         if (runtimeSource != null) {
             runtimeSource.close();
         }
-        runtimeSource = MarkupRuntimeSource.register(runtime, document, built,
+        runtimeSource = MarkupRuntimeSource.registerWidgetMirror(runtime, document, built,
                 PreviewApp.SESSION_ID);
-        System.err.println("markup-runtime: {\"entities\":"
+        System.err.println("markup-runtime: {\"mode\":\"widget-mirror\",\"entities\":"
                 + runtimeSource.registeredEntities().size() + ",\"bindings\":"
                 + runtimeSource.registeredEntities().size() + "}");
         System.err.flush();

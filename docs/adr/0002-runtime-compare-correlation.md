@@ -48,11 +48,16 @@ harness's own correlation surface, mirroring the harness reference fixture:
 - `ui_runtime_compare` on a markup-declared textfield returns `EQUAL` with
   `entityId=user`, `propertyId=value` after a real fill through the harness input path
   (harness E2E, `MarkupHarnessEndToEndTest.markupRuntimeEntityComparesThroughHarnessMcp`).
-- Dependency boundaries hold: the runtime module is harness-free, the harness module is
-  agent-runtime-free, and the preview is the only module depending on both
-  (`harness-agent-runtime` 1.1.0 added to the preview distribution).
-- Statuses stay distinct: an actor without `data-runtime-entity` is `MISSING` (unbound);
-  without provable frame correlation the comparison is `STALE` or `UNCORRELATED`; a runtime
-  source that cannot observe is `UNAVAILABLE`.
+- Dependency boundaries hold: the runtime module is harness-free, the harness module's
+  published artifact is agent-runtime-free (its tests exercise the adapter through a
+  test-scoped `harness-agent-runtime` dependency), and the preview is the only module
+  depending on both at runtime (`harness-agent-runtime` 1.1.0 added to the preview
+  distribution).
+- Statuses stay distinct: an actor without `data-runtime-entity` is `MISSING` (unbound).
+  Through `AgentRuntimeObservationSource`, an unprovable correlation yields no observation and
+  the comparison is `UNAVAILABLE` (token mismatch, or no correlation recorded for the latest
+  frame); `STALE` is reachable only when the proven frame lags the snapshot (the clock advanced
+  before the drain); `UNCORRELATED` is not reachable through this source because its
+  observations always carry a proven frame.
 - The correlation token is a contract between the sink and the preview
   (`markup-preview-frame`); changing it silently breaks frame proof.
