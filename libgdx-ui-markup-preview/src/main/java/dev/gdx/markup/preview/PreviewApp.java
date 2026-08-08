@@ -240,13 +240,29 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
     }
 
     private void takeScreenshot() {
+        // The OpenGL framebuffer origin is bottom-left, so the raw capture is vertically
+        // flipped; qualification compares recreations against upright references, so the
+        // PNG must be upright too.
         Pixmap pixmap = Pixmap.createFromFrameBuffer(0, 0,
                 Gdx.graphics.getBackBufferWidth(), Gdx.graphics.getBackBufferHeight());
         try {
-            com.badlogic.gdx.graphics.PixmapIO.writePNG(
-                    Gdx.files.absolute(options.screenshot().toAbsolutePath().toString()), pixmap);
-        } finally {
+            Pixmap upright = new Pixmap(pixmap.getWidth(), pixmap.getHeight(), pixmap.getFormat());
+            for (int y = 0; y < pixmap.getHeight(); y++) {
+                upright.drawPixmap(pixmap, 0, pixmap.getHeight() - 1 - y, 0, y,
+                        pixmap.getWidth(), 1);
+            }
             pixmap.dispose();
+            try {
+                com.badlogic.gdx.graphics.PixmapIO.writePNG(
+                        Gdx.files.absolute(options.screenshot().toAbsolutePath().toString()),
+                        upright);
+            } finally {
+                upright.dispose();
+            }
+        } finally {
+            if (!pixmap.isDisposed()) {
+                pixmap.dispose();
+            }
         }
     }
 

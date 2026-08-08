@@ -261,17 +261,24 @@ public final class QualificationRunner implements AutoCloseable {
         try {
             String classpath = lib.toString() + File.separatorChar + "*";
             String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
-            ProcessBuilder builder = new ProcessBuilder(
+            Path palette = corpusDir.resolve(entry.id() + "-palette.json");
+            List<String> command = new ArrayList<>(List.of(
                     java,
                     "--enable-native-access=ALL-UNNAMED",
                     "-cp",
-                    classpath,
+                    classpath));
+            if (Files.isRegularFile(palette)) {
+                // The preview's default skin reads this system property for per-corpus palettes.
+                command.add("-Dmarkup.skin.palette=" + palette);
+            }
+            command.addAll(List.of(
                     "dev.gdx.markup.preview.PreviewApp",
                     "--ui", xml.toString(),
                     "--css", css.toString(),
                     "--frames", Integer.toString(RENDER_FRAMES),
                     "--screenshot", screenshot.toString(),
-                    "--exit");
+                    "--exit"));
+            ProcessBuilder builder = new ProcessBuilder(command);
             Process process = builder.start();
             drain(process.getInputStream());
             drain(process.getErrorStream());

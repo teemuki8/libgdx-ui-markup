@@ -1,11 +1,16 @@
 {
-  "comment" : "Reference game UIs for markup recreation qualification. Remote images are fetched at test time over pinned TLS into a bounded per-run in-memory cache, authenticated against the committed SHA-256/byte/media-type identity, and never redistributed; no remote bytes are written to disk. Thresholds are measured baselines: each recreation must score at or above its threshold or the qualification fails.",
+  "comment" : "Reference game UIs for markup recreation qualification. Remote images are fetched at test time over pinned TLS into a bounded per-run in-memory cache, authenticated against the committed SHA-256/byte/media-type identity, and never redistributed; no remote bytes are written to disk. Thresholds are measured multi-signal baselines: each recreation must clear the geometry, color, and detail thresholds independently or the qualification fails, and the coarse layout baseline is retained as a diagnostic only.",
   "entries" : [ {
     "id" : "palisade-skirmish",
     "referenceFile" : "reference/palisade-initial.png",
     "license" : "Apache-2.0 — libgdx-ui-harness agentic-palisade corpus (our own benchmark UI).",
     "markupFile" : "palisade-skirmish.xml",
-    "threshold" : 0.205,
+    "thresholds" : {
+      "geometry" : 0.03,
+      "color" : 0.05,
+      "detail" : 0.4,
+      "coarseLayout" : 0.2
+    },
     "referenceWidth" : 1280,
     "referenceHeight" : 720
   }, {
@@ -16,7 +21,12 @@
     "mediaType" : "image/jpeg",
     "license" : "(c) Supergiant Games. Copyrighted material; used solely for private layout-verification testing, never redistributed.",
     "markupFile" : "hades-boon.xml",
-    "threshold" : 0.258,
+    "thresholds" : {
+      "geometry" : 0.05,
+      "color" : 0.05,
+      "detail" : 0.1,
+      "coarseLayout" : 0.25
+    },
     "referenceWidth" : 1920,
     "referenceHeight" : 1080
   }, {
@@ -27,7 +37,12 @@
     "mediaType" : "image/jpeg",
     "license" : "(c) Mega Crit Games. Copyrighted material; used solely for private layout-verification testing, never redistributed.",
     "markupFile" : "sts-shop.xml",
-    "threshold" : 0.218,
+    "thresholds" : {
+      "geometry" : 0.05,
+      "color" : 0.05,
+      "detail" : 0.1,
+      "coarseLayout" : 0.2
+    },
     "referenceWidth" : 1920,
     "referenceHeight" : 1080
   }, {
@@ -38,7 +53,12 @@
     "mediaType" : "image/jpeg",
     "license" : "GPL-2.0-or-later (The Battle for Wesnoth); screenshot mirrored on the Steam CDN.",
     "markupFile" : "wesnoth-battle.xml",
-    "threshold" : 0.121,
+    "thresholds" : {
+      "geometry" : 0.05,
+      "color" : 0.05,
+      "detail" : 0.1,
+      "coarseLayout" : 0.12
+    },
     "referenceWidth" : 1920,
     "referenceHeight" : 1080
   } ]

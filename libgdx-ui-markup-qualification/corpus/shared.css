@@ -1,9 +1,17 @@
-/* Shared bounded styling subset for recreation corpus entries. */
+/* Shared bounded styling subset for recreation corpus entries. The named colors (panel,
+   panel-alt, accent, text, ...) resolve against each entry's palette override, so the same
+   classes render each reference game's palette. */
+.backdrop { background: background; }
 .panel { background: panel; padding: 18px; }
+.panel-alt { background: panel-alt; }
+.accent-bar { background: accent; }
 .title { font-color: accent; }
+.heading { font-color: text; }
+.section { font-color: muted; }
 label { font-color: text; }
 button { padding: 10px; }
 button.primary { background: accent; }
 button.primary:hover { background: accent-over; }
 button.primary:pressed { background: accent-down; }
 textfield { background: field; padding: 8px; }
+checkbox { font-color: text; }
