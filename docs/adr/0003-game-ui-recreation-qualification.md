@@ -160,5 +160,8 @@ staleness check flags every sub-floor committed baseline.
   deliberate transforms cannot be separated from it (or that scores below a floor) fails
   calibration loudly instead of minting a passing gate. Raising the bar above the floors is
   a corpus-quality question (better markup recreations), never a calibration shortcut.
+- The qualification test task declares the corpus directory as an input, so recreation edits
+  and threshold changes always re-trigger the test locally instead of Gradle serving a stale
+  up-to-date result.
 - The harness's agentic-palisade qualification is untouched and remains a libgdx-ui-harness
   concern.

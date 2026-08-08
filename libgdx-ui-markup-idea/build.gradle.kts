@@ -1,4 +1,6 @@
 import org.gradle.api.tasks.bundling.Zip
+import java.util.jar.JarInputStream
+import java.util.zip.ZipFile
 
 plugins {
     kotlin("jvm") version libs.versions.kotlin.get()
@@ -85,6 +87,47 @@ val unitTest = tasks.register<Test>("unitTest") {
 
 tasks.named("check") {
     dependsOn(unitTest)
+    dependsOn(tasks.named("verifyPluginPackaging"))
+}
+
+// Proves the packaged plugin ships the production launcher and bundles the preview
+// distribution, and that no preview-module classes leak into the plugin's own jar (the
+// preview child runs as a separate JVM; the plugin must not carry GL/LWJGL classes).
+val pluginVersion = version
+tasks.register("verifyPluginPackaging") {
+    group = "verification"
+    description = "Inspects the buildPlugin archive for the launcher, the bundled preview dist, and class leakage"
+    dependsOn(tasks.named("buildPlugin"))
+    doLast {
+        val pluginZip = tasks.named<Zip>("buildPlugin").get().archiveFile.get().asFile
+        ZipFile(pluginZip).use { zip ->
+            val entries = zip.entries().asSequence().map { it.name }.toList()
+            val pluginJar = entries.firstOrNull {
+                it.startsWith("libgdx-ui-markup-idea/lib/")
+                    && it.contains("libgdx-ui-markup-idea-$pluginVersion.jar")
+            } ?: throw GradleException("plugin classes jar missing from $pluginZip")
+            val previewDistJar = entries.firstOrNull {
+                it.startsWith("libgdx-ui-markup-idea/libgdx-ui-markup-preview/lib/")
+                    && it.endsWith("libgdx-ui-markup-preview-$pluginVersion.jar")
+            } ?: throw GradleException("bundled preview distribution jar missing from $pluginZip")
+            zip.getInputStream(zip.getEntry(pluginJar)).use { input ->
+                val jar = JarInputStream(input)
+                val names = generateSequence { jar.nextJarEntry?.name }.toList()
+                if (!names.contains("dev/gdx/markup/idea/PreviewProcessLauncher.class")) {
+                    throw GradleException("production launcher class missing from $pluginJar")
+                }
+                val leaked = names.filter { it.startsWith("dev/gdx/markup/preview/") }
+                if (leaked.isNotEmpty()) {
+                    throw GradleException("preview-module classes leaked into the plugin jar: $leaked")
+                }
+            }
+            val anyLeak = entries.filter { it.contains("PreviewJvmCommand") }
+            if (anyLeak.isNotEmpty()) {
+                throw GradleException("shared builder class leaked into the plugin archive: $anyLeak")
+            }
+            println("plugin packaging OK: $pluginJar, $previewDistJar")
+        }
+    }
 }
 
 tasks.named<Test>("test") {

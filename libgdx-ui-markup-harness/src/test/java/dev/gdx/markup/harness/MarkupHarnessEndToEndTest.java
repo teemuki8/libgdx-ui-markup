@@ -38,9 +38,11 @@ import io.github.teemuki8.libgdx.agent.runtime.core.UiFrameCorrelation;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -66,6 +68,7 @@ final class MarkupHarnessEndToEndTest {
     @Test
     @Timeout(120)
     void markupDeclaredUiIsDrivableThroughTheHarnessMcp() throws Exception {
+        List<String> osTempBefore = osTempArtifactEntries();
         try (PreviewProcess preview = PreviewProcess.launch()) {
             preview.awaitOkStatus(Duration.ofSeconds(30));
             assertTrue(preview.capturedStderr().contains(
@@ -102,11 +105,7 @@ final class MarkupHarnessEndToEndTest {
                 MarkupMcpClient.Screenshot screenshot = client.screenshot(SESSION_ID);
                 assertEquals(1280, screenshot.width());
                 assertEquals(720, screenshot.height());
-                assertTrue(screenshot.artifact().byteLength() > 100,
-                        "screenshot payload is non-trivial");
-                byte[] png = readBack(screenshot.artifact());
-                assertEquals(screenshot.artifact().byteLength(), png.length);
-                assertTrue(isPng(png), "the screenshot payload is a PNG");
+                assertOpaqueInMemoryArtifact(screenshot.artifact(), osTempBefore);
             }
             preview.awaitCleanExit();
         }
@@ -335,25 +334,46 @@ final class MarkupHarnessEndToEndTest {
                 "the checkbox became checked through the real input path");
     }
 
-    private static byte[] readBack(MarkupMcpClient.Artifact artifact) throws Exception {
-        String sha256 = artifact.sha256();
-        assertNotNull(sha256);
-        Path payload = Path.of(System.getProperty("java.io.tmpdir"),
-                "gdx-ui-markup-artifacts", sha256);
-        assertTrue(Files.isRegularFile(payload), "artifact persisted by digest: " + payload);
-        return Files.readAllBytes(payload);
+    /**
+     * The published screenshot artifact must stay opaque and in-memory: the reference is an
+     * opaque {@code artifact:<128-bit digest prefix>} (never a path), the digest is the full
+     * SHA-256 of the payload, the payload is a non-trivial PNG, and the live session left no
+     * session/temp entries in the OS temporary directory (the in-memory cutover must never
+     * write artifact bytes to disk). Retrieval of the bytes themselves is proven in-process
+     * by the preview module's session readback E2E, since the harness protocol has no
+     * artifact-read tool.
+     */
+    private static void assertOpaqueInMemoryArtifact(MarkupMcpClient.Artifact artifact,
+            List<String> osTempBefore) throws Exception {
+        String reference = artifact.reference();
+        assertNotNull(reference, "the screenshot carries an artifact reference");
+        assertTrue(reference.matches("artifact:[0-9a-f]{32}"),
+                "the reference is opaque artifact:<digest-prefix>: " + reference);
+        assertNotNull(artifact.sha256(), "the artifact carries its full digest");
+        assertTrue(artifact.sha256().matches("[0-9a-fA-F]{64}"),
+                "the artifact digest is a full SHA-256: " + artifact.sha256());
+        assertEquals(artifact.sha256().substring(0, 32),
+                reference.substring("artifact:".length()),
+                "the opaque prefix is the digest's 128-bit prefix");
+        assertTrue(artifact.byteLength() > 100,
+                "screenshot payload is non-trivial");
+        assertEquals("image/png", artifact.mediaType(),
+                "the screenshot tool publishes a PNG artifact");
+        assertEquals(osTempBefore, osTempArtifactEntries(),
+                "the live session retained the screenshot only in memory, never in the OS "
+                        + "temporary directory");
     }
 
-    private static boolean isPng(byte[] bytes) {
-        byte[] signature = {(byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
-        if (bytes.length < signature.length) {
-            return false;
+    /** Snapshot of preview artifact entries in the OS temp dir ({@code gdx-markup-*} /
+     * {@code gdx-tmp-*} names), used to prove the in-memory publisher writes no disk bytes. */
+    private static List<String> osTempArtifactEntries() throws Exception {
+        Path osTemp = Path.of(System.getProperty("java.io.tmpdir"));
+        List<String> entries = new ArrayList<>();
+        try (Stream<Path> sessions = Files.list(osTemp)) {
+            sessions.filter(path -> path.getFileName().toString().startsWith("gdx-markup-")
+                            || path.getFileName().toString().startsWith("gdx-tmp-"))
+                    .forEach(path -> entries.add(path.getFileName().toString()));
         }
-        for (int index = 0; index < signature.length; index++) {
-            if (bytes[index] != signature[index]) {
-                return false;
-            }
-        }
-        return true;
+        return entries;
     }
 }

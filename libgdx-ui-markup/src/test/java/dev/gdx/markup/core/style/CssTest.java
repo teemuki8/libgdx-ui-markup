@@ -8,13 +8,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.gdx.markup.core.Element;
 import dev.gdx.markup.core.MarkupException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 final class CssTest {
     private final CssParser parser = new CssParser();
+
+    @TempDir
+    Path tempDir;
 
     private static Element element(String tag, String id, List<String> classes) {
         return new Element(tag, id, null, null, null, Map.of(), classes, List.of(), 1, 1);
@@ -493,5 +501,77 @@ final class CssTest {
         assertTrue(style.booleanValue("enabled", true));
         assertTrue(style.has("visible"));
         assertFalse(style.has("enabled"));
+    }
+
+    @Test
+    void exactByteLimitPathStylesheetParses() throws Exception {
+        // A comment-only stylesheet carries the whole payload: comments are skipped by the
+        // scanner, so it parses to zero rules at exactly MAX_INPUT_BYTES.
+        String css = "/*" + "x".repeat(CssParser.MAX_INPUT_BYTES - 4) + "*/";
+        assertEquals(CssParser.MAX_INPUT_BYTES,
+                css.getBytes(StandardCharsets.UTF_8).length);
+        Path file = tempDir.resolve("exact.css");
+        Files.write(file, css.getBytes(StandardCharsets.UTF_8));
+        CssDocument document = parser.parse(file);
+        assertTrue(document.rules().isEmpty());
+        assertEquals(CssParser.MAX_INPUT_BYTES, document.byteLength());
+    }
+
+    @Test
+    void limitPlusOneBytePathStylesheetIsRejectedBeforeDecoding() throws Exception {
+        // The final byte starts a two-byte UTF-8 sequence, so a decode-first implementation
+        // (like Files.readString) would fail with an IOException; the bounded reader must
+        // reject on size before any decoding or String materialization.
+        byte[] over = new byte[CssParser.MAX_INPUT_BYTES + 1];
+        Arrays.fill(over, (byte) 'x');
+        over[over.length - 1] = (byte) 0xC3;
+        Path file = tempDir.resolve("over.css");
+        Files.write(file, over);
+        MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse(file));
+        assertEquals(MarkupException.Kind.TOO_LARGE, failure.kind());
+        assertTrue(failure.getMessage().contains("limit"));
+    }
+
+    @Test
+    void truncatedMultibytePathStylesheetFailsDeterministically() throws Exception {
+        byte[] truncated = "button { color: red; }".getBytes(StandardCharsets.UTF_8);
+        byte[] withPartial = Arrays.copyOf(truncated, truncated.length + 1);
+        withPartial[withPartial.length - 1] = (byte) 0xC3;
+        Path file = tempDir.resolve("truncated.css");
+        Files.write(file, withPartial);
+        MarkupException first = assertThrows(MarkupException.class, () -> parser.parse(file));
+        assertEquals(MarkupException.Kind.STYLE_ERROR, first.kind());
+        MarkupException second = assertThrows(MarkupException.class, () -> parser.parse(file));
+        assertEquals(first.kind(), second.kind());
+        assertEquals(first.getMessage(), second.getMessage());
+    }
+
+    @Test
+    void limitPlusOneByteStringStylesheetIsRejectedAsTooLarge() {
+        String css = "/*" + "x".repeat(CssParser.MAX_INPUT_BYTES - 3) + "*/";
+        MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse(css));
+        assertEquals(MarkupException.Kind.TOO_LARGE, failure.kind(),
+                "the String entry point must share the same TOO_LARGE kind as parse(Path)");
+        assertTrue(failure.getMessage().contains("limit"));
+    }
+
+    @Test
+    void nextBufferGrowthDoublesBelowHalfCapacity() {
+        assertEquals(8192, CssParser.nextBufferLength(4096, 10_000));
+    }
+
+    @Test
+    void nextBufferGrowthCapsAtCapacityFromHalfWay() {
+        assertEquals(10_000, CssParser.nextBufferLength(8192, 10_000));
+    }
+
+    @Test
+    void nextBufferGrowthNeverOverflowsNearIntegerMax() {
+        // current * 2 would wrap to Integer.MIN_VALUE around 2^30; the growth must cap at
+        // capacity instead of overflowing (a negative length would throw NegativeArraySizeException).
+        assertEquals(1_073_741_824, CssParser.nextBufferLength(1_073_741_824, 1_073_741_824));
+        assertEquals(2_147_483_647, CssParser.nextBufferLength(1_073_741_824, 2_147_483_647));
+        assertEquals(2_147_483_647, CssParser.nextBufferLength(1_073_741_823, 2_147_483_647));
+        assertEquals(2_147_483_644, CssParser.nextBufferLength(1_073_741_822, 2_147_483_647));
     }
 }

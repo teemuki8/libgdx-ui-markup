@@ -5,11 +5,19 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 final class MarkupParserTest {
     private final MarkupParser parser = new MarkupParser();
+
+    @TempDir
+    Path tempDir;
 
     @Test
     void parsesValidDocumentIntoTree() {
@@ -341,5 +349,81 @@ final class MarkupParserTest {
         Element table = document.root().children().get(0);
         assertNull(table.text());
         assertEquals(2, table.children().size());
+    }
+
+    @Test
+    void exactByteLimitPathInputParses() throws Exception {
+        // The comment body carries the whole payload: comments are lexical, so the tree is a
+        // single <ui> root and no element/text bound is touched at exactly MAX_INPUT_BYTES.
+        String xml = "<ui><!--" + "x".repeat(MarkupParser.MAX_INPUT_BYTES - 16) + "--></ui>";
+        assertEquals(MarkupParser.MAX_INPUT_BYTES,
+                xml.getBytes(StandardCharsets.UTF_8).length);
+        Path file = tempDir.resolve("exact.xml");
+        Files.write(file, xml.getBytes(StandardCharsets.UTF_8));
+        MarkupDocument document = parser.parse(file);
+        assertEquals("ui", document.root().tag());
+        assertEquals(MarkupParser.MAX_INPUT_BYTES, document.byteLength());
+    }
+
+    @Test
+    void exactByteLimitStringInputSharesTheSameBoundary() {
+        String xml = "<ui><!--" + "x".repeat(MarkupParser.MAX_INPUT_BYTES - 16) + "--></ui>";
+        MarkupDocument document = parser.parse(xml);
+        assertEquals("ui", document.root().tag());
+    }
+
+    @Test
+    void limitPlusOneBytePathInputIsRejectedBeforeDecoding() throws Exception {
+        // The final byte starts a two-byte UTF-8 sequence, so a decode-first implementation
+        // (like Files.readString) would fail with an IOException; the bounded reader must
+        // reject on size before any decoding or String materialization.
+        byte[] over = new byte[MarkupParser.MAX_INPUT_BYTES + 1];
+        Arrays.fill(over, (byte) 'x');
+        over[over.length - 1] = (byte) 0xC3;
+        Path file = tempDir.resolve("over.xml");
+        Files.write(file, over);
+        MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse(file));
+        assertEquals(MarkupException.Kind.TOO_LARGE, failure.kind());
+        assertTrue(failure.getMessage().contains("limit"));
+    }
+
+    @Test
+    void limitPlusOneByteStringInputIsRejected() {
+        String xml = "<ui><!--" + "x".repeat(MarkupParser.MAX_INPUT_BYTES - 15) + "--></ui>";
+        MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse(xml));
+        assertEquals(MarkupException.Kind.TOO_LARGE, failure.kind());
+        assertTrue(failure.getMessage().contains("limit"));
+    }
+
+    @Test
+    void truncatedMultibytePathInputFailsDeterministically() throws Exception {
+        byte[] truncated = new byte[] {'<', 'u', 'i', '/', '>', (byte) 0xC3};
+        Path file = tempDir.resolve("truncated.xml");
+        Files.write(file, truncated);
+        MarkupException first = assertThrows(MarkupException.class, () -> parser.parse(file));
+        assertEquals(MarkupException.Kind.MALFORMED_XML, first.kind());
+        MarkupException second = assertThrows(MarkupException.class, () -> parser.parse(file));
+        assertEquals(first.kind(), second.kind());
+        assertEquals(first.getMessage(), second.getMessage());
+    }
+
+    @Test
+    void nextBufferGrowthDoublesBelowHalfCapacity() {
+        assertEquals(8192, MarkupParser.nextBufferLength(4096, 10_000));
+    }
+
+    @Test
+    void nextBufferGrowthCapsAtCapacityFromHalfWay() {
+        assertEquals(10_000, MarkupParser.nextBufferLength(8192, 10_000));
+    }
+
+    @Test
+    void nextBufferGrowthNeverOverflowsNearIntegerMax() {
+        // current * 2 would wrap to Integer.MIN_VALUE around 2^30; the growth must cap at
+        // capacity instead of overflowing (a negative length would throw NegativeArraySizeException).
+        assertEquals(1_073_741_824, MarkupParser.nextBufferLength(1_073_741_824, 1_073_741_824));
+        assertEquals(2_147_483_647, MarkupParser.nextBufferLength(1_073_741_824, 2_147_483_647));
+        assertEquals(2_147_483_647, MarkupParser.nextBufferLength(1_073_741_823, 2_147_483_647));
+        assertEquals(2_147_483_644, MarkupParser.nextBufferLength(1_073_741_822, 2_147_483_647));
     }
 }
