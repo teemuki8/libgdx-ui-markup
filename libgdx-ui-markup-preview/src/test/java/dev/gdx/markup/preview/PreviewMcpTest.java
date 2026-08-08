@@ -44,6 +44,57 @@ final class PreviewMcpTest {
         assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
     }
 
+    @Test
+    @Timeout(120)
+    void stageSwapFailureRestoresLastGoodRuntimeAndScene() throws Exception {
+        Path ui = tempDir.resolve("mcp-swap-failure.xml");
+        Path css = tempDir.resolve("mcp-swap-failure.css");
+        Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
+        try (PreviewTestProcess child = PreviewTestProcess.launch(
+                "mcp-swap-failure", ui, css, null, Duration.ofSeconds(60))) {
+            int exit = child.await();
+            assertEquals(0, exit, "child exit code; stderr: " + child.stderr());
+            assertTrue(child.stdout().contains("preview-child: mcp-swap-failure ok"),
+                    "child ok line; stdout: " + child.stdout() + " stderr: " + child.stderr());
+        }
+        assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
+    }
+
+    @Test
+    @Timeout(120)
+    void retirementFailureRollsBackCandidateAndKeepsOldRegistration() throws Exception {
+        Path ui = tempDir.resolve("retire-failure.xml");
+        Path css = tempDir.resolve("retire-failure.css");
+        Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
+        try (PreviewTestProcess child = PreviewTestProcess.launch(
+                "retire-failure", ui, css, null, Duration.ofSeconds(60))) {
+            int exit = child.await();
+            assertEquals(0, exit, "child exit code; stderr: " + child.stderr());
+            assertTrue(child.stdout().contains("preview-child: retire-failure ok"),
+                    "child ok line; stdout: " + child.stdout() + " stderr: " + child.stderr());
+        }
+        assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
+    }
+
+    @Test
+    @Timeout(120)
+    void restoreFailureEntersTerminalState() throws Exception {
+        Path ui = tempDir.resolve("restore-failure.xml");
+        Path css = tempDir.resolve("restore-failure.css");
+        Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
+        try (PreviewTestProcess child = PreviewTestProcess.launch(
+                "restore-failure", ui, css, null, Duration.ofSeconds(60))) {
+            int exit = child.await();
+            assertEquals(0, exit, "child exit code; stderr: " + child.stderr());
+            assertTrue(child.stdout().contains("preview-child: restore-failure ok"),
+                    "child ok line; stdout: " + child.stdout() + " stderr: " + child.stderr());
+            assertTrue(child.stderr().contains("\"kind\":\"TERMINAL\""),
+                    "the terminal failure publishes a typed TERMINAL status; stderr: "
+                            + child.stderr());
+        }
+        assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
+    }
+
     private static int countOccurrences(String text, String fragment) {
         int count = 0;
         for (int index = text.indexOf(fragment); index >= 0;

@@ -7,6 +7,8 @@ import com.badlogic.gdx.graphics.Color;
 import com.badlogic.gdx.graphics.GL20;
 import com.badlogic.gdx.graphics.Pixmap;
 import com.badlogic.gdx.graphics.g2d.BitmapFont;
+import com.badlogic.gdx.scenes.scene2d.Actor;
+import com.badlogic.gdx.scenes.scene2d.Group;
 import com.badlogic.gdx.scenes.scene2d.InputEvent;
 import com.badlogic.gdx.scenes.scene2d.InputListener;
 import com.badlogic.gdx.scenes.scene2d.Stage;
@@ -23,7 +25,6 @@ import dev.gdx.markup.core.NoopSink;
 import dev.gdx.markup.core.SemanticSink;
 import dev.gdx.markup.core.style.CssDocument;
 import dev.gdx.markup.core.style.CssParser;
-import dev.gdx.markup.runtime.MarkupRuntimeSource;
 import java.io.IOException;
 import java.nio.file.FileSystems;
 import java.nio.file.Path;
@@ -32,6 +33,7 @@ import java.nio.file.WatchEvent;
 import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -68,6 +70,9 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
     private int renderedFrames;
     private boolean screenshotTaken;
     private boolean closed;
+    /** Set after an unrestorable runtime failure: rebuilds stop, the watcher stops, and the
+     * MCP session is closed (see {@link #enterTerminal}). */
+    private boolean terminal;
 
     /**
      * Package-visible for render-thread tests; production entry is {@link #main(String[])}.
@@ -129,17 +134,25 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
 
     /**
      * Rebuilds the scene from disk on the GL thread and reports one bounded status line. The
-     * rebuild is transactional: everything the new scene needs (document, stylesheet, skin,
-     * actor tree, runtime registration) is prepared off the live stage inside a {@link
-     * Candidate}, the candidate runtime registration is attached first (preserving or
-     * reinstalling the last-good registration on failure), and only then is the stage swapped
-     * and the old skin disposed. A failed rebuild disposes only the candidate's resources and
-     * keeps the last-good skin, actors, and runtime registration live, with the typed error
-     * overlay staged on top. Package-visible so render-thread test children can drive
-     * rebuilds deterministically.
+     * rebuild is transactional with explicit phases: everything the new scene needs (document,
+     * stylesheet, skin, actor tree) is prepared off the live stage inside a {@link Candidate},
+     * the runtime attachment is {@linkplain PreviewMcp#acquireRuntime acquired} without
+     * publishing anything, the visible stage swap runs through the {@link #stageSwap} seam,
+     * and only after the swap succeeds is the runtime {@linkplain PreviewMcp#commitRuntime
+     * committed} and the old skin disposed. Any failure rolls back in reverse order — the
+     * pending runtime attachment, the stage, and the candidate — so the last-good skin,
+     * actors, and runtime registration stay live with the typed error overlay on top. An
+     * unrestorable runtime enters the {@linkplain #enterTerminal terminal} state, stopping
+     * rebuilds, the watcher, and the MCP session. Package-visible so render-thread test
+     * children can drive rebuilds deterministically.
      */
     void rebuild() {
+        if (terminal) {
+            return; // the preview stopped after an unrestorable runtime failure
+        }
         Candidate candidate = null;
+        PreviewMcp.PendingRuntime pendingRuntime = null;
+        StageState stageBefore = null;
         try {
             MarkupDocument document = new MarkupParser().parse(options.ui());
             CssDocument css = new CssParser().parse(options.css());
@@ -151,46 +164,35 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
             built.root().setSize(stage.getViewport().getWorldWidth(),
                     stage.getViewport().getWorldHeight());
             if (mcp != null) {
-                candidate.adoptRuntime(mcp.attachRuntime(document, built));
+                pendingRuntime = mcp.acquireRuntime(document, built);
             }
-            commit(candidate);
-            candidate = null; // ownership transferred; never dispose the committed scene
+            stageBefore = captureStage();
+            stageSwap.swap(candidate.built().root());
+            if (mcp != null) {
+                mcp.commitRuntime(pendingRuntime);
+                pendingRuntime = null; // committed; PreviewMcp owns the registration
+            }
+            // Old dispose: only after the stage swap and runtime commit succeeded.
+            Skin newSkin = candidate.skin();
+            candidate = null; // ownership transferred; never dispose the committed skin
+            Skin previous = skin;
+            skin = newSkin;
+            if (previous != null) {
+                disposePreviousSkin(previous);
+            }
             status(MarkupStatus.ok(built.actors().size()));
         } catch (MarkupException failure) {
-            publishFailure(failure.formatted(), MarkupStatus.error(failure));
-            if (candidate != null) {
-                candidate.close();
-            }
-            if (options.exit()) {
-                System.out.flush();
-                System.err.flush();
-                System.exit(2);
-            }
+            handleRebuildFailure(failure, failure.formatted(), MarkupStatus.error(failure),
+                    candidate, pendingRuntime, stageBefore);
         } catch (IOException failure) {
-            publishFailure(failure.getMessage(), MarkupStatus.error(failure.getMessage()));
-            if (candidate != null) {
-                candidate.close();
-            }
-            if (options.exit()) {
-                System.out.flush();
-                System.err.flush();
-                System.exit(2);
-            }
+            handleRebuildFailure(failure, failure.getMessage(),
+                    MarkupStatus.error(failure.getMessage()), candidate, pendingRuntime,
+                    stageBefore);
         } catch (RuntimeException failure) {
-            // Runtime-attach failures (for example the agent runtime's DUPLICATE_ENTITY) and any
-            // other unexpected runtime failure are candidate failures: keep the last-good scene
-            // live, dispose only the candidate, and publish a typed generic error.
             String message = failure.getMessage() == null
                     ? failure.getClass().getSimpleName() : failure.getMessage();
-            publishFailure(message, MarkupStatus.error(message));
-            if (candidate != null) {
-                candidate.close();
-            }
-            if (options.exit()) {
-                System.out.flush();
-                System.err.flush();
-                System.exit(2);
-            }
+            handleRebuildFailure(failure, message, MarkupStatus.error(message), candidate,
+                    pendingRuntime, stageBefore);
         }
     }
 
@@ -200,20 +202,83 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
     }
 
     /**
-     * Stage swap then old dispose: the last-good actors stay staged and the last-good skin
-     * stays live until this exact point, the candidate's runtime registration was already
-     * retired into {@link PreviewMcp} by {@code attachRuntime}, and the old skin is disposed
-     * exactly once after the swap.
+     * Rolls back an acquired runtime attachment and any stage mutation, disposes the candidate,
+     * and publishes the typed failure — or enters the terminal state when the runtime can no
+     * longer be reinstated. Rollback failures are suppressed onto the original failure so the
+     * rebuild always ends in one typed error.
      */
-    private void commit(Candidate candidate) {
-        stage.getRoot().clearChildren();
-        stage.getRoot().addActor(candidate.built().root());
-        stage.getRoot().addActor(errorLabel);
-        errorLabel.setVisible(false);
-        Skin previous = skin;
-        skin = candidate.skin();
-        if (previous != null) {
+    private void handleRebuildFailure(Throwable failure, String text,
+            MarkupStatus status, Candidate candidate,
+            PreviewMcp.PendingRuntime pendingRuntime, StageState stageBefore) {
+        if (mcp != null && pendingRuntime != null) {
+            try {
+                mcp.rollbackRuntime(pendingRuntime);
+            } catch (RuntimeException rollbackFailure) {
+                failure.addSuppressed(rollbackFailure);
+            }
+        }
+        if (stageBefore != null) {
+            try {
+                restoreStage(stageBefore);
+            } catch (RuntimeException restoreFailure) {
+                failure.addSuppressed(restoreFailure);
+            }
+        }
+        if (candidate != null) {
+            try {
+                candidate.close();
+            } catch (RuntimeException closeFailure) {
+                failure.addSuppressed(closeFailure);
+            }
+        }
+        if (mcp != null && mcp.runtimeLost()) {
+            enterTerminal(failure.getMessage() == null
+                    ? failure.getClass().getSimpleName() : failure.getMessage());
+            return;
+        }
+        publishFailure(text, status);
+        if (options.exit()) {
+            System.out.flush();
+            System.err.flush();
+            System.exit(2);
+        }
+    }
+
+    /**
+     * Disposes the previous (retired) skin after the new scene is fully committed. Cleanup
+     * failure is handled explicitly: the committed scene stays live and a bounded warning is
+     * emitted, because the retired skin can never be used again and failing the rebuild would
+     * discard a committed scene for an unrecoverable cleanup error.
+     */
+    private void disposePreviousSkin(Skin previous) {
+        try {
             previous.dispose();
+        } catch (RuntimeException cleanupFailure) {
+            System.err.println("markup-warning: failed to dispose the previous skin: "
+                    + cleanupFailure.getMessage());
+            System.err.flush();
+        }
+    }
+
+    /**
+     * Enters the terminal state after an unrestorable runtime failure: the last-good
+     * registration can no longer be reinstated, so the runtime cannot be kept consistent with
+     * the retained scene. Rebuilds stop, the watcher stops, and the MCP session is closed; a
+     * typed {@code TERMINAL} status is published and the restored last-good scene stays on
+     * screen with the terminal overlay.
+     */
+    private void enterTerminal(String message) {
+        terminal = true;
+        if (watcher != null) {
+            watcher.interrupt();
+            watcher = null;
+        }
+        errorLabel.setText(message);
+        errorLabel.setVisible(true);
+        status(MarkupStatus.terminal(message));
+        if (mcp != null) {
+            mcp.close();
+            mcp = null;
         }
     }
 
@@ -224,19 +289,63 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
         status(status);
     }
 
+    /** Package-visible test seam: performs the visible stage swap for a committed candidate.
+     * Production uses {@link #defaultStageSwap}; tests inject failures to prove rollback. */
+    @FunctionalInterface
+    interface StageSwap {
+        void swap(Group root);
+    }
+
+    StageSwap stageSwap = this::defaultStageSwap;
+
+    /** The production stage swap: clear the old scene and stage the new root with the error
+     * overlay on top. Package-visible so tests can restore the default after injecting a
+     * failure. */
+    void defaultStageSwap(Group root) {
+        stage.getRoot().clearChildren();
+        stage.getRoot().addActor(root);
+        stage.getRoot().addActor(errorLabel);
+        errorLabel.setVisible(false);
+    }
+
+    /** A failure-free snapshot of the live stage root and overlay state, taken before the
+     * stage swap so a failed swap can restore the exact old scene (children in order, overlay
+     * state). */
+    private static final class StageState {
+        private final List<Actor> children;
+        private final boolean overlayVisible;
+
+        StageState(Group root, Label overlay) {
+            children = List.of(root.getChildren().toArray());
+            overlayVisible = overlay.isVisible();
+        }
+    }
+
+    private StageState captureStage() {
+        return new StageState(stage.getRoot(), errorLabel);
+    }
+
+    /** Restores the exact pre-swap stage: children in their original order and overlay state. */
+    private void restoreStage(StageState state) {
+        stage.getRoot().clearChildren();
+        for (Actor child : state.children) {
+            stage.getRoot().addActor(child);
+        }
+        errorLabel.setVisible(state.overlayVisible);
+    }
+
     /**
      * One prepared rebuild. Owns every candidate resource — the parsed document, stylesheet,
-     * candidate skin, built actor tree, and (once attached) the runtime registration — until
-     * the rebuild is committed or disposed. {@link #close()} releases exactly the candidate's
-     * resources in reverse acquisition order (runtime registration first, then the skin), so a
-     * failed rebuild can never touch the last-good skin, actors, or runtime registration.
+     * candidate skin, and built actor tree — until the rebuild is committed or disposed.
+     * {@link #close()} releases exactly the candidate's skin, so a failed rebuild can never
+     * touch the last-good skin or actors. The candidate's runtime registration is owned by a
+     * {@link PreviewMcp.PendingRuntime} until commit.
      */
     private static final class Candidate implements AutoCloseable {
         private final MarkupDocument document;
         private final CssDocument css;
         private final Skin skin;
         private BuiltUi built;
-        private MarkupRuntimeSource runtime;
 
         Candidate(MarkupDocument document, CssDocument css, Skin skin) {
             this.document = Objects.requireNonNull(document, "document");
@@ -248,10 +357,6 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
             built = Objects.requireNonNull(ui, "ui");
         }
 
-        void adoptRuntime(MarkupRuntimeSource source) {
-            runtime = Objects.requireNonNull(source, "source");
-        }
-
         Skin skin() {
             return skin;
         }
@@ -261,11 +366,6 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
         }
 
         @Override public void close() {
-            MarkupRuntimeSource pending = runtime;
-            runtime = null;
-            if (pending != null) {
-                pending.close();
-            }
             skin.dispose();
         }
     }
@@ -344,7 +444,8 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
     }
 
     @Override public void render() {
-        if (reloadPending && System.nanoTime() - reloadRequestedNanos >= RELOAD_DEBOUNCE_NANOS) {
+        if (!terminal && reloadPending
+                && System.nanoTime() - reloadRequestedNanos >= RELOAD_DEBOUNCE_NANOS) {
             reloadPending = false;
             rebuild();
         }

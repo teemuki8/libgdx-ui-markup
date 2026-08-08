@@ -231,6 +231,27 @@ final class PreviewAppTest {
     }
 
     /**
+     * A stage-swap failure injected into the rebuild: the candidate must be rolled back, the
+     * exact old stage restored (last-good actors live, old skin undisposed, overlay on top),
+     * and a later recovery must commit a fresh scene — all in one child JVM.
+     */
+    @Test
+    @Timeout(120)
+    void stageSwapFailureRestoresLastGoodSceneAndRecovers() throws Exception {
+        Path ui = tempDir.resolve("swap-failure.xml");
+        Path css = tempDir.resolve("swap-failure.css");
+        Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
+        try (PreviewTestProcess child = PreviewTestProcess.launch(
+                "swap-failure", ui, css, null, Duration.ofSeconds(60))) {
+            int exit = child.await();
+            assertEquals(0, exit, "child exit code; stderr: " + child.stderr());
+            assertTrue(child.stdout().contains("preview-child: swap-failure ok"),
+                    "child ok line; stdout: " + child.stdout() + " stderr: " + child.stderr());
+        }
+        assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
+    }
+
+    /**
      * Interrupting the parent while it waits on a stuck child — repeatedly, including while
      * cleanup is running — must not skip or abort cleanup: every bounded wait in the
      * termination ladder (terminate → bounded wait → force-kill → final wait) and the pump

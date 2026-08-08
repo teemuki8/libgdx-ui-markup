@@ -91,6 +91,14 @@ public final class PreviewTestChild {
             </table>
             """;
 
+    /** A valid scene whose runtime entity is disjoint from the live {@code user} registration. */
+    private static final String DISJOINT_GOOD_UI = """
+            <table>
+              <row/>
+              <textfield id="other" data-runtime-entity="other" text="B"/>
+            </table>
+            """;
+
     /** Valid scene whose runtime entities are disjoint from the live {@code user} registration
      * and whose registration fails during preflight (an entity without an id). */
     private static final String DISJOINT_BAD_UI = """
@@ -128,6 +136,10 @@ public final class PreviewTestChild {
                 case "bad-after-good" -> runBadAfterGood(ui, css);
                 case "initial-bad" -> runInitialBad(ui, css);
                 case "mcp-attach" -> runMcpAttach(ui, css);
+                case "swap-failure" -> runSwapFailure(ui, css);
+                case "mcp-swap-failure" -> runMcpSwapFailure(ui, css);
+                case "retire-failure" -> runRetireFailure(ui, css);
+                case "restore-failure" -> runRestoreFailure(ui, css);
                 default -> fail("unknown scenario " + scenario);
             }
         } catch (Throwable failure) {
@@ -382,7 +394,7 @@ public final class PreviewTestChild {
                             assertNotNull(committed, "attachRuntime returns a live owner");
                             assertEquals(List.of("user"), committed.registeredEntities(),
                                     "the first build registers its declared entity");
-                            assertFrameHasOnly("user");
+                            assertFrameHasOnly("user", app);
                         }
                         case 2 -> {
                             // The candidate shares the entity id with the live registration and
@@ -400,7 +412,7 @@ public final class PreviewTestChild {
                             assertEquals(List.of("user"), reinstalled.registeredEntities(),
                                     "the last-good registration is reinstalled after the failure");
                             app.render();
-                            assertFrameHasOnly("user");
+                            assertFrameHasOnly("user", app);
                         }
                         case 3 -> {
                             // The candidate's entities are disjoint from the live ones and the
@@ -415,7 +427,7 @@ public final class PreviewTestChild {
                             assertEquals(List.of("user"), reinstalled.registeredEntities(),
                                     "the preserved registration is unchanged");
                             app.render();
-                            assertFrameHasOnly("user");
+                            assertFrameHasOnly("user", app);
                         }
                         case 4 -> {
                             // Recovery: a good entity build commits a fresh owner.
@@ -428,7 +440,7 @@ public final class PreviewTestChild {
                             assertEquals(List.of("user"), recovered.registeredEntities(),
                                     "the recovered scene registers its declared entity");
                             app.render();
-                            assertFrameHasOnly("user");
+                            assertFrameHasOnly("user", app);
                             Gdx.app.exit();
                         }
                         default -> {
@@ -442,16 +454,321 @@ public final class PreviewTestChild {
             @Override public void dispose() {
                 app.dispose();
             }
+        });
+    }
 
-            /** Asserts the latest runtime frame carries exactly the last-good entity. */
-            private void assertFrameHasOnly(String expected) {
-                var frame = app.mcp().runtime().latestFrame().orElseThrow();
-                assertTrue(frame.entity(EntityId.of(expected)).isPresent(),
-                        "the runtime frame still carries \"" + expected + "\"");
-                assertTrue(frame.entity(EntityId.of("ghost")).isEmpty(),
-                        "no candidate entity leaked into the runtime frame");
-                assertTrue(frame.entity(EntityId.of("other")).isEmpty(),
-                        "no rolled-back candidate entity leaked into the runtime frame");
+    /** Asserts the latest runtime frame carries exactly the last-good entity and none of the
+     * candidate's or previously rolled-back entities. */
+    private static void assertFrameHasOnly(String expected, PreviewApp app) {
+        var frame = app.mcp().runtime().latestFrame().orElseThrow();
+        assertTrue(frame.entity(EntityId.of(expected)).isPresent(),
+                "the runtime frame still carries \"" + expected + "\"");
+        assertTrue(frame.entity(EntityId.of("ghost")).isEmpty(),
+                "no candidate entity leaked into the runtime frame");
+        assertTrue(frame.entity(EntityId.of("other")).isEmpty(),
+                "no rolled-back candidate entity leaked into the runtime frame");
+    }
+
+    /**
+     * A stage-swap failure injected into the rebuild: the candidate (skin + actors) must be
+     * rolled back, the exact old stage restored (last-good actors live, old skin undisposed,
+     * overlay on top), and a later recovery must commit a fresh scene.
+     */
+    private static void runSwapFailure(Path ui, Path css) {
+        writeFixture(ui, css, GOOD_UI_A);
+        PreviewApp app = new PreviewApp(CliOptions.parse(new String[]{
+                "--ui", ui.toString(), "--css", css.toString()}));
+        launch(new ApplicationAdapter() {
+            private int frame;
+            private Skin good;
+
+            @Override public void create() {
+                app.create();
+            }
+
+            @Override public void render() {
+                try {
+                    frame++;
+                    switch (frame) {
+                        case 1 -> {
+                            app.render();
+                            good = app.skin();
+                            assertNotNull(good, "the first build commits a skin");
+                            assertTrue(app.stageContains("title"),
+                                    "the first build stages its actors");
+                        }
+                        case 2 -> {
+                            // Inject a stage-swap failure; the rebuild must roll the stage back
+                            // to the exact old scene and keep the old skin and actors live.
+                            app.stageSwap = root -> {
+                                throw new IllegalStateException("injected-stage-failure");
+                            };
+                            writeUi(ui, GOOD_UI_B);
+                            app.rebuild();
+                            assertTrue(app.errorOverlayVisible(),
+                                    "overlay visible after a stage-swap failure");
+                            assertSame(good, app.skin(),
+                                    "the old skin is retained after a stage-swap failure");
+                            assertTrue(app.stageContains("title"), "old actors restored");
+                            assertFalse(app.stageContains("subtitle"),
+                                    "candidate actors are not staged");
+                        }
+                        case 3 -> {
+                            app.render(); // the restored last-good scene still renders
+                        }
+                        case 4 -> {
+                            // Recovery: restore the default swap and rebuild.
+                            app.stageSwap = app::defaultStageSwap;
+                            writeUi(ui, GOOD_UI_B);
+                            app.rebuild();
+                            assertFalse(app.errorOverlayVisible(), "overlay hidden after recovery");
+                            assertNotSame(good, app.skin(), "recovery commits a fresh skin");
+                            assertTrue(app.stageContains("subtitle"), "recovered actors staged");
+                            app.render();
+                            Gdx.app.exit();
+                        }
+                        default -> {
+                        }
+                    }
+                } catch (Throwable thrown) {
+                    fail(messageOf(thrown));
+                }
+            }
+
+            @Override public void dispose() {
+                app.dispose();
+            }
+        });
+    }
+
+    /**
+     * A stage-swap failure after a colliding runtime acquire: the candidate registration must
+     * be closed and the last-good registration reinstated (fields never advanced), the old
+     * stage and skin retained, and a later recovery must commit a fresh scene and owner.
+     */
+    private static void runMcpSwapFailure(Path ui, Path css) {
+        writeFixture(ui, css, ENTITY_UI_A);
+        PreviewApp app = new PreviewApp(CliOptions.parse(new String[]{
+                "--ui", ui.toString(), "--css", css.toString(), "--mcp"}));
+        launch(new ApplicationAdapter() {
+            private int frame;
+            private MarkupRuntimeSource committed;
+            private MarkupRuntimeSource reinstated;
+            private Skin good;
+
+            @Override public void create() {
+                app.create();
+            }
+
+            @Override public void render() {
+                try {
+                    frame++;
+                    switch (frame) {
+                        case 1 -> {
+                            app.render();
+                            committed = app.mcp().runtimeSource();
+                            good = app.skin();
+                            assertNotNull(committed, "attachRuntime returns a live owner");
+                            assertEquals(List.of("user"), committed.registeredEntities());
+                            assertFrameHasOnly("user", app);
+                        }
+                        case 2 -> {
+                            // A colliding acquire succeeds (old ids removed, candidate
+                            // registered), then the stage swap fails: the candidate registration
+                            // must be closed and the last-good registration reinstated; the
+                            // committed owner, retained document, skin, and stage must not
+                            // advance.
+                            app.stageSwap = root -> {
+                                throw new IllegalStateException("injected-stage-failure");
+                            };
+                            writeUi(ui, ENTITY_UI_A);
+                            app.rebuild();
+                            assertTrue(app.errorOverlayVisible(),
+                                    "overlay visible after a stage-swap failure");
+                            reinstated = app.mcp().runtimeSource();
+                            assertNotNull(reinstated,
+                                    "the last-good registration is reinstated");
+                            assertNotSame(committed, reinstated,
+                                    "the colliding acquire removed the old ids, so the last-good "
+                                            + "registration is reinstated as a fresh owner");
+                            assertEquals(List.of("user"), reinstated.registeredEntities());
+                            assertFalse(app.mcp().runtimeLost(),
+                                    "restore succeeded; the preview is not terminal");
+                            assertSame(good, app.skin(), "the old skin is retained");
+                            assertTrue(app.stageContains("user"), "old actors restored");
+                            app.render();
+                            assertFrameHasOnly("user", app);
+                        }
+                        case 3 -> {
+                            // Recovery: restore the default swap and rebuild.
+                            app.stageSwap = app::defaultStageSwap;
+                            writeUi(ui, ENTITY_UI_A);
+                            app.rebuild();
+                            assertFalse(app.errorOverlayVisible(), "overlay hidden after recovery");
+                            MarkupRuntimeSource recovered = app.mcp().runtimeSource();
+                            assertNotSame(reinstated, recovered,
+                                    "recovery commits a fresh runtime owner");
+                            assertEquals(List.of("user"), recovered.registeredEntities());
+                            assertNotSame(good, app.skin(), "recovery commits a fresh skin");
+                            assertTrue(app.stageContains("user"), "recovered actors staged");
+                            app.render();
+                            assertFrameHasOnly("user", app);
+                            Gdx.app.exit();
+                        }
+                        default -> {
+                        }
+                    }
+                } catch (Throwable thrown) {
+                    fail(messageOf(thrown));
+                }
+            }
+
+            @Override public void dispose() {
+                app.dispose();
+            }
+        });
+    }
+
+    /**
+     * A retirement failure during runtime commit: closing the old registration throws after a
+     * non-colliding candidate acquired successfully. The candidate registration must be closed
+     * (no leak), the old registration kept live (the injected close never closed it) with the
+     * committed owner and retained document/built unchanged, the old scene retained, and a
+     * later recovery must succeed.
+     */
+    private static void runRetireFailure(Path ui, Path css) {
+        writeFixture(ui, css, ENTITY_UI_A);
+        PreviewApp app = new PreviewApp(CliOptions.parse(new String[]{
+                "--ui", ui.toString(), "--css", css.toString(), "--mcp"}));
+        launch(new ApplicationAdapter() {
+            private int frame;
+            private MarkupRuntimeSource committed;
+            private Skin good;
+
+            @Override public void create() {
+                app.create();
+            }
+
+            @Override public void render() {
+                try {
+                    frame++;
+                    switch (frame) {
+                        case 1 -> {
+                            app.render();
+                            committed = app.mcp().runtimeSource();
+                            good = app.skin();
+                            assertNotNull(committed, "attachRuntime returns a live owner");
+                            assertEquals(List.of("user"), committed.registeredEntities());
+                            assertFrameHasOnly("user", app);
+                        }
+                        case 2 -> {
+                            // A disjoint candidate acquires cleanly; the retirement of the old
+                            // registration then fails during commit. The candidate must be
+                            // closed, the old registration kept live (the injected close never
+                            // closed it), the fields must not advance, and the old scene stays
+                            // live.
+                            app.mcp().retirementCloser = retired -> {
+                                throw new IllegalStateException("injected-retire-failure");
+                            };
+                            writeUi(ui, DISJOINT_GOOD_UI);
+                            app.rebuild();
+                            assertTrue(app.errorOverlayVisible(),
+                                    "overlay visible after a retirement failure");
+                            assertFalse(app.mcp().runtimeLost(),
+                                    "the old registration is still live; not terminal");
+                            assertSame(committed, app.mcp().runtimeSource(),
+                                    "the old registration is preserved (the injected close never "
+                                            + "closed it)");
+                            assertEquals(List.of("user"), committed.registeredEntities());
+                            assertSame(good, app.skin(), "the old skin is retained");
+                            assertTrue(app.stageContains("user"), "old actors restored");
+                            app.render();
+                            assertFrameHasOnly("user", app);
+                        }
+                        case 3 -> {
+                            // Recovery: restore the default retirement and rebuild.
+                            app.mcp().retirementCloser = MarkupRuntimeSource::close;
+                            writeUi(ui, ENTITY_UI_A);
+                            app.rebuild();
+                            assertFalse(app.errorOverlayVisible(), "overlay hidden after recovery");
+                            MarkupRuntimeSource recovered = app.mcp().runtimeSource();
+                            assertNotSame(committed, recovered,
+                                    "recovery commits a fresh runtime owner");
+                            assertEquals(List.of("user"), recovered.registeredEntities());
+                            assertNotSame(good, app.skin(), "recovery commits a fresh skin");
+                            app.render();
+                            assertFrameHasOnly("user", app);
+                            Gdx.app.exit();
+                        }
+                        default -> {
+                        }
+                    }
+                } catch (Throwable thrown) {
+                    fail(messageOf(thrown));
+                }
+            }
+
+            @Override public void dispose() {
+                app.dispose();
+            }
+        });
+    }
+
+    /**
+     * A would-be restore failure: after a colliding candidate fails on retry, reinstating the
+     * last-good registration also fails. The preview must enter the terminal state — the
+     * runtime is lost, the MCP session is closed, rebuilds stop, and a typed {@code TERMINAL}
+     * status is published — rather than continuing as a recoverable overlay claiming last-good.
+     */
+    private static void runRestoreFailure(Path ui, Path css) {
+        writeFixture(ui, css, ENTITY_UI_A);
+        PreviewApp app = new PreviewApp(CliOptions.parse(new String[]{
+                "--ui", ui.toString(), "--css", css.toString(), "--mcp"}));
+        launch(new ApplicationAdapter() {
+            private int frame;
+            private Skin good;
+
+            @Override public void create() {
+                app.create();
+            }
+
+            @Override public void render() {
+                try {
+                    frame++;
+                    if (frame == 1) {
+                        app.render();
+                        good = app.skin();
+                        assertNotNull(good, "the first build commits a skin");
+                        assertNotNull(app.mcp().runtimeSource(), "attachRuntime returns a live owner");
+                        assertEquals(List.of("user"),
+                                app.mcp().runtimeSource().registeredEntities());
+                        assertFrameHasOnly("user", app);
+                    } else if (frame == 2) {
+                        // The colliding candidate fails on retry AND reinstating the last-good
+                        // registration fails: the preview must stop, not claim last-good.
+                        app.mcp().lastGoodRegistrar = (runtime, document, built, session) -> {
+                            throw new IllegalStateException("injected-restore-failure");
+                        };
+                        writeUi(ui, COLLIDING_BAD_UI);
+                        app.rebuild();
+                        assertTrue(app.errorOverlayVisible(), "the terminal overlay is visible");
+                        assertNull(app.mcp(), "the MCP session is closed in the terminal state");
+                        assertSame(good, app.skin(), "the last-good skin stays on screen");
+                        assertTrue(app.stageContains("user"),
+                                "the last-good scene stays on screen");
+                        // Rebuilds stop: a further rebuild is a no-op and changes nothing.
+                        writeUi(ui, ENTITY_UI_A);
+                        app.rebuild();
+                        assertSame(good, app.skin(), "rebuilds stop in the terminal state");
+                        assertTrue(app.errorOverlayVisible(), "the terminal overlay persists");
+                    }
+                } catch (Throwable thrown) {
+                    fail(messageOf(thrown));
+                }
+            }
+
+            @Override public void dispose() {
+                app.dispose();
             }
         });
     }

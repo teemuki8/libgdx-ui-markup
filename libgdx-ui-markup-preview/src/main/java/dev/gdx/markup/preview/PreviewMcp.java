@@ -62,6 +62,9 @@ final class PreviewMcp implements AutoCloseable {
      * when a colliding candidate had to remove its ids before failing. */
     private MarkupDocument lastGoodDocument;
     private BuiltUi lastGoodBuilt;
+    /** Set when the retained last-good registration could not be reinstated after its ids had
+     * to be removed: the runtime can no longer be kept consistent, so the preview must stop. */
+    private boolean runtimeLost;
 
     PreviewMcp(Stage stage) {
         this.stage = Objects.requireNonNull(stage, "stage");
@@ -132,71 +135,110 @@ final class PreviewMcp implements AutoCloseable {
      * property supplier reads the widget's live state back, which validates transport and
      * correlation only and cannot detect a UI/domain divergence.
      *
-     * <p>Transactional: on success returns a live owner (the committed registration, whose
-     * lifecycle the caller adopts) with the old registration retired. On failure it either
-     * leaves the last-good registration untouched — when the candidate never collided with it —
-     * or, when the candidate shared entity ids with the live registration and the old ids had
-     * to be removed first, reinstalls the retained last-good registration before rethrowing.
-     * A thrown call never leaves candidate handles behind (the runtime's own registration is
-     * transactional and rolls back its acquisitions).
+     * <p>Attachment is a three-phase transaction split across the rebuild: {@link
+     * #acquireRuntime} registers the candidate without publishing anything, the caller swaps
+     * the stage, and {@link #commitRuntime} publishes the committed owner and retained
+     * last-good only after the visible swap succeeded; {@link #rollbackRuntime} undoes an
+     * uncommitted attachment. On any failure the last-good registration is either preserved
+     * untouched or reinstalled from the retained document/built; {@link #runtimeLost()} is
+     * set when even reinstatement is impossible (the caller must stop the preview).
      */
-    MarkupRuntimeSource attachRuntime(MarkupDocument document, BuiltUi built) {
+    PendingRuntime acquireRuntime(MarkupDocument document, BuiltUi built) {
         MarkupRuntimeSource previous = runtimeSource;
         try {
-            return commitCandidate(document, built);
+            MarkupRuntimeSource candidate = register(document, built);
+            return new PendingRuntime(candidate, previous, false, document, built);
         } catch (RuntimeException failure) {
             if (!(failure instanceof AgentRuntimeException runtimeFailure)
                     || runtimeFailure.code() != RuntimeErrorCode.DUPLICATE_ENTITY
                     || previous == null) {
-                throw failure;
+                throw failure; // last-good registration untouched
             }
-            // The candidate shares entity ids with the live registration: remove the old ids,
-            // retry, and on retry failure restore the retained last-good registration before
-            // reporting the candidate failure.
-            previous.close();
-            runtimeSource = null;
+            // The candidate shares entity ids with the live registration: the old ids must be
+            // removed before the candidate can be proven. Remove them (retaining the old
+            // registration for restore), retry, and on retry failure reinstate the retained
+            // last-good registration before reporting the candidate failure.
             try {
-                return commitCandidate(document, built);
+                retirementCloser.close(previous);
+            } catch (RuntimeException closeFailure) {
+                restoreOrMarkLost();
+                throw closeFailure;
+            }
+            try {
+                MarkupRuntimeSource candidate = register(document, built);
+                return new PendingRuntime(candidate, previous, true, document, built);
             } catch (RuntimeException retryFailure) {
-                restoreLastGood(retryFailure);
+                restoreOrMarkLost();
                 throw retryFailure;
             }
         }
     }
 
-    /** Registers the candidate and, on success, retires the previous registration and adopts
-     * the candidate as the committed owner. */
-    private MarkupRuntimeSource commitCandidate(MarkupDocument document, BuiltUi built) {
-        MarkupRuntimeSource candidate = MarkupRuntimeSource.registerWidgetMirror(
-                runtime, document, built, PreviewApp.SESSION_ID);
-        MarkupRuntimeSource retired = runtimeSource;
-        runtimeSource = candidate;
-        lastGoodDocument = document;
-        lastGoodBuilt = built;
-        if (retired != null) {
-            retired.close();
+    /** Commits a pending attachment after the stage swap succeeded: retires the old
+     * registration (fallible), then publishes the candidate as the live owner and retained
+     * last-good. On retirement failure the candidate is closed, nothing is published, the old
+     * registration is restored (or {@link #runtimeLost} is set), and the failure rethrown. */
+    void commitRuntime(PendingRuntime pending) {
+        if (!pending.previousRetired && pending.previous != null) {
+            try {
+                retirementCloser.close(pending.previous);
+            } catch (RuntimeException failure) {
+                pending.closeCandidate();
+                restoreOrMarkLost();
+                throw failure;
+            }
         }
+        // Failure-free state publication, after retirement succeeded:
+        runtimeSource = pending.candidate;
+        lastGoodDocument = pending.document;
+        lastGoodBuilt = pending.built;
+        pending.committed();
         System.err.println("markup-runtime: {\"mode\":\"widget-mirror\",\"entities\":"
-                + candidate.registeredEntities().size() + ",\"bindings\":"
-                + candidate.registeredEntities().size() + "}");
+                + pending.candidate.registeredEntities().size() + ",\"bindings\":"
+                + pending.candidate.registeredEntities().size() + "}");
         System.err.flush();
-        return candidate;
     }
 
-    /** Re-registers the retained last-good document/built and adopts it as the committed owner;
-     * always rethrows the original failure (with any restore failure suppressed). */
-    private void restoreLastGood(RuntimeException original) {
+    /** Rolls back an uncommitted pending attachment after a later rebuild phase failed: closes
+     * the candidate registration (never leaked) and reinstates the last-good registration when
+     * the old ids had to be removed to acquire the candidate. */
+    void rollbackRuntime(PendingRuntime pending) {
+        pending.closeCandidate();
+        if (pending.previousRetired && !pending.previousRestored) {
+            pending.previousRestored = true;
+            restoreOrMarkLost();
+        }
+    }
+
+    private MarkupRuntimeSource register(MarkupDocument document, BuiltUi built) {
+        return MarkupRuntimeSource.registerWidgetMirror(
+                runtime, document, built, PreviewApp.SESSION_ID);
+    }
+
+    /**
+     * Re-establishes the retained last-good registration after its ids had to be removed.
+     * Returns when the runtime is consistent again — the old registration was reinstated, or
+     * it is provably still live (a reinstatement collided with it) — and sets {@link
+     * #runtimeLost} when neither is possible.
+     */
+    private void restoreOrMarkLost() {
         if (lastGoodDocument == null || lastGoodBuilt == null) {
-            throw original;
+            runtimeLost = true;
+            return;
         }
         try {
-            MarkupRuntimeSource restored = MarkupRuntimeSource.registerWidgetMirror(
+            MarkupRuntimeSource restored = lastGoodRegistrar.register(
                     runtime, lastGoodDocument, lastGoodBuilt, PreviewApp.SESSION_ID);
             runtimeSource = restored;
-        } catch (RuntimeException restoreFailure) {
-            original.addSuppressed(restoreFailure);
+            return;
+        } catch (AgentRuntimeException duplicate) {
+            if (duplicate.code() == RuntimeErrorCode.DUPLICATE_ENTITY) {
+                return; // the old registration is still live; nothing to reinstate
+            }
+        } catch (RuntimeException ignored) {
+            // fall through to mark the runtime lost
         }
-        throw original;
+        runtimeLost = true;
     }
 
     /** Returns the committed runtime registration, or {@code null} before the first commit. */
@@ -208,6 +250,70 @@ final class PreviewMcp implements AutoCloseable {
     AgentRuntime runtime() {
         return runtime;
     }
+
+    /** Whether the last-good registration can no longer be reinstated: the runtime cannot be
+     * kept consistent with the retained scene, so the preview must stop. */
+    boolean runtimeLost() {
+        return runtimeLost;
+    }
+
+    /**
+     * One acquired but uncommitted runtime attachment. Owns the candidate registration until
+     * committed or rolled back, and tracks whether the old registration had to be removed to
+     * acquire it (and is therefore retained for reinstatement).
+     */
+    static final class PendingRuntime {
+        private final MarkupRuntimeSource candidate;
+        private final MarkupDocument document;
+        private final BuiltUi built;
+        private final MarkupRuntimeSource previous;
+        private final boolean previousRetired;
+        private boolean candidateClosed;
+        private boolean previousRestored;
+
+        PendingRuntime(MarkupRuntimeSource candidate, MarkupRuntimeSource previous,
+                boolean previousRetired, MarkupDocument document, BuiltUi built) {
+            this.candidate = Objects.requireNonNull(candidate, "candidate");
+            this.document = Objects.requireNonNull(document, "document");
+            this.built = Objects.requireNonNull(built, "built");
+            this.previous = previous;
+            this.previousRetired = previousRetired;
+        }
+
+        /** Closes the candidate registration exactly once (idempotent). */
+        void closeCandidate() {
+            if (!candidateClosed) {
+                candidateClosed = true;
+                candidate.close();
+            }
+        }
+
+        /** Marks the candidate committed: ownership transferred to {@code PreviewMcp}. */
+        void committed() {
+            candidateClosed = true;
+        }
+    }
+
+    /** Package-visible test seam: closes a retired registration. Production uses the real
+     * close; tests inject failures to prove rollback. */
+    @FunctionalInterface
+    interface RetirementCloser {
+        void close(MarkupRuntimeSource retired);
+    }
+
+    /** Package-visible test seam: reinstates the retained last-good scene. Production uses
+     * {@link MarkupRuntimeSource#registerWidgetMirror}; tests inject failures to prove the
+     * terminal path. */
+    @FunctionalInterface
+    interface LastGoodRegistrar {
+        MarkupRuntimeSource register(AgentRuntime runtime, MarkupDocument document,
+                BuiltUi built, String uiSessionId);
+    }
+
+    /** Production retirement/restore behavior; replaced only by tests via the package-visible
+     * seams above. */
+    RetirementCloser retirementCloser = MarkupRuntimeSource::close;
+    LastGoodRegistrar lastGoodRegistrar = MarkupRuntimeSource::registerWidgetMirror;
 
     /** Advances the deterministic clock and drains render-thread commands (GL thread). */
     void beforeDraw() {

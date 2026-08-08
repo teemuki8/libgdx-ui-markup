@@ -31,6 +31,10 @@ public record MarkupStatus(
     /** Stable kind for failures that are not markup diagnostics (for example I/O errors). */
     public static final String GENERIC_KIND = "GENERIC";
 
+    /** Stable kind for terminal failures after which the preview stops (no further rebuilds):
+     * the runtime can no longer be reinstated, so the preview must not keep serving. */
+    public static final String TERMINAL_KIND = "TERMINAL";
+
     /** Upper bound for every string field; longer values are truncated before serialization. */
     public static final int MAX_STRING_LENGTH = 2000;
 
@@ -57,6 +61,11 @@ public record MarkupStatus(
     /** Builds a generic (non-markup) failure status with the stable kind and no location. */
     public static MarkupStatus error(String message) {
         return new MarkupStatus(SCHEMA_VERSION, false, GENERIC_KIND, "", 0, 0, message, 0);
+    }
+
+    /** Builds a terminal failure status with the stable kind and no location. */
+    public static MarkupStatus terminal(String message) {
+        return new MarkupStatus(SCHEMA_VERSION, false, TERMINAL_KIND, "", 0, 0, message, 0);
     }
 
     /**
