@@ -15,11 +15,13 @@ import com.badlogic.gdx.backends.lwjgl3.Lwjgl3ApplicationConfiguration;
 import com.badlogic.gdx.graphics.GL20;
 import com.badlogic.gdx.scenes.scene2d.ui.Skin;
 import dev.gdx.markup.runtime.MarkupRuntimeSource;
+import dev.gdx.uiharness.mcp.HarnessMcpServer;
 import io.github.teemuki8.libgdx.agent.runtime.core.EntityId;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Test-child main for the process-isolated preview tests: each scenario runs in its own JVM so
@@ -141,6 +143,7 @@ public final class PreviewTestChild {
                 case "retire-failure" -> runRetireFailure(ui, css);
                 case "restore-failure" -> runRestoreFailure(ui, css);
                 case "mcp-cleanup-failure" -> runMcpCleanupFailure(ui, css);
+                case "mcp-close-failure" -> runMcpCloseFailure(ui, css);
                 default -> fail("unknown scenario " + scenario);
             }
         } catch (Throwable failure) {
@@ -811,6 +814,88 @@ public final class PreviewTestChild {
                         app.rebuild();
                         assertSame(good, app.skin(), "rebuilds stop in the terminal state");
                         assertTrue(app.errorOverlayVisible(), "the terminal overlay persists");
+                    }
+                } catch (Throwable thrown) {
+                    fail(messageOf(thrown));
+                }
+            }
+
+            @Override public void dispose() {
+                app.dispose();
+            }
+        });
+    }
+
+    /**
+     * Terminal cleanup with injected component-close failures: entering the terminal state
+     * closes the MCP session, whose best-effort close must attempt EVERY owned component
+     * (aggregating the failures), detach the ownership fields, and never re-close on a second
+     * call. The close failures (including a partially-closed runtime owner) are appended to the
+     * already-published bounded TERMINAL status instead of throwing out of the render loop; the
+     * watcher/rebuilds stop and the last-good scene stays on screen.
+     */
+    private static void runMcpCloseFailure(Path ui, Path css) {
+        writeFixture(ui, css, ENTITY_UI_A);
+        PreviewApp app = new PreviewApp(CliOptions.parse(new String[]{
+                "--ui", ui.toString(), "--css", css.toString(), "--mcp"}));
+        launch(new ApplicationAdapter() {
+            private int frame;
+            private Skin good;
+            private PreviewMcp mcpRef;
+            private final AtomicInteger closeAttempts = new AtomicInteger();
+
+            @Override public void create() {
+                app.create();
+            }
+
+            @Override public void render() {
+                try {
+                    frame++;
+                    if (frame == 1) {
+                        app.render();
+                        good = app.skin();
+                        mcpRef = app.mcp();
+                        assertNotNull(mcpRef, "the preview runs with --mcp");
+                        assertNotNull(mcpRef.runtimeSource(), "attachRuntime returns a live owner");
+                        assertEquals(List.of("user"), mcpRef.runtimeSource().registeredEntities());
+                        assertFrameHasOnly("user", app);
+                    } else if (frame == 2) {
+                        // Make the reinstatement fail (terminal) and make the terminal cleanup
+                        // close of the runtime owner (partially closed by the failed acquire) and
+                        // the MCP server throw. Every component close must still be attempted,
+                        // the failures aggregated, the ownership detached, a second close must be
+                        // a no-op, and the cleanup causes must be appended to the TERMINAL status
+                        // instead of escaping the render loop.
+                        mcpRef.lastGoodRegistrar = (runtime, document, built, session) -> {
+                            throw new IllegalStateException("injected-restore-failure");
+                        };
+                        mcpRef.componentCloser = component -> {
+                            closeAttempts.incrementAndGet();
+                            if (component == mcpRef.runtimeSource()) {
+                                throw new IllegalStateException("injected-runtime-owner-close-failure");
+                            }
+                            if (component instanceof HarnessMcpServer) {
+                                throw new IllegalStateException("injected-server-close-failure");
+                            }
+                            component.close(); // real close for the remaining owned components
+                        };
+                        writeUi(ui, COLLIDING_BAD_UI);
+                        app.rebuild(); // terminal; enterTerminal closes mcp with injected failures
+                        assertTrue(app.errorOverlayVisible(), "the terminal overlay is visible");
+                        assertNull(app.mcp(), "the MCP session is detached in the terminal state");
+                        // A second close is idempotent: it must not re-close (or re-throw).
+                        mcpRef.close();
+                        assertEquals(6, closeAttempts.get(),
+                                "every owned component close was attempted exactly once");
+                        assertSame(good, app.skin(), "the last-good skin stays on screen");
+                        assertTrue(app.stageContains("user"), "the last-good scene stays on screen");
+                        // Rebuilds stop: a further rebuild is a no-op and changes nothing.
+                        writeUi(ui, ENTITY_UI_A);
+                        app.rebuild();
+                        assertSame(good, app.skin(), "rebuilds stop in the terminal state");
+                        assertTrue(app.errorOverlayVisible(), "the terminal overlay persists");
+                        app.render();
+                        Gdx.app.exit();
                     }
                 } catch (Throwable thrown) {
                     fail(messageOf(thrown));

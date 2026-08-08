@@ -367,11 +367,20 @@ final class PreviewMcp implements AutoCloseable {
         void close(MarkupRuntimeSource candidate);
     }
 
-    /** Production retirement/restore/candidate-close behavior; replaced only by tests via the
-     * package-visible seams above. */
+    /** Package-visible test seam: closes one owned component during {@link #close()}. Production
+     * uses the component's own close; tests inject failures to prove every close is still
+     * attempted and aggregated. */
+    @FunctionalInterface
+    interface ComponentCloser {
+        void close(AutoCloseable component) throws Exception;
+    }
+
+    /** Production retirement/restore/candidate-close/component-close behavior; replaced only by
+     * tests via the package-visible seams above. */
     RetirementCloser retirementCloser = MarkupRuntimeSource::close;
     LastGoodRegistrar lastGoodRegistrar = MarkupRuntimeSource::registerWidgetMirror;
     CandidateCloser candidateCloser = MarkupRuntimeSource::close;
+    ComponentCloser componentCloser = AutoCloseable::close;
 
     /** Advances the deterministic clock and drains render-thread commands (GL thread). */
     void beforeDraw() {
@@ -392,17 +401,52 @@ final class PreviewMcp implements AutoCloseable {
                 Optional.of(CORRELATION_TOKEN)));
     }
 
+    /** Whether this session has been closed; {@link #close()} is idempotent. */
+    private boolean closed;
+
     @Override public void close() {
-        if (runtimeSource != null) {
-            runtimeSource.close();
-            runtimeSource = null;
+        if (closed) {
+            return; // idempotent: never re-close owned components (a partially closed owner must
+                    // not be closed a second time)
         }
-        lastGoodDocument = null;
-        lastGoodBuilt = null;
-        runtime.close();
-        server.close();
-        session.close();
-        scheduler.close();
-        clock.close();
+        closed = true;
+        RuntimeException primary = null;
+        try {
+            primary = closeOwned(primary, runtimeSource, "runtime registration");
+            primary = closeOwned(primary, runtime, "agent runtime");
+            primary = closeOwned(primary, server, "MCP server");
+            primary = closeOwned(primary, session, "scene2d session");
+            primary = closeOwned(primary, scheduler, "render scheduler");
+            primary = closeOwned(primary, clock, "controlled clock");
+        } finally {
+            // Ownership fields are detached regardless of any close failure, so a throwing close
+            // can never leave a half-closed owner claimed live or re-closed.
+            runtimeSource = null;
+            lastGoodDocument = null;
+            lastGoodBuilt = null;
+        }
+        if (primary != null) {
+            throw primary;
+        }
+    }
+
+    /** Closes one owned component best-effort: every component is attempted, the first failure
+     * becomes primary, every later failure is suppressed onto it. */
+    private RuntimeException closeOwned(RuntimeException primary, AutoCloseable owned,
+            String name) {
+        if (owned == null) {
+            return primary;
+        }
+        try {
+            componentCloser.close(owned);
+        } catch (Exception failure) {
+            RuntimeException wrapped = new IllegalStateException("failed to close " + name,
+                    failure);
+            if (primary == null) {
+                return wrapped;
+            }
+            primary.addSuppressed(wrapped);
+        }
+        return primary;
     }
 }

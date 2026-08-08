@@ -130,6 +130,30 @@ final class PreviewMcpTest {
         assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
     }
 
+    @Test
+    @Timeout(120)
+    void terminalCleanupCloseIsBestEffortAggregatingAndIdempotent() throws Exception {
+        Path ui = tempDir.resolve("mcp-close-failure.xml");
+        Path css = tempDir.resolve("mcp-close-failure.css");
+        Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
+        try (PreviewTestProcess child = PreviewTestProcess.launch(
+                "mcp-close-failure", ui, css, null, Duration.ofSeconds(60))) {
+            int exit = child.await();
+            assertEquals(0, exit, "child exit code; stderr: " + child.stderr());
+            assertTrue(child.stdout().contains("preview-child: mcp-close-failure ok"),
+                    "child ok line; stdout: " + child.stdout() + " stderr: " + child.stderr());
+            String stderr = child.stderr();
+            assertTrue(stderr.contains("\"kind\":\"TERMINAL\""),
+                    "the terminal state publishes a typed TERMINAL status; stderr: " + stderr);
+            assertTrue(stderr.contains("failed to close runtime registration"),
+                    "the TERMINAL status carries the runtime-owner close failure; stderr: "
+                            + stderr);
+            assertTrue(stderr.contains("failed to close MCP server"),
+                    "the TERMINAL status carries the server close failure; stderr: " + stderr);
+        }
+        assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
+    }
+
     private static int countOccurrences(String text, String fragment) {
         int count = 0;
         for (int index = text.indexOf(fragment); index >= 0;

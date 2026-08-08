@@ -261,16 +261,34 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
 
     private static void appendSuppressed(StringBuilder message, Throwable failure) {
         for (Throwable suppressed : failure.getSuppressed()) {
-            message.append("; cleanup failed: ");
-            appendFailure(message, suppressed);
-            appendSuppressed(message, suppressed);
+            appendCause(message, suppressed);
         }
+    }
+
+    /** Appends one failure plus its whole suppressed tree as {@code "; cleanup failed: …"}. */
+    private static void appendCause(StringBuilder message, Throwable failure) {
+        message.append("; cleanup failed: ");
+        appendFailure(message, failure);
+        appendSuppressed(message, failure);
     }
 
     private static void appendFailure(StringBuilder message, Throwable failure) {
         String text = failure.getMessage() == null
                 ? failure.getClass().getSimpleName() : failure.getMessage();
         message.append(text);
+    }
+
+    /**
+     * Appends one terminal-cleanup failure (and its suppressed causes) to the already-published
+     * terminal message, bounded to the status string limit.
+     */
+    private static String appendCleanupCause(String message, Throwable cleanup) {
+        StringBuilder builder = new StringBuilder(message);
+        appendCause(builder, cleanup);
+        if (builder.length() > MarkupStatus.MAX_STRING_LENGTH) {
+            builder.setLength(MarkupStatus.MAX_STRING_LENGTH);
+        }
+        return builder.toString();
     }
 
     /**
@@ -294,7 +312,10 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
      * registration can no longer be reinstated, so the runtime cannot be kept consistent with
      * the retained scene. Rebuilds stop, the watcher stops, and the MCP session is closed; a
      * typed {@code TERMINAL} status is published and the restored last-good scene stays on
-     * screen with the terminal overlay.
+     * screen with the terminal overlay. The MCP reference is detached in a {@code finally}
+     * (never re-closed), the watcher is stopped regardless, and any terminal-cleanup failure
+     * (with its causes) is appended to the already-published bounded TERMINAL status instead
+     * of throwing out of the render loop.
      */
     private void enterTerminal(String message) {
         terminal = true;
@@ -304,10 +325,25 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
         }
         errorLabel.setText(message);
         errorLabel.setVisible(true);
+        // In --mcp mode status lines go to stderr; keep the appended re-publication on the
+        // same stream even after the MCP session is detached.
+        boolean statusToStderr = mcp != null;
         status(MarkupStatus.terminal(message));
+        RuntimeException cleanup = null;
         if (mcp != null) {
-            mcp.close();
-            mcp = null;
+            try {
+                mcp.close();
+            } catch (RuntimeException closeFailure) {
+                cleanup = closeFailure;
+            } finally {
+                mcp = null;
+            }
+        }
+        if (cleanup != null) {
+            String appended = appendCleanupCause(message, cleanup);
+            errorLabel.setText(appended);
+            errorLabel.setVisible(true);
+            publishStatus(MarkupStatus.terminal(appended), statusToStderr);
         }
     }
 
@@ -425,7 +461,12 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
 
     private void status(MarkupStatus status) {
         // In --mcp mode stdout carries JSON-RPC; status lines must not corrupt the framing.
-        if (mcp != null) {
+        publishStatus(status, mcp != null);
+    }
+
+    /** Publishes one status line to stderr ({@code toStderr}) or stdout. */
+    private void publishStatus(MarkupStatus status, boolean toStderr) {
+        if (toStderr) {
             System.err.println("markup-status: " + status.json());
             System.err.flush();
         } else {
