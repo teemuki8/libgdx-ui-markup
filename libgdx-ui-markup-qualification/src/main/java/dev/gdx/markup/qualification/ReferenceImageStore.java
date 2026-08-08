@@ -123,6 +123,17 @@ public final class ReferenceImageStore implements AutoCloseable {
     public interface Transport {
         Response get(URI uri, List<InetAddress> approved) throws IOException;
 
+        /**
+         * GET under an absolute monotonic exchange deadline on the store's clock, so the
+         * runner's one total run deadline also bounds the network step. Implementations that
+         * already carry their own deadline cap may ignore the parameter; the default transport
+         * uses the earlier of its own per-exchange timeout and this deadline.
+         */
+        default Response get(URI uri, List<InetAddress> approved, long deadlineNanos)
+                throws IOException {
+            return get(uri, approved);
+        }
+
         /** Aborts every in-flight exchange; idempotent and never throws. */
         void close();
     }
@@ -276,6 +287,18 @@ public final class ReferenceImageStore implements AutoCloseable {
      * fails with {@link ReferenceException.Kind#CLOSED} instead of delivering a result.
      */
     public Optional<ReferenceImage> reference(CorpusEntry entry) {
+        return reference(entry, Long.MAX_VALUE);
+    }
+
+    /**
+     * Package-private overload that bounds the fetch by the caller's remaining monotonic
+     * budget: the exchange deadline becomes the earlier of the store's own per-exchange
+     * timeout and {@code remainingNanos} from now, so the runner's one total run deadline
+     * also caps network work. {@code Long.MAX_VALUE} means no external bound. Shared
+     * in-flight fetches keep their original deadline; only the owning caller's exchange is
+     * re-bounded.
+     */
+    Optional<ReferenceImage> reference(CorpusEntry entry, long remainingNanos) {
         Objects.requireNonNull(entry, "entry");
         CacheKey key = CacheKey.of(entry);
         CompletableFuture<Optional<ReferenceImage>> pending;
@@ -305,15 +328,25 @@ public final class ReferenceImageStore implements AutoCloseable {
         if (shared) {
             return await(pending);
         }
-        return fetchAndComplete(key, entry, pending);
+        long deadlineNanos = saturatingAdd(clock.nanoTime(), remainingNanos);
+        return fetchAndComplete(key, entry, pending, deadlineNanos);
+    }
+
+    /** Adds a positive duration to a monotonic timestamp without wrapping to the past. */
+    private static long saturatingAdd(long now, long durationNanos) {
+        if (durationNanos == Long.MAX_VALUE
+                || now > Long.MAX_VALUE - durationNanos) {
+            return Long.MAX_VALUE;
+        }
+        return now + durationNanos;
     }
 
     private Optional<ReferenceImage> fetchAndComplete(CacheKey key, CorpusEntry entry,
-            CompletableFuture<Optional<ReferenceImage>> pending) {
+            CompletableFuture<Optional<ReferenceImage>> pending, long deadlineNanos) {
         try {
             Optional<ReferenceImage> result;
             try {
-                result = fetchVerifiedEntry(entry);
+                result = fetchVerifiedEntry(entry, deadlineNanos);
             } catch (RuntimeException | Error failure) {
                 // Complete the pending future BEFORE removing it from the in-flight map, so a
                 // concurrent caller that already grabbed it joins this completed outcome
@@ -548,10 +581,10 @@ public final class ReferenceImageStore implements AutoCloseable {
         }
     }
 
-    private Optional<ReferenceImage> fetchVerifiedEntry(CorpusEntry entry) {
+    private Optional<ReferenceImage> fetchVerifiedEntry(CorpusEntry entry, long deadlineNanos) {
         byte[] body;
         try {
-            body = fetchVerified(entry);
+            body = fetchVerified(entry, deadlineNanos);
         } catch (IOException failure) {
             if (closed) {
                 throw new ReferenceException(ReferenceException.Kind.CLOSED,
@@ -583,7 +616,7 @@ public final class ReferenceImageStore implements AutoCloseable {
      * globally-routable addresses for every target, then verifying the payload against the
      * declared identity. Returns null when the reference is explicitly absent.
      */
-    private byte[] fetchVerified(CorpusEntry entry) throws IOException {
+    private byte[] fetchVerified(CorpusEntry entry, long deadlineNanos) throws IOException {
         URI target;
         try {
             target = URI.create(entry.sourceUrl());
@@ -595,7 +628,7 @@ public final class ReferenceImageStore implements AutoCloseable {
         while (true) {
             validateTarget(target);
             List<InetAddress> approved = approve(target.getHost());
-            Response response = transport.get(target, approved);
+            Response response = transport.get(target, approved, deadlineNanos);
             if (REDIRECT_STATUSES.contains(response.statusCode())) {
                 if (response.location().isEmpty()) {
                     throw new ReferenceException(ReferenceException.Kind.UNSAFE_TARGET,
@@ -875,7 +908,16 @@ public final class ReferenceImageStore implements AutoCloseable {
 
         @Override
         public Response get(URI uri, List<InetAddress> approved) throws IOException {
-            long deadline = clock.nanoTime() + REQUEST_TIMEOUT.toNanos();
+            return get(uri, approved, clock.nanoTime() + REQUEST_TIMEOUT.toNanos());
+        }
+
+        @Override
+        public Response get(URI uri, List<InetAddress> approved, long externalDeadline)
+                throws IOException {
+            // The earlier of the per-exchange timeout and the runner's remaining run budget
+            // covers every connect, TLS handshake, header, and body read in this exchange.
+            long deadline = Math.min(clock.nanoTime() + REQUEST_TIMEOUT.toNanos(),
+                    externalDeadline);
             int port = uri.getPort() == -1 ? 443 : uri.getPort();
             String host = uri.getHost();
             IOException lastFailure = null;

@@ -43,6 +43,8 @@ public final class ManifestException extends RuntimeException {
         OUTSIDE_ROOT,
         /** A resolved path's real location escapes its root through a symlink. */
         SYMLINK_ESCAPE,
+        /** A per-entry palette file exceeds the fixed byte cap. */
+        PALETTE_TOO_LARGE,
     }
 
     private final Kind kind;

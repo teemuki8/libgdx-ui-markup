@@ -33,14 +33,15 @@ public final class QualificationReport {
         SKIPPED_RENDER,
     }
 
-    /** One corpus entry outcome: score, thresholds, verdict, and failed dimensions. */
+    /** One corpus entry outcome: score, thresholds, verdict, failed dimensions, staleness. */
     public record EntryResult(
             String id,
             String license,
             FidelityScore score,
             FidelityThresholds thresholds,
             Verdict verdict,
-            List<FidelityComponent> failedDimensions) {
+            List<FidelityComponent> failedDimensions,
+            boolean stale) {
 
         /** Defensively copies the failed-dimension list so results stay immutable. */
         public EntryResult {
@@ -83,6 +84,7 @@ public final class QualificationReport {
                 ObjectNode node = entries.addObject();
                 node.put("id", result.id());
                 node.put("verdict", result.verdict().name());
+                node.put("stale", result.stale());
                 FidelityScore score = result.score();
                 node.put("coarseLayout", round6(score.coarseLayout()));
                 node.put("geometry", round6(score.geometry()));

@@ -23,6 +23,9 @@ public final class QualificationRunner implements AutoCloseable {
     private static final int RENDER_FRAMES = 10;
     private static final long RENDER_TIMEOUT_SECONDS = 60;
 
+    /** Byte cap for a per-entry palette override; mirrors {@code DefaultSkin.MAX_PALETTE_BYTES}. */
+    static final int MAX_PALETTE_BYTES = 8192;
+
     private final Path corpusDir;
     private final ReferenceImageStore store;
     private final Path previewDistribution;
@@ -56,18 +59,46 @@ public final class QualificationRunner implements AutoCloseable {
     }
 
     private EntryResult qualify(CorpusEntry entry) {
-        Optional<FidelityScore> measured = measure(entry);
-        if (measured.isEmpty()) {
-            Verdict skipped = reference(entry).isPresent() ? Verdict.SKIPPED_RENDER
+        Optional<ReferenceImageStore.ReferenceImage> reference = reference(entry);
+        Optional<Path> recreationPath = render(entry);
+        if (reference.isEmpty() || recreationPath.isEmpty()) {
+            Verdict skipped = reference.isPresent() ? Verdict.SKIPPED_RENDER
                     : Verdict.SKIPPED_REFERENCE;
             return new EntryResult(entry.id(), entry.license(), FidelityScore.ZERO,
-                    entry.thresholds(), skipped, List.of());
+                    entry.thresholds(), skipped, List.of(), false);
         }
-        FidelityScore score = measured.orElseThrow();
+        BufferedImage recreation;
+        try {
+            recreation = BoundedDecode.decode(recreationPath.orElseThrow());
+        } catch (IOException failure) {
+            throw new ReferenceException(ReferenceException.Kind.DECODE,
+                    "cannot decode recreation for " + entry.id(), failure);
+        }
+        ReferenceImageStore.ReferenceImage referenceImage = reference.orElseThrow();
+        FidelityScore score = VisualFidelity.measure(referenceImage, recreation);
+        List<List<Double>> negatives = negativeObservations(referenceImage, recreation);
+        boolean stale = isStale(score, entry.thresholds(), negatives);
         List<FidelityComponent> failed = failedDimensions(score, entry.thresholds());
         Verdict verdict = failed.isEmpty() ? Verdict.PASS : Verdict.FAIL;
         return new EntryResult(entry.id(), entry.license(), score, entry.thresholds(), verdict,
-                failed);
+                failed, stale);
+    }
+
+    /**
+     * Returns whether any required component's committed threshold has drifted from its
+     * current calibration-implied threshold (relative comparison against the entry's own
+     * current deliberate negatives).
+     */
+    private static boolean isStale(FidelityScore score, FidelityThresholds thresholds,
+            List<List<Double>> negatives) {
+        for (int i = 0; i < FidelityComponent.REQUIRED.size(); i++) {
+            FidelityComponent component = FidelityComponent.REQUIRED.get(i);
+            if (QualificationPolicy.stale(thresholds.component(component),
+                    score.component(component), negatives.get(i))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -107,7 +138,10 @@ public final class QualificationRunner implements AutoCloseable {
                 continue;
             }
             FidelityScore score = positive.orElseThrow();
-            List<List<Double>> negativeObservations = measureNegatives(entry);
+            BufferedImage recreation = decodedRecreation(entry);
+            List<List<Double>> negativeObservations =
+                    negativeObservations(reference(entry).orElseThrow(), recreation);
+            logNegativeObservations(entry, negativeObservations);
             double geometry = calibrateComponent(entry, FidelityComponent.GEOMETRY,
                     score.geometry(), negativeObservations.get(0));
             double color = calibrateComponent(entry, FidelityComponent.COLOR,
@@ -130,35 +164,23 @@ public final class QualificationRunner implements AutoCloseable {
     }
 
     /**
-     * Applies the deterministic deliberate negatives to the rendered recreation and measures
-     * each against the reference. Each transformation is a negative for the failure mode it
-     * exhibits, so it only contributes to that component's observation list: a vertical flip,
-     * a fixed translation, and a uniform scale misplace layout (geometry); a hue rotation
-     * re-palettes the screen (color); a box blur and a uniform scale destroy typography and
-     * fine structure (detail). The palette-preserving flip/translation/hue scores on other
-     * components are not calibration negatives for those components.
+     * Applies the deterministic deliberate negatives to the decoded recreation and measures
+     * each against the reference, returning the component-relevant observation lists. Each
+     * transformation is a negative for the failure mode it exhibits: a vertical flip, a fixed
+     * translation, and a uniform scale misplace layout (geometry); a hue rotation re-palettes
+     * the screen (color); a box blur and a uniform scale destroy typography and fine structure
+     * (detail). The palette-preserving flip/translation/hue scores on other components are not
+     * calibration negatives for those components.
      */
-    private List<List<Double>> measureNegatives(CorpusEntry entry) {
-        Optional<ReferenceImageStore.ReferenceImage> reference = reference(entry);
-        Optional<Path> recreation = render(entry);
-        if (reference.isEmpty() || recreation.isEmpty()) {
-            throw new IllegalStateException("negative measurement requires the rendered entry");
-        }
-        BufferedImage recreationImage;
-        try {
-            recreationImage = BoundedDecode.decode(recreation.orElseThrow());
-        } catch (IOException failure) {
-            throw new ReferenceException(ReferenceException.Kind.DECODE,
-                    "cannot decode recreation for calibration of " + entry.id(), failure);
-        }
+    private static List<List<Double>> negativeObservations(
+            ReferenceImageStore.ReferenceImage reference, BufferedImage recreationImage) {
         List<Double> geometryNegatives = new ArrayList<>();
         List<Double> colorNegatives = new ArrayList<>();
         List<Double> detailNegatives = new ArrayList<>();
         BufferedImage[] negatives = NegativeTransforms.all(recreationImage);
         String[] names = NegativeTransforms.names();
         for (int i = 0; i < negatives.length; i++) {
-            FidelityScore negativeScore =
-                    VisualFidelity.measure(reference.orElseThrow(), negatives[i]);
+            FidelityScore negativeScore = VisualFidelity.measure(reference, negatives[i]);
             String name = names[i];
             if ("flip".equals(name) || "translate".equals(name) || "scale".equals(name)) {
                 geometryNegatives.add(negativeScore.geometry());
@@ -169,12 +191,30 @@ public final class QualificationRunner implements AutoCloseable {
             if ("blur".equals(name) || "scale".equals(name)) {
                 detailNegatives.add(negativeScore.detail());
             }
-            System.out.println("calibration: " + entry.id() + " negative " + names[i]
-                    + " geometry=" + compact(negativeScore.geometry()) + " color="
-                    + compact(negativeScore.color()) + " detail="
-                    + compact(negativeScore.detail()));
         }
         return List.of(geometryNegatives, colorNegatives, detailNegatives);
+    }
+
+    /** Renders and decodes one entry's recreation at the bounded analysis resolution. */
+    private BufferedImage decodedRecreation(CorpusEntry entry) {
+        Optional<Path> recreation = render(entry);
+        if (recreation.isEmpty()) {
+            throw new IllegalStateException("cannot render " + entry.id() + " for calibration");
+        }
+        try {
+            return BoundedDecode.decode(recreation.orElseThrow());
+        } catch (IOException failure) {
+            throw new ReferenceException(ReferenceException.Kind.DECODE,
+                    "cannot decode recreation for calibration of " + entry.id(), failure);
+        }
+    }
+
+    /** Prints one entry's per-component negative observations for the calibration log. */
+    private static void logNegativeObservations(CorpusEntry entry,
+            List<List<Double>> observations) {
+        System.out.println("calibration: " + entry.id() + " geometry negatives "
+                + observations.get(0) + " color negatives " + observations.get(1)
+                + " detail negatives " + observations.get(2));
     }
 
     private static double calibrateComponent(CorpusEntry entry, FidelityComponent component,
@@ -214,6 +254,32 @@ public final class QualificationRunner implements AutoCloseable {
                     "cannot resolve real path under " + root + ": " + relative, failure);
         }
         return candidate;
+    }
+
+    /**
+     * Resolves the optional per-entry palette file ({@code <id>-palette.json}) inside the
+     * corpus root and verifies it is a regular, contained file within the palette byte cap.
+     * A missing palette is the normal absent outcome; a palette that escapes the corpus
+     * (traversal or symlink) or that exceeds the byte cap fails as a typed
+     * {@link ManifestException} instead of being handed to the preview. The cap mirrors
+     * {@code DefaultSkin.MAX_PALETTE_BYTES}, which the preview enforces again.
+     */
+    static Optional<Path> containedPalette(Path corpusDir, String entryId) {
+        Path palette = resolveInside(corpusDir, entryId + "-palette.json");
+        if (!Files.isRegularFile(palette)) {
+            return Optional.empty();
+        }
+        try (InputStream in = Files.newInputStream(palette)) {
+            if (in.readNBytes(MAX_PALETTE_BYTES + 1).length > MAX_PALETTE_BYTES) {
+                throw new ManifestException(ManifestException.Kind.PALETTE_TOO_LARGE,
+                        "palette file exceeds the " + MAX_PALETTE_BYTES
+                                + " byte cap: " + palette);
+            }
+        } catch (IOException failure) {
+            throw new ManifestException(ManifestException.Kind.IO,
+                    "cannot read palette file " + palette, failure);
+        }
+        return Optional.of(palette);
     }
 
     /**
@@ -288,15 +354,15 @@ public final class QualificationRunner implements AutoCloseable {
         try {
             String classpath = lib.toString() + File.separatorChar + "*";
             String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
-            Path palette = corpusDir.resolve(entry.id() + "-palette.json");
+            Optional<Path> palette = containedPalette(corpusDir, entry.id());
             List<String> command = new ArrayList<>(List.of(
                     java,
                     "--enable-native-access=ALL-UNNAMED",
                     "-cp",
                     classpath));
-            if (Files.isRegularFile(palette)) {
+            if (palette.isPresent()) {
                 // The preview's default skin reads this system property for per-corpus palettes.
-                command.add("-Dmarkup.skin.palette=" + palette);
+                command.add("-Dmarkup.skin.palette=" + palette.orElseThrow());
             }
             command.addAll(List.of(
                     "dev.gdx.markup.preview.PreviewApp",

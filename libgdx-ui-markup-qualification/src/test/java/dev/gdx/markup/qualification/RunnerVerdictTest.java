@@ -41,7 +41,7 @@ final class RunnerVerdictTest {
         try {
             FidelityScore flood = new FidelityScore(0.9, 0.9, 0.9, 0.9, 500, 2000);
             EntryResult failing = new EntryResult("flood", "MIT", flood, THRESHOLDS,
-                    Verdict.FAIL, List.of(FidelityComponent.STRUCTURE_DENSITY));
+                    Verdict.FAIL, List.of(FidelityComponent.STRUCTURE_DENSITY), false);
             QualificationReport report = new QualificationReport(List.of(failing));
             report.writeJson(reportFile);
             String json = Files.readString(reportFile);

@@ -1,7 +1,6 @@
 package dev.gdx.markup.qualification;
 
 import java.awt.image.BufferedImage;
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -10,6 +9,7 @@ import java.util.Iterator;
 import javax.imageio.ImageIO;
 import javax.imageio.ImageReader;
 import javax.imageio.stream.ImageInputStream;
+import javax.imageio.stream.ImageInputStreamImpl;
 
 /**
  * Image decode bounded to a fixed analysis resolution. The image header (width, height, reader
@@ -32,22 +32,14 @@ final class BoundedDecode {
 
     /** Reads the header of an image in memory; never allocates pixels. */
     static Header header(byte[] bytes) throws IOException {
-        try (ImageInputStream input = ImageIO.createImageInputStream(
-                new ByteArrayInputStream(bytes))) {
-            if (input == null) {
-                throw new IOException("no image input service");
-            }
+        try (ImageInputStream input = new ByteArrayImageInputStream(bytes)) {
             return header(input);
         }
     }
 
     /** Decodes an in-memory image at the bounded analysis resolution. */
     static BufferedImage decode(byte[] bytes) throws IOException {
-        try (ImageInputStream input = ImageIO.createImageInputStream(
-                new ByteArrayInputStream(bytes))) {
-            if (input == null) {
-                throw new IOException("no image input service");
-            }
+        try (ImageInputStream input = new ByteArrayImageInputStream(bytes)) {
             return read(input);
         }
     }
@@ -99,5 +91,58 @@ final class BoundedDecode {
 
     private static int sampleFactor(int dimension) {
         return Math.max(1, (int) Math.ceil(dimension / (double) MAX_ANALYSIS_DIMENSION));
+    }
+
+    /**
+     * Zero-copy in-memory {@link ImageInputStream} over a byte array. Unlike
+     * {@code ImageIO.createImageInputStream}, constructing this never creates an ImageIO
+     * cache file, so decoding or reading the header of a fetched body can never write temp
+     * files to disk.
+     */
+    private static final class ByteArrayImageInputStream extends ImageInputStreamImpl {
+        private final byte[] data;
+
+        ByteArrayImageInputStream(byte[] data) {
+            this.data = data;
+        }
+
+        @Override
+        public int read() {
+            if (streamPos >= data.length) {
+                return -1;
+            }
+            return data[(int) streamPos++] & 0xff;
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) {
+            if (off < 0 || len < 0 || off + len > b.length) {
+                throw new IndexOutOfBoundsException();
+            }
+            if (len == 0) {
+                return 0;
+            }
+            if (streamPos >= data.length) {
+                return -1;
+            }
+            int count = (int) Math.min(len, data.length - streamPos);
+            System.arraycopy(data, (int) streamPos, b, off, count);
+            streamPos += count;
+            return count;
+        }
+
+        @Override
+        public long length() {
+            return data.length;
+        }
+
+        @Override
+        public void seek(long pos) throws IOException {
+            if (pos < flushedPos) {
+                throw new IndexOutOfBoundsException("pos < flushedPos!");
+            }
+            streamPos = pos;
+            bitOffset = 0;
+        }
     }
 }

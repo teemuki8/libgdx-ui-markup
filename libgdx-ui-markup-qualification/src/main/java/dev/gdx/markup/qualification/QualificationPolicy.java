@@ -67,15 +67,29 @@ public final class QualificationPolicy {
     }
 
     /**
-     * Returns whether the committed threshold is stale: the current measurement no longer
-     * clears it, so the corpus baselines cannot gate and must be re-calibrated. A threshold of
-     * zero (an uncalibrated placeholder) is stale whenever anything is measured.
+     * Returns whether the committed threshold is stale: the current calibration-implied
+     * threshold (the midpoint of the current positive and its component-relevant deliberate
+     * negatives, i.e. what {@link #calibrate} would commit today) has drifted from the
+     * committed value by more than {@value #STALENESS_TOLERANCE} relative to the committed
+     * threshold. This detects both upward scorer drift (the metric became more lenient, so the
+     * implied threshold rose) and downward drift (the recreation or scorer regressed, so the
+     * implied threshold fell), in either case signalling that the corpus baselines must be
+     * re-calibrated. When the current positive no longer clears the negatives (no safe
+     * interval exists) the baselines are stale by definition. A committed threshold of zero
+     * (an uncalibrated placeholder) is stale whenever anything is measured.
      */
-    public static boolean stale(double committedThreshold, double measured) {
+    public static boolean stale(double committedThreshold, double measured,
+            List<Double> negatives) {
         if (committedThreshold <= 0) {
             return measured > 0;
         }
-        return measured < committedThreshold;
+        OptionalDouble implied = calibrate(List.of(measured), negatives);
+        if (implied.isEmpty()) {
+            return true;
+        }
+        double expected = implied.orElseThrow();
+        return Math.abs(expected - committedThreshold) / committedThreshold
+                > STALENESS_TOLERANCE;
     }
 
     /** Returns whether the recreation's structured-cell count is in the density band. */

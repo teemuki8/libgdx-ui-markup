@@ -37,6 +37,9 @@ public final class DefaultSkin {
      */
     public static final String PALETTE_PROPERTY = "markup.skin.palette";
 
+    /** Byte cap for the optional flat-JSON palette override file; read as cap + 1. */
+    static final int MAX_PALETTE_BYTES = 8192;
+
     /** The named colors the default skin exposes; any subset may be overridden. */
     static final String[] COLOR_NAMES = {
         "background", "panel", "panel-alt", "accent", "accent-over", "accent-down",
@@ -93,15 +96,18 @@ public final class DefaultSkin {
     /**
      * Reads a bounded flat JSON object of {@code "name": "#rrggbbaa"} pairs. Only the
      * recognized color names are used; the reader is intentionally tiny and strict so a
-     * corrupted file cannot change the skin's shape.
+     * corrupted file cannot change the skin's shape. The file is read byte-bounded
+     * (cap + 1) before any UTF-8/JSON string is allocated, so an oversized palette fails
+     * without a full-file read.
      */
-    private static java.util.Map<String, String> readPaletteFile(java.nio.file.Path file) {
+    static java.util.Map<String, String> readPaletteFile(java.nio.file.Path file) {
         java.util.Map<String, String> overrides = new java.util.LinkedHashMap<>();
-        try {
-            String text = java.nio.file.Files.readString(file);
-            if (text.length() > 8192) {
+        try (java.io.InputStream in = java.nio.file.Files.newInputStream(file)) {
+            byte[] bytes = in.readNBytes(MAX_PALETTE_BYTES + 1);
+            if (bytes.length > MAX_PALETTE_BYTES) {
                 throw new IllegalArgumentException("palette file too large: " + file);
             }
+            String text = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
             java.util.regex.Matcher matcher = java.util.regex.Pattern
                     .compile("\"([a-zA-Z-]+)\"\\s*:\\s*\"(#[0-9a-fA-F]{8})\"")
                     .matcher(text);

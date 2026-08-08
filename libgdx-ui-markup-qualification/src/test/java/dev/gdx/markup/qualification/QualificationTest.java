@@ -71,16 +71,12 @@ final class QualificationTest {
                                     + result.score().recreationCells() + "/"
                                     + result.score().referenceCells()
                                     + " cells is outside the policy band");
-                    for (FidelityComponent component : FidelityComponent.REQUIRED) {
-                        assertFalse(QualificationPolicy.stale(
-                                        result.thresholds().component(component),
-                                        result.score().component(component)),
-                                "entry " + result.id() + " " + component
-                                        + " baselines are stale; run "
-                                        + ":libgdx-ui-markup-qualification"
-                                        + ":calibrateQualification and commit the refreshed "
-                                        + "manifest");
-                    }
+                    assertFalse(result.stale(),
+                            "entry " + result.id() + " committed thresholds are stale "
+                                    + "relative to their current calibration-implied values; "
+                                    + "run :libgdx-ui-markup-qualification"
+                                    + ":calibrateQualification and commit the refreshed "
+                                    + "manifest");
                 }
             }
         }

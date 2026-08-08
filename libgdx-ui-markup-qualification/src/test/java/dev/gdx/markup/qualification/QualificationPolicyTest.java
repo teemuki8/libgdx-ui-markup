@@ -67,16 +67,27 @@ final class QualificationPolicyTest {
     }
 
     @Test
-    void stalenessFlagsMeasurementsBelowTheCommittedThreshold() {
-        assertFalse(QualificationPolicy.stale(0.26, 0.4),
-                "a measurement above the committed threshold is not stale");
-        assertFalse(QualificationPolicy.stale(0.26, 0.30),
-                "a measurement still clearing the threshold is not stale");
-        assertTrue(QualificationPolicy.stale(0.26, 0.25),
-                "a measurement that no longer clears the threshold is stale");
-        assertTrue(QualificationPolicy.stale(0.26, 0.0),
-                "a vanished measurement is stale");
-        assertFalse(QualificationPolicy.stale(0.0, 0.0), "an empty baseline is not stale");
+    void stalenessComparesCommittedAgainstCalibrationImpliedThreshold() {
+        // committed = midpoint(0.2, 0.8) = 0.5; current measurement 0.8 implies 0.5 -> no drift
+        assertFalse(QualificationPolicy.stale(0.5, 0.8, List.of(0.2)),
+                "an unchanged implied threshold is not stale");
+        // upward drift: measured 0.95 implies 0.575, a 15% rise above committed 0.5
+        assertTrue(QualificationPolicy.stale(0.5, 0.95, List.of(0.2)),
+                "upward scorer drift beyond 10% must be stale");
+        // downward drift: measured 0.3 implies 0.25, a 50% fall below committed 0.5
+        assertTrue(QualificationPolicy.stale(0.5, 0.3, List.of(0.2)),
+                "downward scorer drift beyond 10% must be stale");
+        // just below the boundary: measured 0.89 implies 0.545, a 9% rise -> not stale
+        assertFalse(QualificationPolicy.stale(0.5, 0.89, List.of(0.2)),
+                "9% drift is inside the 10% tolerance");
+        // just past the boundary: measured 0.91 implies 0.555, an 11% rise
+        assertTrue(QualificationPolicy.stale(0.5, 0.91, List.of(0.2)),
+                "11% drift must be stale");
+        // no safe interval: the current positive no longer clears the negatives
+        assertTrue(QualificationPolicy.stale(0.5, 0.1, List.of(0.2)),
+                "an overlapping positive/negative range is stale by definition");
+        assertFalse(QualificationPolicy.stale(0.0, 0.0, List.of(0.1)),
+                "an empty baseline is not stale");
     }
 
     @Test

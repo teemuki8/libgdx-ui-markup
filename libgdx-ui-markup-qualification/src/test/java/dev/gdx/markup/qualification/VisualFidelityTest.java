@@ -91,11 +91,11 @@ final class VisualFidelityTest {
             FidelityScore score = new FidelityScore(0.315, 0.51, 0.42, 0.71, 264, 461);
             FidelityThresholds thresholds = new FidelityThresholds(0.2, 0.25, 0.4, 0.205);
             EntryResult passing = new EntryResult("palisade-skirmish", "Apache-2.0",
-                    score, thresholds, Verdict.PASS, List.of());
+                    score, thresholds, Verdict.PASS, List.of(), false);
             EntryResult failing = new EntryResult("broken-entry", "MIT",
                     new FidelityScore(0.3, 0.1, 0.9, 0.9, 10, 10),
                     new FidelityThresholds(0.3, 0.3, 0.3, 0.3), Verdict.FAIL,
-                    List.of(FidelityComponent.GEOMETRY));
+                    List.of(FidelityComponent.GEOMETRY), false);
             QualificationReport report = new QualificationReport(List.of(passing, failing));
             report.writeJson(reportFile);
             String json = Files.readString(reportFile);
@@ -130,10 +130,10 @@ final class VisualFidelityTest {
     void reportPreservesCorpusOrderAndCountsOnlyScoredEntries() {
         EntryResult pass = new EntryResult("a", "MIT",
                 new FidelityScore(0.5, 0.5, 0.5, 0.5, 5, 5),
-                new FidelityThresholds(0.3, 0.3, 0.3, 0.3), Verdict.PASS, List.of());
+                new FidelityThresholds(0.3, 0.3, 0.3, 0.3), Verdict.PASS, List.of(), false);
         EntryResult skip = new EntryResult("b", "MIT",
                 FidelityScore.ZERO, new FidelityThresholds(0.3, 0.3, 0.3, 0.3),
-                Verdict.SKIPPED_REFERENCE, List.of());
+                Verdict.SKIPPED_REFERENCE, List.of(), false);
         QualificationReport report = new QualificationReport(List.of(pass, skip));
         assertEquals(List.of("a", "b"),
                 report.results().stream().map(EntryResult::id).toList(),
