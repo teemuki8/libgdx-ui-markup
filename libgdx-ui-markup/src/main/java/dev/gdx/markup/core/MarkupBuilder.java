@@ -156,6 +156,16 @@ public final class MarkupBuilder {
 
         /** Builds one element into the given cell table (or {@code null} outside tables). */
         Actor buildActor(Element element, Table cellTable) {
+            return buildActor(element, cellTable, null);
+        }
+
+        /**
+         * Builds one element; {@code beforeExit} runs after the actor is built but while the
+         * element's path frame is still entered, so post-build steps such as cell-constraint
+         * application can report {@code paths.current()} for this element.
+         */
+        Actor buildActor(Element element, Table cellTable,
+                java.util.function.Consumer<Actor> beforeExit) {
             String path = paths.enter(element.tag());
             int line = element.line();
             int column = element.column();
@@ -177,6 +187,9 @@ public final class MarkupBuilder {
                     case "scrollpane" -> buildScrollPane(element, path, cellTable);
                     default -> buildLeaf(element, path, cellTable);
                 };
+                if (beforeExit != null) {
+                    beforeExit.accept(actor);
+                }
                 return actor;
             } finally {
                 exit();
@@ -208,11 +221,11 @@ public final class MarkupBuilder {
                     table.row();
                     continue;
                 }
-                Actor actor = buildActor(child, table);
-                if (actor == null) {
-                    continue;
-                }
-                applyCell(table.add(actor), child);
+                buildActor(child, table, actor -> {
+                    if (actor != null) {
+                        applyCell(table.add(actor), child);
+                    }
+                });
             }
         }
 

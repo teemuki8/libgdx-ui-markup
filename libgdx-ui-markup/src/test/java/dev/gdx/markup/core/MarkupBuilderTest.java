@@ -189,6 +189,32 @@ final class MarkupBuilderTest {
     }
 
     @Test
+    void builderElementPathsAreScopedPerParent() throws Exception {
+        GdxTestHost.run(() -> {
+            MarkupException firstTableFirstButton = buildWithInvalidPad(
+                    table(button("a", invalidPad()), button("b", Map.of())),
+                    table(button("c", Map.of()), button("d", Map.of())));
+            assertEquals(MarkupException.Kind.INVALID_VALUE, firstTableFirstButton.kind());
+            assertEquals("ui/table/button", firstTableFirstButton.elementPath());
+
+            MarkupException firstTableSecondButton = buildWithInvalidPad(
+                    table(button("a", Map.of()), button("b", invalidPad())),
+                    table(button("c", Map.of()), button("d", Map.of())));
+            assertEquals("ui/table/button[1]", firstTableSecondButton.elementPath());
+
+            MarkupException secondTableFirstButton = buildWithInvalidPad(
+                    table(button("a", Map.of()), button("b", Map.of())),
+                    table(button("c", invalidPad()), button("d", Map.of())));
+            assertEquals("ui/table[1]/button", secondTableFirstButton.elementPath());
+
+            MarkupException secondTableSecondButton = buildWithInvalidPad(
+                    table(button("a", Map.of()), button("b", Map.of())),
+                    table(button("c", Map.of()), button("d", invalidPad())));
+            assertEquals("ui/table[1]/button[1]", secondTableSecondButton.elementPath());
+        });
+    }
+
+    @Test
     void missingDrawableFails() throws Exception {
         GdxTestHost.run(() -> {
             MarkupException failure = assertThrows(MarkupException.class, () ->
@@ -353,6 +379,32 @@ final class MarkupBuilderTest {
                             built.root().getChildren().get(1);
             assertEquals(2, list.getItems().size);
         });
+    }
+
+    private static Map<String, String> invalidPad() {
+        return Map.of("pad", "abc");
+    }
+
+    private static Element button(String id, Map<String, String> attrs) {
+        return new Element("button", id, null, null, null, attrs, List.of(), List.of(), 1, 1);
+    }
+
+    private static Element table(Element... children) {
+        return new Element("table", null, null, null, null, Map.of(), List.of(),
+                List.of(children), 1, 1);
+    }
+
+    /**
+     * Builds a programmatically constructed document whose second table's child carries an
+     * invalid cell float. The document bypasses parser validation, so the invalid value reaches
+     * the builder's cell-constraint application.
+     */
+    private static MarkupException buildWithInvalidPad(Element firstTable, Element secondTable) {
+        Element ui = new Element("ui", null, null, null, null, Map.of(), List.of(),
+                List.of(firstTable, secondTable), 1, 1);
+        return assertThrows(MarkupException.class, () -> MarkupBuilder.build(
+                new MarkupDocument(ui, 0), new CssParser().parse(""),
+                DefaultSkin.create(), new NoopSink()));
     }
 
     private BuiltUi buildSample() throws Exception {
