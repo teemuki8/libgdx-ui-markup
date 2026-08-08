@@ -12,9 +12,16 @@ import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.attribute.AclEntry;
+import java.nio.file.attribute.AclEntryPermission;
+import java.nio.file.attribute.AclEntryType;
+import java.nio.file.attribute.AclFileAttributeView;
+import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.nio.file.attribute.UserPrincipal;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -24,6 +31,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -31,12 +39,13 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * Secure preview artifact storage tests: the {@link TmpDirArtifactPublisher} must own one
  * unpredictable, owner-only session directory created directly in the OS temporary directory
- * (create-new + owner-only attributes, canonical parent/session identity retained and verified),
- * persist payloads under full-digest names through a no-replace atomic install, never follow a
- * pre-planted symbolic link, enforce per-file/total/count quotas before retention, deduplicate
- * identical content without extra quota while rejecting mismatches as collisions, aggregate
- * cleanup failures retry-safely, and remove the created directory when its owner-only policy
- * cannot be established (staged ownership).
+ * (create-new with owner-only attributes applied atomically, immutable parent/session identity
+ * captured as canonical path + fileKey + owner and verified before every operation), persist
+ * payloads under full-digest names through a no-replace atomic install (directory-relative with
+ * SDS, identity-bracketed otherwise), never follow a pre-planted symbolic link, enforce
+ * per-file/total/count quotas before retention, deduplicate identical content without extra
+ * quota while rejecting mismatches as collisions, and clean up directory-relative without ever
+ * deleting a replacement (leaks are reported, never silently deleted).
  */
 final class TmpDirArtifactPublisherTest {
     @TempDir
@@ -138,6 +147,47 @@ final class TmpDirArtifactPublisherTest {
                     }
                 });
             }
+        }
+    }
+
+    @Test
+    void realDirectoryReplantIsRefusedAndReportedNotDeleted() throws Exception {
+        try (TmpDirArtifactPublisher publisher =
+                new TmpDirArtifactPublisher(1024, 4096, 4, tempDir, null)) {
+            Path sessionDir = publisher.sessionDir();
+            publisher.publish("text/plain", new byte[] {1});
+            // A real (non-symlink) rename + replant: the immutable fileKey identity must fail
+            // closed on the next operation even though the canonical path and mode still match.
+            Path moved = tempDir.resolve("moved-" + System.nanoTime());
+            Files.move(sessionDir, moved);
+            Files.createDirectory(sessionDir); // replant a fresh real directory
+            assertThrows(ArtifactReference.ArtifactUnavailableException.class,
+                    () -> publisher.publish("text/plain", new byte[] {2}),
+                    "a real-directory replant fails closed on immutable identity (fileKey)");
+            assertTrue(Files.isDirectory(sessionDir), "the replant still exists");
+            try (Stream<Path> children = Files.list(sessionDir)) {
+                assertTrue(children.findAny().isEmpty(),
+                        "the replanted directory received nothing");
+            }
+            // Cleanup must refuse to delete the replacement and report the leak instead.
+            RuntimeException cleanup = assertThrows(RuntimeException.class, publisher::close,
+                    "close reports the replant as a leak");
+            assertTrue(cleanup.getMessage().contains("replaced"),
+                    "the leak message names the replacement: " + cleanup.getMessage());
+            assertTrue(Files.isDirectory(sessionDir),
+                    "the replacement is never deleted by cleanup");
+            // The moved original session's contents were deleted through the retained session
+            // fd (directory-relative cleanup of OUR data); the replacement received nothing.
+            try (Stream<Path> movedChildren = Files.list(moved)) {
+                assertTrue(movedChildren.findAny().isEmpty(),
+                        "the moved original session was cleaned through its fd");
+            }
+            try (Stream<Path> children = Files.list(sessionDir)) {
+                assertTrue(children.findAny().isEmpty(),
+                        "the replanted directory received nothing");
+            }
+            Files.deleteIfExists(sessionDir); // the replacement, after the leak was reported
+            Files.deleteIfExists(moved); // the emptied original
         }
     }
 
@@ -313,19 +363,19 @@ final class TmpDirArtifactPublisherTest {
     void ownerOnlyPolicyFailureRemovesTheCreatedDirectory() throws Exception {
         TmpDirArtifactPublisher.OwnerOnlyPolicy failing =
                 new TmpDirArtifactPublisher.OwnerOnlyPolicy() {
-                    @Override public java.nio.file.attribute.FileAttribute<?>[]
-                            directoryCreationAttributes() {
-                        return new java.nio.file.attribute.FileAttribute<?>[0];
+                    @Override public FileAttribute<?>[] directoryCreationAttributes(Path parent) {
+                        return new FileAttribute<?>[0];
                     }
 
-                    @Override public void applyDirectory(Path dir) throws java.io.IOException {
+                    @Override public FileAttribute<?>[] fileCreationAttributes(Path sessionDir) {
+                        return new FileAttribute<?>[0];
+                    }
+
+                    @Override public void verifyDirectory(Path dir) throws java.io.IOException {
                         throw new java.io.IOException("injected-owner-only-failure");
                     }
 
-                    @Override public void verifyDirectory(Path dir) {
-                    }
-
-                    @Override public void applyFile(Path file) {
+                    @Override public void validateParent(Path parent) {
                     }
                 };
         assertThrows(ArtifactReference.ArtifactUnavailableException.class,
@@ -339,64 +389,131 @@ final class TmpDirArtifactPublisherTest {
     }
 
     @Test
-    void ownerOnlyPolicyVerifyFailureFailsConstructionAndCleansUp() throws Exception {
-        TmpDirArtifactPublisher.OwnerOnlyPolicy verifyFailing =
-                new TmpDirArtifactPublisher.OwnerOnlyPolicy() {
-                    @Override public java.nio.file.attribute.FileAttribute<?>[]
-                            directoryCreationAttributes() {
-                        return new java.nio.file.attribute.FileAttribute<?>[0];
-                    }
-
-                    @Override public void applyDirectory(Path dir) {
-                    }
-
-                    @Override public void verifyDirectory(Path dir) throws java.io.IOException {
-                        throw new java.io.IOException("injected-verify-failure");
-                    }
-
-                    @Override public void applyFile(Path file) {
-                    }
-                };
+    void parentPolicyDenyingOthersPassesAndPermissiveParentFails() throws Exception {
+        boolean posix = FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
+        if (!posix) {
+            return; // parent-mode validation is POSIX-specific
+        }
+        // A permissive parent (group/other writable, no sticky bit) must be rejected.
+        Path permissive = tempDir.resolve("permissive");
+        Files.createDirectories(permissive);
+        Files.setPosixFilePermissions(permissive,
+                PosixFilePermissions.fromString("rwxrwxrwx"));
         assertThrows(ArtifactReference.ArtifactUnavailableException.class,
-                () -> new TmpDirArtifactPublisher(1024, 4096, 4, tempDir, verifyFailing),
-                "construction fails closed when the owner-only policy cannot be verified");
-        try (Stream<Path> children = Files.list(tempDir)) {
-            assertTrue(children.noneMatch(path ->
-                            path.getFileName().toString().startsWith("gdx-markup-")),
-                    "the created directory is removed when verification fails");
+                () -> new TmpDirArtifactPublisher(1024, 4096, 4, permissive, null),
+                "a parent that allows other-principal rename/delete-child fails closed");
+        // The owner-only parent (the @TempDir) is accepted.
+        try (TmpDirArtifactPublisher publisher =
+                new TmpDirArtifactPublisher(1024, 4096, 4, tempDir, null)) {
+            publisher.publish("text/plain", new byte[] {1});
         }
     }
 
     @Test
-    void aclStyleOwnerOnlyPolicyIsAppliedAndVerified() throws Exception {
-        AtomicInteger applies = new AtomicInteger();
-        AtomicInteger verifies = new AtomicInteger();
-        TmpDirArtifactPublisher.OwnerOnlyPolicy acl =
-                new TmpDirArtifactPublisher.OwnerOnlyPolicy() {
-                    @Override public java.nio.file.attribute.FileAttribute<?>[]
-                            directoryCreationAttributes() {
-                        return new java.nio.file.attribute.FileAttribute<?>[0];
-                    }
-
-                    @Override public void applyDirectory(Path dir) throws java.io.IOException {
-                        applies.incrementAndGet();
-                    }
-
-                    @Override public void verifyDirectory(Path dir) throws java.io.IOException {
-                        verifies.incrementAndGet();
-                    }
-
-                    @Override public void applyFile(Path file) throws java.io.IOException {
-                        applies.incrementAndGet();
-                    }
-                };
-        try (TmpDirArtifactPublisher publisher =
-                new TmpDirArtifactPublisher(1024, 4096, 4, tempDir, acl)) {
-            publisher.publish("text/plain", new byte[] {1, 2, 3});
+    void aclEntriesGrantOnlyOwnerAndRequiredPrincipals() throws Exception {
+        UserPrincipal owner = FileSystems.getDefault().getUserPrincipalLookupService()
+                .lookupPrincipalByName(System.getProperty("user.name"));
+        List<AclEntry> entries =
+                TmpDirArtifactPublisher.AclOwnerOnly.ownerOnlyEntries(owner);
+        assertFalse(entries.isEmpty(), "the ACL is not empty");
+        for (AclEntry entry : entries) {
+            assertEquals(AclEntryType.ALLOW, entry.type(),
+                    "every owner-only entry is an ALLOW");
+            assertTrue(isOwnerOrRequired(entry.principal(), owner),
+                    "every granted principal is the owner or a platform-required principal: "
+                            + entry.principal());
         }
-        assertTrue(applies.get() >= 2, "the ACL-style policy is applied to dir and file: "
-                + applies);
-        assertTrue(verifies.get() >= 1, "the ACL-style policy is verified: " + verifies);
+        // Real verification logic accepts the constructed owner-only ACL.
+        TmpDirArtifactPublisher.AclOwnerOnly.verifyOwnerOnly(entries, owner, tempDir);
+        // A foreign ALLOW principal must be rejected by the real verification logic.
+        List<AclEntry> tampered = new ArrayList<>(entries);
+        tampered.add(AclEntry.newBuilder()
+                .setType(AclEntryType.ALLOW)
+                .setPrincipal(foreignPrincipal())
+                .setPermissions(EnumSet.of(AclEntryPermission.WRITE_DATA))
+                .build());
+        assertThrows(java.io.IOException.class,
+                () -> TmpDirArtifactPublisher.AclOwnerOnly.verifyOwnerOnly(
+                        tampered, owner, tempDir),
+                "a foreign ALLOW principal is rejected");
+        // A DENY entry for the owner is also rejected.
+        List<AclEntry> denied = new ArrayList<>(entries);
+        denied.add(AclEntry.newBuilder()
+                .setType(AclEntryType.DENY)
+                .setPrincipal(owner)
+                .setPermissions(EnumSet.of(AclEntryPermission.WRITE_DATA))
+                .build());
+        assertThrows(java.io.IOException.class,
+                () -> TmpDirArtifactPublisher.AclOwnerOnly.verifyOwnerOnly(
+                        denied, owner, tempDir),
+                "a DENY entry for the owner is rejected");
+    }
+
+    @Test
+    void aclDirectoryCreationAttributeIsAtomicAndOwnerOnly() throws Exception {
+        UserPrincipal owner = FileSystems.getDefault().getUserPrincipalLookupService()
+                .lookupPrincipalByName(System.getProperty("user.name"));
+        FileAttribute<?> attribute =
+                TmpDirArtifactPublisher.AclOwnerOnly.aclAttribute(owner);
+        assertEquals("acl:acl", attribute.name(),
+                "the attribute applies the owner-only ACL atomically at creation");
+        @SuppressWarnings("unchecked")
+        List<AclEntry> entries = (List<AclEntry>) attribute.value();
+        TmpDirArtifactPublisher.AclOwnerOnly.verifyOwnerOnly(entries, owner, tempDir);
+    }
+
+    @Test
+    void aclParentPolicyRejectsForeignRenameDeleteChild() throws Exception {
+        UserPrincipal owner = FileSystems.getDefault().getUserPrincipalLookupService()
+                .lookupPrincipalByName(System.getProperty("user.name"));
+        AclFileAttributeView view = Files.getFileAttributeView(tempDir, AclFileAttributeView.class);
+        Assumptions.assumeTrue(view != null, "an ACL view is available");
+        List<AclEntry> original = new ArrayList<>(view.getAcl());
+        try {
+            // A parent ACL that grants a foreign principal WRITE_DATA / DELETE_CHILD must be
+            // rejected by the real validation logic.
+            view.setAcl(List.of(
+                    AclEntry.newBuilder()
+                            .setType(AclEntryType.ALLOW)
+                            .setPrincipal(owner)
+                            .setPermissions(EnumSet.allOf(AclEntryPermission.class))
+                            .build(),
+                    AclEntry.newBuilder()
+                            .setType(AclEntryType.ALLOW)
+                            .setPrincipal(foreignPrincipal())
+                            .setPermissions(EnumSet.of(AclEntryPermission.WRITE_DATA,
+                                    AclEntryPermission.DELETE_CHILD))
+                            .build()));
+            assertThrows(java.io.IOException.class,
+                    () -> new TmpDirArtifactPublisher.AclOwnerOnly()
+                            .validateParent(tempDir),
+                    "a parent ACL granting a foreign principal write/delete-child is rejected");
+        } finally {
+            view.setAcl(original);
+        }
+    }
+
+    private static boolean isOwnerOrRequired(UserPrincipal principal, UserPrincipal owner) {
+        String name = principal.getName();
+        return principal.equals(owner)
+                || name.equals("SYSTEM") || name.endsWith("\\SYSTEM")
+                || name.equals("Administrators") || name.endsWith("\\Administrators");
+    }
+
+    private static UserPrincipal foreignPrincipal() throws Exception {
+        // "nobody" exists on Unix; on Windows, use "Everyone" when resolvable.
+        try {
+            return FileSystems.getDefault().getUserPrincipalLookupService()
+                    .lookupPrincipalByName("nobody");
+        } catch (java.io.IOException nobodyMissing) {
+            try {
+                return FileSystems.getDefault().getUserPrincipalLookupService()
+                        .lookupPrincipalByName("Everyone");
+            } catch (java.io.IOException everyoneMissing) {
+                throw new java.io.IOException(
+                        "no foreign principal available", everyoneMissing);
+            }
+        }
     }
 
     @Test
@@ -449,7 +566,8 @@ final class TmpDirArtifactPublisherTest {
         }
         RuntimeException first = assertThrows(RuntimeException.class, publisher::close,
                 "close aggregates a deletion failure instead of swallowing it");
-        assertTrue(first.getMessage().contains("failed to delete"),
+        assertTrue(first.getMessage().contains("failed to delete")
+                        || first.getSuppressed().length > 0,
                 "the aggregated failure names the failed deletion: " + first.getMessage());
         assertTrue(Files.isDirectory(sessionDir), "the session directory survives the failure");
         // Retry-safe: restoring the write bit lets a second close complete the cleanup.

@@ -18,6 +18,7 @@ import com.badlogic.gdx.scenes.scene2d.Stage;
 import com.badlogic.gdx.scenes.scene2d.ui.Skin;
 import dev.gdx.markup.runtime.MarkupRuntimeSource;
 import dev.gdx.uiharness.mcp.HarnessMcpServer;
+import io.github.teemuki8.libgdx.agent.runtime.core.AgentRuntime;
 import io.github.teemuki8.libgdx.agent.runtime.core.EntityId;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -1019,7 +1020,9 @@ public final class PreviewTestChild {
                         // Server-open failure after the publisher was acquired: the constructor
                         // must close every acquired component (including the publisher, whose
                         // session directory is deleted) and rethrow the primary failure with
-                        // the cleanup aggregated.
+                        // the cleanup aggregated. Acquired before the server: clock, scheduler,
+                        // session, fence, capture, waits, runtime, harness, protocol executor,
+                        // artifacts = 10 components.
                         RuntimeException serverFailure = assertThrows(RuntimeException.class,
                                 () -> new PreviewMcp(probe,
                                         () -> {
@@ -1032,6 +1035,7 @@ public final class PreviewTestChild {
                                             throw new IllegalStateException(
                                                     "injected-server-open-failure");
                                         },
+                                        AgentRuntime::start,
                                         component -> {
                                             closes.incrementAndGet();
                                             component.close();
@@ -1045,7 +1049,7 @@ public final class PreviewTestChild {
                         assertFalse(Files.exists(created.get().sessionDir()),
                                 "the acquired publisher's session directory is removed "
                                         + "during staged constructor cleanup");
-                        assertTrue(closes.get() >= 9,
+                        assertTrue(closes.get() >= 10,
                                 "every acquired component close was attempted: " + closes.get());
                         // Artifact-publisher failure: nothing is acquired past the publisher,
                         // and the failure propagates (the publisher constructor itself removes
@@ -1059,6 +1063,7 @@ public final class PreviewTestChild {
                                         (protocol, artifacts) -> {
                                             throw new AssertionError("server must not open");
                                         },
+                                        AgentRuntime::start,
                                         component -> {
                                             closes.incrementAndGet();
                                             component.close();
@@ -1068,6 +1073,36 @@ public final class PreviewTestChild {
                                                 .contains("injected-artifact-init-failure"),
                                 "the artifact-init failure propagates: "
                                         + publisherFailure.getMessage());
+                        // Partial runtime.start failure: the runtime was acquired BEFORE
+                        // start, so the rollback must close it (strict reverse order).
+                        java.util.concurrent.atomic.AtomicReference<AgentRuntime> started =
+                                new java.util.concurrent.atomic.AtomicReference<>();
+                        RuntimeException startFailure = assertThrows(RuntimeException.class,
+                                () -> new PreviewMcp(probe,
+                                        () -> {
+                                            throw new AssertionError("publisher must not open");
+                                        },
+                                        (protocol, artifacts) -> {
+                                            throw new AssertionError("server must not open");
+                                        },
+                                        runtime -> {
+                                            started.set(runtime);
+                                            throw new IllegalStateException(
+                                                    "injected-runtime-start-failure");
+                                        },
+                                        component -> {
+                                            closes.incrementAndGet();
+                                            component.close();
+                                        }));
+                        assertTrue(startFailure.getMessage() != null
+                                        && startFailure.getMessage()
+                                                .contains("injected-runtime-start-failure"),
+                                "the partial runtime.start failure propagates: "
+                                        + startFailure.getMessage());
+                        assertNotNull(started.get(), "the runtime was created before start");
+                        assertEquals(io.github.teemuki8.libgdx.agent.runtime.core
+                                        .RuntimeStatus.CLOSED, started.get().status(),
+                                "the partially started runtime is closed by the rollback");
                         Gdx.app.exit();
                     }
                 } catch (Throwable thrown) {

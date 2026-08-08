@@ -75,16 +75,19 @@ final class PreviewMcp implements AutoCloseable {
         this(stage, TmpDirArtifactPublisher::new,
                 (protocol, artifacts) -> HarnessMcpServer.open(
                         protocol, artifacts, System.in, System.out),
-                AutoCloseable::close);
+                AgentRuntime::start, AutoCloseable::close);
     }
 
     /**
-     * Test seam constructor: injectable artifact/server factories and an acquired-resource
-     * closer so tests can prove staged ownership — every component acquired before an
-     * initialization failure is closed, with cleanup failures suppressed onto the primary.
+     * Test seam constructor: injectable artifact/server factories, a runtime starter, and an
+     * acquired-resource closer so tests can prove staged ownership — every component is added
+     * to the rollback set immediately upon acquisition (the runtime before {@code start},
+     * the protocol executor as soon as it exists), and a partial start/open failure closes
+     * every acquired resource in strictly reverse acquisition order, with cleanup failures
+     * suppressed onto the primary.
      */
     PreviewMcp(Stage stage, ArtifactsFactory artifactsFactory, McpServerFactory serverFactory,
-            ComponentCloser closer) {
+            RuntimeStarter runtimeStarter, ComponentCloser closer) {
         this.stage = Objects.requireNonNull(stage, "stage");
         this.componentCloser = Objects.requireNonNull(closer, "closer");
         List<AutoCloseable> acquired = new ArrayList<>();
@@ -109,8 +112,9 @@ final class PreviewMcp implements AutoCloseable {
             acquired.add(waits);
             AgentRuntime runtime = AgentRuntime.builder()
                     .sessionId(SessionId.of(PreviewApp.SESSION_ID)).build();
-            runtime.start();
+            // Acquired BEFORE start: a partial start failure must still roll the runtime back.
             acquired.add(runtime);
+            runtimeStarter.start(runtime);
             this.runtime = runtime;
             CapabilitySet capabilities =
                     new CapabilitySet(List.of("snapshot", "query", "action", "wait", "screenshot",
@@ -132,10 +136,14 @@ final class PreviewMcp implements AutoCloseable {
                     HarnessProtocolService.TraceController.unsupported(),
                     Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
                     Optional.empty(), Optional.empty(), Optional.of(runtimeCoordinator));
-            HarnessProtocolService protocol = new HarnessProtocolService(
-                    Map.of(PreviewApp.SESSION_ID, protocolSession), clock,
+            // The protocol executor is acquired as soon as it exists, so an executor or
+            // protocol construction failure rolls it back too.
+            java.util.concurrent.ExecutorService protocolExecutor =
                     Executors.newThreadPerTaskExecutor(
-                            Thread.ofVirtual().name("markup-protocol-", 0).factory()));
+                            Thread.ofVirtual().name("markup-protocol-", 0).factory());
+            acquired.add(protocolExecutor);
+            HarnessProtocolService protocol = new HarnessProtocolService(
+                    Map.of(PreviewApp.SESSION_ID, protocolSession), clock, protocolExecutor);
             TmpDirArtifactPublisher artifacts = artifactsFactory.create();
             acquired.add(artifacts);
             this.artifacts = artifacts;
@@ -147,8 +155,9 @@ final class PreviewMcp implements AutoCloseable {
                 Gdx.app.postRunnable(Gdx.app::exit);
             });
         } catch (RuntimeException | Error failure) {
-            // Staged ownership: every component acquired before the failure is closed (each
-            // best-effort), and any cleanup failure is suppressed onto the primary failure.
+            // Staged ownership: every component acquired before the failure is closed in
+            // strictly reverse acquisition order (each best-effort), and any cleanup failure
+            // is suppressed onto the primary failure.
             RuntimeException cleanup = closeAcquired(acquired);
             if (cleanup != null) {
                 failure.addSuppressed(cleanup);
@@ -157,13 +166,14 @@ final class PreviewMcp implements AutoCloseable {
         }
     }
 
-    /** Closes every acquired component (in acquisition order; each close is best-effort) and
-     * returns the aggregated cleanup failure, or {@code null} when all closes succeeded. */
+    /** Closes every acquired component in strictly reverse acquisition order (each close is
+     * best-effort) and returns the aggregated cleanup failure, or {@code null} when all
+     * closes succeeded. */
     private RuntimeException closeAcquired(List<AutoCloseable> acquired) {
         RuntimeException primary = null;
-        for (AutoCloseable component : acquired) {
+        for (int index = acquired.size() - 1; index >= 0; index--) {
             try {
-                componentCloser.close(component);
+                componentCloser.close(acquired.get(index));
             } catch (Exception failure) {
                 RuntimeException wrapped = new IllegalStateException(
                         "failed to close acquired component", failure);
@@ -175,6 +185,12 @@ final class PreviewMcp implements AutoCloseable {
             }
         }
         return primary;
+    }
+
+    /** Test seam: starts the agent runtime (injectable to prove partial-start rollback). */
+    @FunctionalInterface
+    interface RuntimeStarter {
+        void start(AgentRuntime runtime);
     }
 
     /** Test seam: creates the artifact publisher (injectable to prove staged cleanup). */
