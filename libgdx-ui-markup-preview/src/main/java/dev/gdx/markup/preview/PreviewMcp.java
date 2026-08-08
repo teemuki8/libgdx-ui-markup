@@ -139,9 +139,13 @@ final class PreviewMcp implements AutoCloseable {
      * #acquireRuntime} registers the candidate without publishing anything, the caller swaps
      * the stage, and {@link #commitRuntime} publishes the committed owner and retained
      * last-good only after the visible swap succeeded; {@link #rollbackRuntime} undoes an
-     * uncommitted attachment. On any failure the last-good registration is either preserved
-     * untouched or reinstalled from the retained document/built; {@link #runtimeLost()} is
-     * set when even reinstatement is impossible (the caller must stop the preview).
+     * uncommitted attachment. On any ordinary failure the last-good registration is either
+     * preserved untouched or reinstated from the retained document/built. On any exceptional
+     * cleanup failure — a fallible retirement/close that threw, a candidate close that threw,
+     * or a reinstatement that failed (including a duplicate, which may be a partial-close
+     * remnant) — the old owner's close is multi-handle and integrity is unknown, so {@link
+     * #runtimeLost()} is set conservatively and the caller must stop the preview rather than
+     * claim last-good.
      */
     PendingRuntime acquireRuntime(MarkupDocument document, BuiltUi built) {
         MarkupRuntimeSource previous = runtimeSource;
@@ -156,19 +160,29 @@ final class PreviewMcp implements AutoCloseable {
             }
             // The candidate shares entity ids with the live registration: the old ids must be
             // removed before the candidate can be proven. Remove them (retaining the old
-            // registration for restore), retry, and on retry failure reinstate the retained
-            // last-good registration before reporting the candidate failure.
+            // registration for reinstatement), retry, and on retry failure reinstate the
+            // retained last-good registration before reporting the candidate failure.
             try {
                 retirementCloser.close(previous);
             } catch (RuntimeException closeFailure) {
-                restoreOrMarkLost();
+                // A fallible multi-handle retirement that threw leaves integrity unknown:
+                // reinstate what we can, then classify terminal.
+                RuntimeException restoreFailure = attemptRestore();
+                if (restoreFailure != null) {
+                    closeFailure.addSuppressed(restoreFailure);
+                }
+                runtimeLost = true;
                 throw closeFailure;
             }
             try {
                 MarkupRuntimeSource candidate = register(document, built);
                 return new PendingRuntime(candidate, previous, true, document, built);
             } catch (RuntimeException retryFailure) {
-                restoreOrMarkLost();
+                RuntimeException restoreFailure = attemptRestore();
+                if (restoreFailure != null) {
+                    retryFailure.addSuppressed(restoreFailure);
+                    runtimeLost = true;
+                }
                 throw retryFailure;
             }
         }
@@ -176,15 +190,33 @@ final class PreviewMcp implements AutoCloseable {
 
     /** Commits a pending attachment after the stage swap succeeded: retires the old
      * registration (fallible), then publishes the candidate as the live owner and retained
-     * last-good. On retirement failure the candidate is closed, nothing is published, the old
-     * registration is restored (or {@link #runtimeLost} is set), and the failure rethrown. */
+     * last-good. On retirement failure the candidate is closed and the retained last-good
+     * reinstatement attempted with finally-style aggregation (a candidate-close failure never
+     * skips the reinstatement attempt); every cleanup failure is suppressed onto the primary
+     * retirement failure, nothing is published, and the runtime is conservatively lost. */
     void commitRuntime(PendingRuntime pending) {
         if (!pending.previousRetired && pending.previous != null) {
             try {
                 retirementCloser.close(pending.previous);
             } catch (RuntimeException failure) {
-                pending.closeCandidate();
-                restoreOrMarkLost();
+                RuntimeException cleanup = null;
+                try {
+                    pending.closeCandidate();
+                } catch (RuntimeException candidateFailure) {
+                    cleanup = candidateFailure;
+                }
+                RuntimeException restoreFailure = attemptRestore();
+                if (restoreFailure != null) {
+                    if (cleanup == null) {
+                        cleanup = restoreFailure;
+                    } else {
+                        cleanup.addSuppressed(restoreFailure);
+                    }
+                }
+                if (cleanup != null) {
+                    failure.addSuppressed(cleanup);
+                }
+                runtimeLost = true;
                 throw failure;
             }
         }
@@ -201,13 +233,32 @@ final class PreviewMcp implements AutoCloseable {
 
     /** Rolls back an uncommitted pending attachment after a later rebuild phase failed: closes
      * the candidate registration (never leaked) and reinstates the last-good registration when
-     * the old ids had to be removed to acquire the candidate. */
-    void rollbackRuntime(PendingRuntime pending) {
-        pending.closeCandidate();
+     * the old ids had to be removed to acquire the candidate, with finally-style aggregation.
+     * Returns any cleanup failure (candidate close or reinstatement) so the caller can
+     * suppress it onto the primary rebuild failure; a cleanup failure leaves integrity unknown
+     * and marks the runtime lost. */
+    RuntimeException rollbackRuntime(PendingRuntime pending) {
+        RuntimeException cleanup = null;
+        try {
+            pending.closeCandidate();
+        } catch (RuntimeException candidateFailure) {
+            cleanup = candidateFailure;
+        }
         if (pending.previousRetired && !pending.previousRestored) {
             pending.previousRestored = true;
-            restoreOrMarkLost();
+            RuntimeException restoreFailure = attemptRestore();
+            if (restoreFailure != null) {
+                if (cleanup == null) {
+                    cleanup = restoreFailure;
+                } else {
+                    cleanup.addSuppressed(restoreFailure);
+                }
+            }
         }
+        if (cleanup != null) {
+            runtimeLost = true;
+        }
+        return cleanup;
     }
 
     private MarkupRuntimeSource register(MarkupDocument document, BuiltUi built) {
@@ -216,29 +267,25 @@ final class PreviewMcp implements AutoCloseable {
     }
 
     /**
-     * Re-establishes the retained last-good registration after its ids had to be removed.
-     * Returns when the runtime is consistent again — the old registration was reinstated, or
-     * it is provably still live (a reinstatement collided with it) — and sets {@link
-     * #runtimeLost} when neither is possible.
+     * Attempts to reinstate the retained last-good registration after its ids had to be
+     * removed or its owner's close failed. Returns the reinstatement failure, or {@code null}
+     * when the full retained set is live again. A duplicate is NOT treated as proof that the
+     * old registration is complete — the old owner's close is multi-handle and may have
+     * partially closed — so every failure here leaves integrity unknown; callers classify
+     * terminal.
      */
-    private void restoreOrMarkLost() {
+    private RuntimeException attemptRestore() {
         if (lastGoodDocument == null || lastGoodBuilt == null) {
-            runtimeLost = true;
-            return;
+            return new IllegalStateException("no retained last-good registration to reinstate");
         }
         try {
             MarkupRuntimeSource restored = lastGoodRegistrar.register(
                     runtime, lastGoodDocument, lastGoodBuilt, PreviewApp.SESSION_ID);
             runtimeSource = restored;
-            return;
-        } catch (AgentRuntimeException duplicate) {
-            if (duplicate.code() == RuntimeErrorCode.DUPLICATE_ENTITY) {
-                return; // the old registration is still live; nothing to reinstate
-            }
-        } catch (RuntimeException ignored) {
-            // fall through to mark the runtime lost
+            return null;
+        } catch (RuntimeException restoreFailure) {
+            return restoreFailure;
         }
-        runtimeLost = true;
     }
 
     /** Returns the committed runtime registration, or {@code null} before the first commit. */
@@ -251,8 +298,8 @@ final class PreviewMcp implements AutoCloseable {
         return runtime;
     }
 
-    /** Whether the last-good registration can no longer be reinstated: the runtime cannot be
-     * kept consistent with the retained scene, so the preview must stop. */
+    /** Whether the last-good registration can no longer be trusted as complete: the runtime
+     * cannot be kept consistent with the retained scene, so the preview must stop. */
     boolean runtimeLost() {
         return runtimeLost;
     }
@@ -260,9 +307,11 @@ final class PreviewMcp implements AutoCloseable {
     /**
      * One acquired but uncommitted runtime attachment. Owns the candidate registration until
      * committed or rolled back, and tracks whether the old registration had to be removed to
-     * acquire it (and is therefore retained for reinstatement).
+     * acquire it (and is therefore retained for reinstatement). The candidate-close ownership
+     * is explicit ({@link #candidateClosed}), so the candidate is closed exactly once no
+     * matter which path (commit, rollback, or cleanup aggregation) runs first.
      */
-    static final class PendingRuntime {
+    final class PendingRuntime {
         private final MarkupRuntimeSource candidate;
         private final MarkupDocument document;
         private final BuiltUi built;
@@ -280,11 +329,11 @@ final class PreviewMcp implements AutoCloseable {
             this.previousRetired = previousRetired;
         }
 
-        /** Closes the candidate registration exactly once (idempotent). */
+        /** Closes the candidate registration exactly once (idempotent) through the test seam. */
         void closeCandidate() {
             if (!candidateClosed) {
                 candidateClosed = true;
-                candidate.close();
+                candidateCloser.close(candidate);
             }
         }
 
@@ -310,10 +359,19 @@ final class PreviewMcp implements AutoCloseable {
                 BuiltUi built, String uiSessionId);
     }
 
-    /** Production retirement/restore behavior; replaced only by tests via the package-visible
-     * seams above. */
+    /** Package-visible test seam: closes a candidate registration during rollback/cleanup.
+     * Production uses the real close; tests inject failures to prove cleanup aggregation and
+     * the terminal path. */
+    @FunctionalInterface
+    interface CandidateCloser {
+        void close(MarkupRuntimeSource candidate);
+    }
+
+    /** Production retirement/restore/candidate-close behavior; replaced only by tests via the
+     * package-visible seams above. */
     RetirementCloser retirementCloser = MarkupRuntimeSource::close;
     LastGoodRegistrar lastGoodRegistrar = MarkupRuntimeSource::registerWidgetMirror;
+    CandidateCloser candidateCloser = MarkupRuntimeSource::close;
 
     /** Advances the deterministic clock and drains render-thread commands (GL thread). */
     void beforeDraw() {

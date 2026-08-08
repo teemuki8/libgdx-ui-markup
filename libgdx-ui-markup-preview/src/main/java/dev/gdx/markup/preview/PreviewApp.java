@@ -211,10 +211,11 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
             MarkupStatus status, Candidate candidate,
             PreviewMcp.PendingRuntime pendingRuntime, StageState stageBefore) {
         if (mcp != null && pendingRuntime != null) {
-            try {
-                mcp.rollbackRuntime(pendingRuntime);
-            } catch (RuntimeException rollbackFailure) {
-                failure.addSuppressed(rollbackFailure);
+            // rollbackRuntime already aggregated candidate close + reinstatement with
+            // finally-style semantics; its cleanup failure (if any) is suppressed here.
+            RuntimeException cleanup = mcp.rollbackRuntime(pendingRuntime);
+            if (cleanup != null) {
+                failure.addSuppressed(cleanup);
             }
         }
         if (stageBefore != null) {
@@ -232,8 +233,7 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
             }
         }
         if (mcp != null && mcp.runtimeLost()) {
-            enterTerminal(failure.getMessage() == null
-                    ? failure.getClass().getSimpleName() : failure.getMessage());
+            enterTerminal(terminalMessage(failure));
             return;
         }
         publishFailure(text, status);
@@ -242,6 +242,35 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
             System.err.flush();
             System.exit(2);
         }
+    }
+
+    /**
+     * Builds the bounded terminal message from the primary failure and every suppressed
+     * cleanup failure at any depth (candidate close, retirement, reinstatement), so the typed
+     * TERMINAL status and overlay carry the restore cause.
+     */
+    private static String terminalMessage(Throwable failure) {
+        StringBuilder message = new StringBuilder();
+        appendFailure(message, failure);
+        appendSuppressed(message, failure);
+        if (message.length() > MarkupStatus.MAX_STRING_LENGTH) {
+            message.setLength(MarkupStatus.MAX_STRING_LENGTH);
+        }
+        return message.toString();
+    }
+
+    private static void appendSuppressed(StringBuilder message, Throwable failure) {
+        for (Throwable suppressed : failure.getSuppressed()) {
+            message.append("; cleanup failed: ");
+            appendFailure(message, suppressed);
+            appendSuppressed(message, suppressed);
+        }
+    }
+
+    private static void appendFailure(StringBuilder message, Throwable failure) {
+        String text = failure.getMessage() == null
+                ? failure.getClass().getSimpleName() : failure.getMessage();
+        message.append(text);
     }
 
     /**

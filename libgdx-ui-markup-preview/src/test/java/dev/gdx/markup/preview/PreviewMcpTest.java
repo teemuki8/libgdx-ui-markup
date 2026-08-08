@@ -62,7 +62,7 @@ final class PreviewMcpTest {
 
     @Test
     @Timeout(120)
-    void retirementFailureRollsBackCandidateAndKeepsOldRegistration() throws Exception {
+    void retirementFailureEntersTerminalState() throws Exception {
         Path ui = tempDir.resolve("retire-failure.xml");
         Path css = tempDir.resolve("retire-failure.css");
         Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
@@ -72,6 +72,15 @@ final class PreviewMcpTest {
             assertEquals(0, exit, "child exit code; stderr: " + child.stderr());
             assertTrue(child.stdout().contains("preview-child: retire-failure ok"),
                     "child ok line; stdout: " + child.stdout() + " stderr: " + child.stderr());
+            String stderr = child.stderr();
+            assertTrue(stderr.contains("\"kind\":\"TERMINAL\""),
+                    "the retirement failure publishes a typed TERMINAL status; stderr: " + stderr);
+            assertTrue(stderr.contains("injected-retire-failure"),
+                    "the TERMINAL status carries the primary retirement failure; stderr: " + stderr);
+            assertTrue(stderr.contains("duplicate static entity"),
+                    "the TERMINAL status carries the reinstatement cause (a partial-close-unsafe "
+                            + "duplicate is not treated as proof of an intact old registration); "
+                            + "stderr: " + stderr);
         }
         assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
     }
@@ -88,9 +97,35 @@ final class PreviewMcpTest {
             assertEquals(0, exit, "child exit code; stderr: " + child.stderr());
             assertTrue(child.stdout().contains("preview-child: restore-failure ok"),
                     "child ok line; stdout: " + child.stdout() + " stderr: " + child.stderr());
-            assertTrue(child.stderr().contains("\"kind\":\"TERMINAL\""),
-                    "the terminal failure publishes a typed TERMINAL status; stderr: "
-                            + child.stderr());
+            String stderr = child.stderr();
+            assertTrue(stderr.contains("\"kind\":\"TERMINAL\""),
+                    "the restore failure publishes a typed TERMINAL status; stderr: " + stderr);
+            assertTrue(stderr.contains("injected-restore-failure"),
+                    "the TERMINAL status carries the reinstatement cause; stderr: " + stderr);
+        }
+        assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
+    }
+
+    @Test
+    @Timeout(120)
+    void candidateCloseAndRestoreFailuresEnterTerminalState() throws Exception {
+        Path ui = tempDir.resolve("mcp-cleanup-failure.xml");
+        Path css = tempDir.resolve("mcp-cleanup-failure.css");
+        Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
+        try (PreviewTestProcess child = PreviewTestProcess.launch(
+                "mcp-cleanup-failure", ui, css, null, Duration.ofSeconds(60))) {
+            int exit = child.await();
+            assertEquals(0, exit, "child exit code; stderr: " + child.stderr());
+            assertTrue(child.stdout().contains("preview-child: mcp-cleanup-failure ok"),
+                    "child ok line; stdout: " + child.stdout() + " stderr: " + child.stderr());
+            String stderr = child.stderr();
+            assertTrue(stderr.contains("\"kind\":\"TERMINAL\""),
+                    "exceptional cleanup failures publish a typed TERMINAL status; stderr: "
+                            + stderr);
+            assertTrue(stderr.contains("injected-candidate-close-failure"),
+                    "the TERMINAL status carries the candidate-close failure; stderr: " + stderr);
+            assertTrue(stderr.contains("injected-restore-failure"),
+                    "the TERMINAL status carries the reinstatement failure; stderr: " + stderr);
         }
         assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
     }

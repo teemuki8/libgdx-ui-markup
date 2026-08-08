@@ -140,6 +140,7 @@ public final class PreviewTestChild {
                 case "mcp-swap-failure" -> runMcpSwapFailure(ui, css);
                 case "retire-failure" -> runRetireFailure(ui, css);
                 case "restore-failure" -> runRestoreFailure(ui, css);
+                case "mcp-cleanup-failure" -> runMcpCleanupFailure(ui, css);
                 default -> fail("unknown scenario " + scenario);
             }
         } catch (Throwable failure) {
@@ -631,10 +632,12 @@ public final class PreviewTestChild {
 
     /**
      * A retirement failure during runtime commit: closing the old registration throws after a
-     * non-colliding candidate acquired successfully. The candidate registration must be closed
-     * (no leak), the old registration kept live (the injected close never closed it) with the
-     * committed owner and retained document/built unchanged, the old scene retained, and a
-     * later recovery must succeed.
+     * non-colliding candidate acquired successfully. The old owner's close is multi-handle, so
+     * after it throws integrity is unknown: the preview must enter the terminal state (MCP
+     * closed, rebuilds stop, typed TERMINAL status carrying the retirement failure and the
+     * reinstatement cause) rather than claim the old registration intact. The reinstatement
+     * attempt collides with the still-live old registration, whose duplicate is preserved in
+     * the terminal message.
      */
     private static void runRetireFailure(Path ui, Path css) {
         writeFixture(ui, css, ENTITY_UI_A);
@@ -642,7 +645,6 @@ public final class PreviewTestChild {
                 "--ui", ui.toString(), "--css", css.toString(), "--mcp"}));
         launch(new ApplicationAdapter() {
             private int frame;
-            private MarkupRuntimeSource committed;
             private Skin good;
 
             @Override public void create() {
@@ -652,56 +654,104 @@ public final class PreviewTestChild {
             @Override public void render() {
                 try {
                     frame++;
-                    switch (frame) {
-                        case 1 -> {
-                            app.render();
-                            committed = app.mcp().runtimeSource();
-                            good = app.skin();
-                            assertNotNull(committed, "attachRuntime returns a live owner");
-                            assertEquals(List.of("user"), committed.registeredEntities());
-                            assertFrameHasOnly("user", app);
-                        }
-                        case 2 -> {
-                            // A disjoint candidate acquires cleanly; the retirement of the old
-                            // registration then fails during commit. The candidate must be
-                            // closed, the old registration kept live (the injected close never
-                            // closed it), the fields must not advance, and the old scene stays
-                            // live.
-                            app.mcp().retirementCloser = retired -> {
-                                throw new IllegalStateException("injected-retire-failure");
-                            };
-                            writeUi(ui, DISJOINT_GOOD_UI);
-                            app.rebuild();
-                            assertTrue(app.errorOverlayVisible(),
-                                    "overlay visible after a retirement failure");
-                            assertFalse(app.mcp().runtimeLost(),
-                                    "the old registration is still live; not terminal");
-                            assertSame(committed, app.mcp().runtimeSource(),
-                                    "the old registration is preserved (the injected close never "
-                                            + "closed it)");
-                            assertEquals(List.of("user"), committed.registeredEntities());
-                            assertSame(good, app.skin(), "the old skin is retained");
-                            assertTrue(app.stageContains("user"), "old actors restored");
-                            app.render();
-                            assertFrameHasOnly("user", app);
-                        }
-                        case 3 -> {
-                            // Recovery: restore the default retirement and rebuild.
-                            app.mcp().retirementCloser = MarkupRuntimeSource::close;
-                            writeUi(ui, ENTITY_UI_A);
-                            app.rebuild();
-                            assertFalse(app.errorOverlayVisible(), "overlay hidden after recovery");
-                            MarkupRuntimeSource recovered = app.mcp().runtimeSource();
-                            assertNotSame(committed, recovered,
-                                    "recovery commits a fresh runtime owner");
-                            assertEquals(List.of("user"), recovered.registeredEntities());
-                            assertNotSame(good, app.skin(), "recovery commits a fresh skin");
-                            app.render();
-                            assertFrameHasOnly("user", app);
-                            Gdx.app.exit();
-                        }
-                        default -> {
-                        }
+                    if (frame == 1) {
+                        app.render();
+                        good = app.skin();
+                        assertNotNull(good, "the first build commits a skin");
+                        assertNotNull(app.mcp().runtimeSource(), "attachRuntime returns a live owner");
+                        assertEquals(List.of("user"),
+                                app.mcp().runtimeSource().registeredEntities());
+                        assertFrameHasOnly("user", app);
+                    } else if (frame == 2) {
+                        // The disjoint candidate acquires cleanly; the retirement of the old
+                        // registration throws during commit. The candidate is closed (cleanup)
+                        // and reinstatement attempted (it collides with the still-live old, a
+                        // partial-close-unsafe duplicate) — both suppressed onto the primary
+                        // retirement failure — and the preview enters the terminal state.
+                        app.mcp().retirementCloser = retired -> {
+                            throw new IllegalStateException("injected-retire-failure");
+                        };
+                        writeUi(ui, DISJOINT_GOOD_UI);
+                        app.rebuild();
+                        assertTrue(app.errorOverlayVisible(), "the terminal overlay is visible");
+                        assertNull(app.mcp(), "the MCP session is closed in the terminal state");
+                        assertSame(good, app.skin(), "the last-good skin stays on screen");
+                        assertTrue(app.stageContains("user"),
+                                "the last-good scene stays on screen");
+                        // Rebuilds stop: a further rebuild is a no-op and changes nothing.
+                        writeUi(ui, ENTITY_UI_A);
+                        app.rebuild();
+                        assertSame(good, app.skin(), "rebuilds stop in the terminal state");
+                        assertTrue(app.errorOverlayVisible(), "the terminal overlay persists");
+                    }
+                } catch (Throwable thrown) {
+                    fail(messageOf(thrown));
+                }
+            }
+
+            @Override public void dispose() {
+                app.dispose();
+            }
+        });
+    }
+
+    /**
+     * Exceptional cleanup aggregation: the stage swap throws, then the candidate close throws,
+     * and the last-good reinstatement also throws. Every cleanup failure must be suppressed
+     * onto the primary stage failure and the preview must enter the terminal state with the
+     * restore cause visible in the typed TERMINAL status; the last-good scene stays on screen
+     * and rebuilds stop.
+     */
+    private static void runMcpCleanupFailure(Path ui, Path css) {
+        writeFixture(ui, css, ENTITY_UI_A);
+        PreviewApp app = new PreviewApp(CliOptions.parse(new String[]{
+                "--ui", ui.toString(), "--css", css.toString(), "--mcp"}));
+        launch(new ApplicationAdapter() {
+            private int frame;
+            private Skin good;
+
+            @Override public void create() {
+                app.create();
+            }
+
+            @Override public void render() {
+                try {
+                    frame++;
+                    if (frame == 1) {
+                        app.render();
+                        good = app.skin();
+                        assertNotNull(good, "the first build commits a skin");
+                        assertNotNull(app.mcp().runtimeSource(), "attachRuntime returns a live owner");
+                        assertEquals(List.of("user"),
+                                app.mcp().runtimeSource().registeredEntities());
+                        assertFrameHasOnly("user", app);
+                    } else if (frame == 2) {
+                        // A colliding acquire closes the old ids and registers the candidate,
+                        // then the stage swap throws; rollback's candidate close throws and the
+                        // reinstatement of the last-good registration also throws. Neither
+                        // cleanup failure may skip the other; both are suppressed onto the
+                        // primary stage failure and the preview enters the terminal state.
+                        app.stageSwap = root -> {
+                            throw new IllegalStateException("injected-stage-failure");
+                        };
+                        app.mcp().candidateCloser = candidate -> {
+                            throw new IllegalStateException("injected-candidate-close-failure");
+                        };
+                        app.mcp().lastGoodRegistrar = (runtime, document, built, session) -> {
+                            throw new IllegalStateException("injected-restore-failure");
+                        };
+                        writeUi(ui, ENTITY_UI_A);
+                        app.rebuild();
+                        assertTrue(app.errorOverlayVisible(), "the terminal overlay is visible");
+                        assertNull(app.mcp(), "the MCP session is closed in the terminal state");
+                        assertSame(good, app.skin(), "the last-good skin stays on screen");
+                        assertTrue(app.stageContains("user"),
+                                "the last-good scene stays on screen");
+                        // Rebuilds stop: a further rebuild is a no-op and changes nothing.
+                        writeUi(ui, ENTITY_UI_A);
+                        app.rebuild();
+                        assertSame(good, app.skin(), "rebuilds stop in the terminal state");
+                        assertTrue(app.errorOverlayVisible(), "the terminal overlay persists");
                     }
                 } catch (Throwable thrown) {
                     fail(messageOf(thrown));
