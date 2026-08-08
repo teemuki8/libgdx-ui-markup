@@ -5,6 +5,7 @@ import java.nio.file.Path
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -27,6 +28,37 @@ class PreviewProcessLauncherTest {
         assertEquals(ui.toAbsolutePath().toString(), command[6])
         assertEquals("--css", command[7])
         assertEquals(css.toAbsolutePath().toString(), command[8])
+    }
+
+    @Test
+    fun macOsLauncherPutsXstartOnFirstThreadBeforeClasspathAndMain() {
+        val dist = createTempDirectory("dist")
+        Files.createDirectories(dist.resolve("lib"))
+        val ui = Path.of("/tmp/app.xml")
+        val command = PreviewProcessLauncher.buildCommand(dist, ui, null, "Mac OS X")
+        assertEquals("-XstartOnFirstThread", command[1],
+            "macOS production children run with -XstartOnFirstThread")
+        assertEquals("-cp", command[3],
+            "the platform flag precedes the classpath option")
+        assertTrue(command[4].endsWith("${java.io.File.separator}lib"
+            + "${java.io.File.separator}*"))
+        assertEquals("dev.gdx.markup.preview.PreviewApp", command[5],
+            "the main class follows the classpath")
+        assertEquals("--ui", command[6])
+    }
+
+    @Test
+    fun nonMacOsLauncherAddsNoPlatformFlag() {
+        val dist = createTempDirectory("dist")
+        Files.createDirectories(dist.resolve("lib"))
+        val ui = Path.of("/tmp/app.xml")
+        for (os in listOf("Linux", "Windows 11")) {
+            val command = PreviewProcessLauncher.buildCommand(dist, ui, null, os)
+            assertFalse(command.contains("-XstartOnFirstThread"),
+                "no platform flag on $os (it is macOS-only)")
+            assertEquals("--enable-native-access=ALL-UNNAMED", command[1])
+            assertEquals("-cp", command[2])
+        }
     }
 
     @Test

@@ -2,6 +2,18 @@ plugins {
     application
 }
 
+// The platform command builder (PreviewJvmCommand) is shared source: the preview module
+// compiles it from src/shared/java at Java 25 (it ships in the preview distribution), and
+// the IDEA module compiles the same file with its own Java 21 toolchain. It must stay
+// Java-21-compatible and dependency-free.
+sourceSets {
+    main {
+        java.srcDir("src/shared/java")
+    }
+}
+
+val previewIsMac = System.getProperty("os.name", "").lowercase().contains("mac")
+
 dependencies {
     implementation(project(":libgdx-ui-markup"))
     implementation(project(":libgdx-ui-markup-harness"))
@@ -20,7 +32,11 @@ dependencies {
 
 application {
     mainClass.set("dev.gdx.markup.preview.PreviewApp")
-    applicationDefaultJvmArgs = listOf("--enable-native-access=ALL-UNNAMED")
+    // macOS preview/GL children need -XstartOnFirstThread before the classpath/main; the
+    // Gradle-launched preview and the installDist scripts are production launch sites, so
+    // they carry the same platform flag the centralized builder injects everywhere else.
+    applicationDefaultJvmArgs = listOf("--enable-native-access=ALL-UNNAMED") +
+        if (previewIsMac) listOf("-XstartOnFirstThread") else emptyList()
 }
 
 tasks.named<JavaExec>("run") {

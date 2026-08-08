@@ -11,6 +11,30 @@ kotlin {
     jvmToolchain(21)
 }
 
+// PreviewJvmCommand is the single shared platform command builder. The preview module
+// compiles the file from libgdx-ui-markup-preview/src/shared/java at Java 25 (it ships in
+// the preview distribution), and this module compiles the SAME source with its own Java 21
+// toolchain. Kotlin's Java-source stub parsing does not resolve this file reliably, so it is
+// compiled here by javac first and the classes are put on this module's compile/runtime
+// classpath (they are also packaged into the plugin distribution).
+val sharedJava = tasks.register<JavaCompile>("compileSharedJava") {
+    source(fileTree(rootProject.file("libgdx-ui-markup-preview/src/shared/java")) {
+        include("**/*.java")
+    })
+    classpath = files()
+    destinationDirectory.set(layout.buildDirectory.dir("generated/shared-java"))
+    options.release.set(21)
+    options.encoding = "UTF-8"
+}
+
+dependencies {
+    implementation(files(sharedJava.map { it.destinationDirectory }))
+}
+
+tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>("compileKotlin") {
+    dependsOn(sharedJava)
+}
+
 repositories {
     mavenCentral()
     intellijPlatform {

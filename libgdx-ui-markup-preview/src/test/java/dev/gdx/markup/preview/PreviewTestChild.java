@@ -1322,10 +1322,16 @@ public final class PreviewTestChild {
         } else if (isWindowsNoOpenGlDriver(glfwError.get(), isWindows())) {
             System.out.println(GL_PROBE_WINDOWS_UNAVAILABLE);
         } else {
-            fail("gl-probe window creation failed: "
+            fail("gl-probe window creation failed on " + hostDescription() + ": "
                     + (glfwError.get() == null ? "no GLFW error reported" : glfwError.get()));
         }
         System.out.flush();
+    }
+
+    /** Bounded host description so a probe failure names the platform, arch, and JVM. */
+    private static String hostDescription() {
+        return System.getProperty("os.name", "?") + "/" + System.getProperty("os.arch", "?")
+                + " (Java " + System.getProperty("java.version", "?") + ")";
     }
 
     /** Whether this host is Windows. */

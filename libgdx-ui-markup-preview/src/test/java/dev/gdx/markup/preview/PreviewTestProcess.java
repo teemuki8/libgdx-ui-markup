@@ -7,7 +7,6 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -55,45 +54,35 @@ final class PreviewTestProcess implements AutoCloseable {
     }
 
     /**
-     * Extra JVM flags the child requires on the current platform before any other option.
-     * macOS forbids GLFW/AWT window creation unless the main thread is the process's first
-     * thread, so every child (including the {@code gl-probe}) must run with
-     * {@code -XstartOnFirstThread} there; other platforms need nothing extra.
-     */
-    static List<String> childJvmFlags(String osName) {
-        if (osName != null && osName.toLowerCase(Locale.ROOT).contains("mac")) {
-            return List.of("-XstartOnFirstThread");
-        }
-        return List.of();
-    }
-
-    /**
      * Launches one child scenario JVM on the current test classpath ({@code java.home},
-     * {@code java.class.path}) and display environment.
+     * {@code java.class.path}) and display environment. The command is built by the shared
+     * {@link PreviewJvmCommand} so the GL probe and every scenario child receive the
+     * same platform JVM flags (e.g. macOS {@code -XstartOnFirstThread}) in the same
+     * deterministic position.
      */
     static PreviewTestProcess launch(String scenario, Path ui, Path css, Path png,
             Duration deadline) throws IOException {
-        String javaBin = Path.of(System.getProperty("java.home"), "bin", "java").toString();
-        List<String> command = new ArrayList<>();
-        command.add(javaBin);
-        command.addAll(childJvmFlags(System.getProperty("os.name")));
-        command.add("--enable-native-access=ALL-UNNAMED");
-        command.add("-cp");
-        command.add(System.getProperty("java.class.path"));
-        command.add(PreviewTestChild.class.getName());
-        command.add(scenario);
+        List<String> programArgs = new ArrayList<>();
+        programArgs.add(scenario);
         if (ui != null) {
-            command.add("--ui");
-            command.add(ui.toString());
+            programArgs.add("--ui");
+            programArgs.add(ui.toString());
         }
         if (css != null) {
-            command.add("--css");
-            command.add(css.toString());
+            programArgs.add("--css");
+            programArgs.add(css.toString());
         }
         if (png != null) {
-            command.add("--png");
-            command.add(png.toString());
+            programArgs.add("--png");
+            programArgs.add(png.toString());
         }
+        List<String> command = PreviewJvmCommand.build(
+                PreviewJvmCommand.javaBin(),
+                List.of("--enable-native-access=ALL-UNNAMED"),
+                System.getProperty("java.class.path"),
+                PreviewTestChild.class.getName(),
+                programArgs,
+                System.getProperty("os.name"));
         Process process = new ProcessBuilder(command).redirectErrorStream(false).start();
         return new PreviewTestProcess(process, deadline);
     }
@@ -155,8 +144,12 @@ final class PreviewTestProcess implements AutoCloseable {
      * one. */
     static boolean classifyGlProbe(int exitCode, String stdout, String stderr, boolean windows) {
         if (exitCode != 0) {
+            // The child prints JDK/LWJGL warnings first and its own 'preview-child: failure'
+            // diagnosis last, so surface the stderr tail (where the GLFW error lives) plus
+            // the captured length; a head-only view hid the real cause in hosted CI.
             throw new AssertionError("GL probe child exited " + exitCode
-                    + " (expected 0); stderr: " + bounded(stderr));
+                    + " (expected 0); stderr (" + stderr.length() + " chars) tail: "
+                    + boundedTail(stderr));
         }
         if (stdout.contains(PreviewTestChild.GL_PROBE_OK)) {
             return true;
@@ -169,7 +162,7 @@ final class PreviewTestProcess implements AutoCloseable {
             return false;
         }
         throw new AssertionError("GL probe child produced no recognized marker; stdout: "
-                + bounded(stdout) + " stderr: " + bounded(stderr));
+                + bounded(stdout) + " stderr tail: " + boundedTail(stderr));
     }
 
     /** Whether this host is Windows. */
@@ -178,9 +171,14 @@ final class PreviewTestProcess implements AutoCloseable {
                 .contains("win");
     }
 
-    /** Bounds a captured stream for an assertion message. */
+    /** Bounds a captured stream for an assertion message (head view). */
     private static String bounded(String text) {
         return text.length() <= 400 ? text : text.substring(0, 400) + "…";
+    }
+
+    /** Bounds a captured stream to its tail — where the child's own failure line lands. */
+    private static String boundedTail(String text) {
+        return text.length() <= 800 ? text : "…" + text.substring(text.length() - 800);
     }
 
     /**

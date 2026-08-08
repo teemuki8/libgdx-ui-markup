@@ -43,6 +43,25 @@ final class PreviewGlProbeTest {
     }
 
     @Test
+    void nonZeroExitSurfacesTheChildFailureLineFromTheStderrTail() {
+        // The child prints JDK/LWJGL warnings before its own 'preview-child: failure' line;
+        // the parent must surface the stderr tail (where the diagnosis lives), not only the
+        // head — a head-only view hid the exact macOS probe exit cause in hosted CI.
+        String warnings = "WARNING: sun.misc.Unsafe::objectFieldOffset\n".repeat(60);
+        String diagnosis = "preview-child: failure gl-probe window creation failed on "
+                + "Mac OS X/aarch64 (Java 25): 65544:Cocoa: Failed to create window";
+        AssertionError failure = assertThrows(AssertionError.class,
+                () -> PreviewTestProcess.classifyGlProbe(1, "", warnings + diagnosis, true));
+        assertTrue(failure.getMessage().contains("preview-child: failure"),
+                "the exit-1 message must surface the child failure line: " + failure.getMessage());
+        assertTrue(failure.getMessage().contains("65544:Cocoa"),
+                "the exit-1 message must surface the GLFW error: " + failure.getMessage());
+        assertFalse(failure.getMessage().startsWith("WARNING:"),
+                "the exit-1 message must lead with the failure summary, not JDK warnings: "
+                        + failure.getMessage());
+    }
+
+    @Test
     void missingMarkerFails() {
         assertThrows(AssertionError.class, () -> PreviewTestProcess.classifyGlProbe(
                         0, "", "", true),
