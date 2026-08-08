@@ -5,110 +5,311 @@
       <verify-signatures>true</verify-signatures>
       <trusted-keys>
          <trusted-key id="04543577D6A9CC626239C50C7ECBD740FF06AEB5">
-            <trusting group="com.sun.istack"/>
-            <trusting group="com.sun.xml.bind"/>
-            <trusting group="com.sun.xml.bind.mvn"/>
-            <trusting group="org.glassfish.jaxb"/>
+            <trusting group="com.sun.istack" name="istack-commons" version="4.1.1"/>
+            <trusting group="com.sun.istack" name="istack-commons-runtime" version="4.1.1"/>
+            <trusting group="com.sun.xml.bind" name="jaxb-bom-ext" version="2.3.2"/>
+            <trusting group="com.sun.xml.bind" name="jaxb-bom-ext" version="4.0.2"/>
+            <trusting group="com.sun.xml.bind" name="jaxb-impl" version="2.3.2"/>
+            <trusting group="com.sun.xml.bind.mvn" name="jaxb-bundles" version="2.3.2"/>
+            <trusting group="com.sun.xml.bind.mvn" name="jaxb-parent" version="2.3.2"/>
+            <trusting group="com.sun.xml.bind.mvn" name="jaxb-parent" version="4.0.2"/>
+            <trusting group="com.sun.xml.bind.mvn" name="jaxb-runtime-parent" version="4.0.2"/>
+            <trusting group="com.sun.xml.bind.mvn" name="jaxb-txw-parent" version="4.0.2"/>
+            <trusting group="org.glassfish.jaxb" name="jaxb-bom" version="2.3.2"/>
+            <trusting group="org.glassfish.jaxb" name="jaxb-bom" version="4.0.2"/>
+            <trusting group="org.glassfish.jaxb" name="jaxb-core" version="4.0.2"/>
+            <trusting group="org.glassfish.jaxb" name="jaxb-runtime" version="4.0.2"/>
+            <trusting group="org.glassfish.jaxb" name="txw2" version="4.0.2"/>
          </trusted-key>
-         <trusted-key id="05F1A5DA5701D415BEFC67FC6329ADE2B25B244B" group="io.github.pdvrieze.xmlutil"/>
-         <trusted-key id="19BEAB2D799C020F17C69126B16698A4ADF4D638" group="org.checkerframework"/>
-         <trusted-key id="1BD97A6A154E7810EE0BC832E2F38302C8075E3D" group="org.gradle.toolchains"/>
-         <trusted-key id="1D217F8475EEE9F19AB8DD6B793FD5751A0F0780" group="com.squareup.retrofit2"/>
-         <trusted-key id="20B0D1DA0F0643E3FB281C1A93496A66B36BCD66" group="org.jcraft"/>
-         <trusted-key id="27FDF761A8BE4E584DFF13581E48D52D1924F9A7" group="io.modelcontextprotocol.sdk"/>
+         <trusted-key id="05F1A5DA5701D415BEFC67FC6329ADE2B25B244B">
+            <trusting group="io.github.pdvrieze.xmlutil" name="core-jvm" version="1.0.1"/>
+            <trusting group="io.github.pdvrieze.xmlutil" name="core-jvmcommon" version="1.0.1"/>
+            <trusting group="io.github.pdvrieze.xmlutil" name="serialization-jvm" version="1.0.1"/>
+         </trusted-key>
+         <trusted-key id="19BEAB2D799C020F17C69126B16698A4ADF4D638">
+            <trusting group="org.checkerframework" name="checker-qual" version="3.37.0"/>
+            <trusting group="org.checkerframework" name="checker-qual" version="3.43.0"/>
+         </trusted-key>
+         <trusted-key id="1BD97A6A154E7810EE0BC832E2F38302C8075E3D" group="org.gradle.toolchains" name="foojay-resolver" version="0.9.0"/>
+         <trusted-key id="1D217F8475EEE9F19AB8DD6B793FD5751A0F0780">
+            <trusting group="com.squareup.retrofit2" name="converter-jackson" version="3.0.0"/>
+            <trusting group="com.squareup.retrofit2" name="converter-jaxb" version="3.0.0"/>
+            <trusting group="com.squareup.retrofit2" name="retrofit" version="3.0.0"/>
+         </trusted-key>
+         <trusted-key id="20B0D1DA0F0643E3FB281C1A93496A66B36BCD66" group="org.jcraft" name="jorbis" version="0.0.17"/>
+         <trusted-key id="27FDF761A8BE4E584DFF13581E48D52D1924F9A7">
+            <trusting group="io.modelcontextprotocol.sdk" name="mcp" version="2.0.0"/>
+            <trusting group="io.modelcontextprotocol.sdk" name="mcp-core" version="2.0.0"/>
+            <trusting group="io.modelcontextprotocol.sdk" name="mcp-json-jackson3" version="2.0.0"/>
+         </trusted-key>
          <trusted-key id="28118C070CB22A0175A2E8D43D12CA2AC19F3181">
-            <trusting group="com.fasterxml"/>
-            <trusting group="com.fasterxml.jackson"/>
-            <trusting group="com.fasterxml.jackson.core"/>
-            <trusting group="com.fasterxml.jackson.module"/>
-            <trusting group="com.fasterxml.woodstox"/>
-            <trusting group="org.codehaus.woodstox"/>
-            <trusting group="tools.jackson"/>
-            <trusting group="tools.jackson.core"/>
-            <trusting group="tools.jackson.dataformat"/>
+            <trusting group="com.fasterxml" name="oss-parent" version="55"/>
+            <trusting group="com.fasterxml" name="oss-parent" version="58"/>
+            <trusting group="com.fasterxml" name="oss-parent" version="61"/>
+            <trusting group="com.fasterxml" name="oss-parent" version="70"/>
+            <trusting group="com.fasterxml" name="oss-parent" version="73"/>
+            <trusting group="com.fasterxml" name="oss-parent" version="79"/>
+            <trusting group="com.fasterxml.jackson" name="jackson-base" version="2.17.2"/>
+            <trusting group="com.fasterxml.jackson" name="jackson-base" version="2.20.2"/>
+            <trusting group="com.fasterxml.jackson" name="jackson-base" version="2.22.1"/>
+            <trusting group="com.fasterxml.jackson" name="jackson-bom" version="2.17.2"/>
+            <trusting group="com.fasterxml.jackson" name="jackson-bom" version="2.20.2"/>
+            <trusting group="com.fasterxml.jackson" name="jackson-bom" version="2.22.1"/>
+            <trusting group="com.fasterxml.jackson" name="jackson-parent" version="2.17"/>
+            <trusting group="com.fasterxml.jackson" name="jackson-parent" version="2.20"/>
+            <trusting group="com.fasterxml.jackson" name="jackson-parent" version="2.22"/>
+            <trusting group="com.fasterxml.jackson.core" name="jackson-annotations" version="2.17.2"/>
+            <trusting group="com.fasterxml.jackson.core" name="jackson-annotations" version="2.20"/>
+            <trusting group="com.fasterxml.jackson.core" name="jackson-annotations" version="2.22"/>
+            <trusting group="com.fasterxml.jackson.core" name="jackson-core" version="2.17.2"/>
+            <trusting group="com.fasterxml.jackson.core" name="jackson-core" version="2.20.2"/>
+            <trusting group="com.fasterxml.jackson.core" name="jackson-core" version="2.22.1"/>
+            <trusting group="com.fasterxml.jackson.core" name="jackson-databind" version="2.17.2"/>
+            <trusting group="com.fasterxml.jackson.core" name="jackson-databind" version="2.20.2"/>
+            <trusting group="com.fasterxml.jackson.core" name="jackson-databind" version="2.22.1"/>
+            <trusting group="com.fasterxml.jackson.module" name="jackson-module-kotlin" version="2.20.2"/>
+            <trusting group="com.fasterxml.woodstox" name="woodstox-core" version="7.1.0"/>
+            <trusting group="org.codehaus.woodstox" name="stax2-api" version="4.2.2"/>
+            <trusting group="tools.jackson" name="jackson-base" version="3.0.3"/>
+            <trusting group="tools.jackson" name="jackson-bom" version="3.0.3"/>
+            <trusting group="tools.jackson.core" name="jackson-core" version="3.0.3"/>
+            <trusting group="tools.jackson.core" name="jackson-databind" version="3.0.3"/>
+            <trusting group="tools.jackson.dataformat" name="jackson-dataformat-yaml" version="3.0.3"/>
+            <trusting group="tools.jackson.dataformat" name="jackson-dataformats-text" version="3.0.3"/>
          </trusted-key>
          <trusted-key id="29C0DA29E8C10B1B8F54093B618DFA9690C9E933">
-            <trusting group="org.jetbrains"/>
-            <trusting group="org.jetbrains.intellij"/>
-            <trusting group="org.jetbrains.intellij.plugins"/>
+            <trusting group="org.jetbrains" name="marketplace-zip-signer" version="0.1.43"/>
+            <trusting group="org.jetbrains.intellij" name="blockmap" version="1.0.5"/>
+            <trusting group="org.jetbrains.intellij" name="plugin-repository-rest-client" version="2.0.51"/>
+            <trusting group="org.jetbrains.intellij.plugins" name="structure-base" version="3.330"/>
+            <trusting group="org.jetbrains.intellij.plugins" name="structure-ide" version="3.330"/>
+            <trusting group="org.jetbrains.intellij.plugins" name="structure-intellij" version="3.330"/>
+            <trusting group="org.jetbrains.intellij.plugins" name="verifier-cli" version="1.409"/>
          </trusted-key>
-         <trusted-key id="2BCBDD0F23EA1CAFCC11D4860374CF2E8DD1BDFD" group="net.java"/>
+         <trusted-key id="2BCBDD0F23EA1CAFCC11D4860374CF2E8DD1BDFD" group="net.java" name="jvnet-parent" version="1"/>
          <trusted-key id="2DB4F1EF0FA761ECC4EA935C86FDC7E2A11262CB">
-            <trusting group="commons-codec"/>
-            <trusting group="commons-io"/>
-            <trusting group="org.apache.commons"/>
+            <trusting group="commons-codec" name="commons-codec" version="1.19.0"/>
+            <trusting group="commons-io" name="commons-io" version="2.20.0"/>
+            <trusting group="org.apache.commons" name="commons-compress" version="1.28.0"/>
+            <trusting group="org.apache.commons" name="commons-lang3" version="3.18.0"/>
+            <trusting group="org.apache.commons" name="commons-parent" version="85"/>
          </trusted-key>
-         <trusted-key id="2E3A1AFFE42B5F53AF19F780BCF4173966770193" group="org.jetbrains"/>
-         <trusted-key id="2EB8F98C568F89038071930EF0484A483AB9CC7B" group="io.github.teemuki8"/>
-         <trusted-key id="2FC53E6B1F681184F4CCD637F5C81DE10A0B8ECC" group="org.snakeyaml"/>
-         <trusted-key id="33FD4BFD33554634053D73C0C2148900BCD3C2AF" group="org.jetbrains"/>
-         <trusted-key id="3690C240CE51B4670D30AD1C38EE757D69184620" group="org.tukaani"/>
-         <trusted-key id="3CA154339EDB344CA831FC65FEAA650EB6DA6579" group="org.atteo"/>
-         <trusted-key id="3F05DDA9F317301E927136D417A27CE7A60FF5F0" group="io.opentelemetry"/>
-         <trusted-key id="48B086A7D843CFA258E83286928FBF39003C0425" group="io.projectreactor"/>
-         <trusted-key id="4D1BFCE663EFFA892F8780BD606B8F312E075E63" group="^io[.]smallrye($|([.].*))" regex="true"/>
+         <trusted-key id="2E3A1AFFE42B5F53AF19F780BCF4173966770193" group="org.jetbrains" name="annotations" version="13.0"/>
+         <trusted-key id="2EB8F98C568F89038071930EF0484A483AB9CC7B">
+            <trusting group="io.github.teemuki8" name="agent-runtime-core" version="1.0.0"/>
+            <trusting group="io.github.teemuki8" name="harness-agent-runtime" version="1.1.0"/>
+            <trusting group="io.github.teemuki8" name="harness-core" version="1.1.0"/>
+            <trusting group="io.github.teemuki8" name="harness-lwjgl3" version="1.1.0"/>
+            <trusting group="io.github.teemuki8" name="harness-mcp" version="1.1.0"/>
+            <trusting group="io.github.teemuki8" name="harness-protocol" version="1.1.0"/>
+            <trusting group="io.github.teemuki8" name="harness-scene2d" version="1.1.0"/>
+         </trusted-key>
+         <trusted-key id="2FC53E6B1F681184F4CCD637F5C81DE10A0B8ECC" group="org.snakeyaml" name="snakeyaml-engine" version="2.10"/>
+         <trusted-key id="33FD4BFD33554634053D73C0C2148900BCD3C2AF" group="org.jetbrains" name="annotations" version="24.0.0"/>
+         <trusted-key id="3690C240CE51B4670D30AD1C38EE757D69184620" group="org.tukaani" name="xz" version="1.9"/>
+         <trusted-key id="3CA154339EDB344CA831FC65FEAA650EB6DA6579">
+            <trusting group="org.atteo" name="evo-inflector" version="1.3"/>
+            <trusting group="org.atteo" name="parent" version="1.19"/>
+         </trusted-key>
+         <trusted-key id="3F05DDA9F317301E927136D417A27CE7A60FF5F0">
+            <trusting group="io.opentelemetry" name="opentelemetry-api" version="1.41.0"/>
+            <trusting group="io.opentelemetry" name="opentelemetry-context" version="1.41.0"/>
+         </trusted-key>
+         <trusted-key id="48B086A7D843CFA258E83286928FBF39003C0425" group="io.projectreactor" name="reactor-core" version="3.7.0"/>
+         <trusted-key id="4D1BFCE663EFFA892F8780BD606B8F312E075E63">
+            <trusting group="io.smallrye" name="smallrye-build-parent" version="47"/>
+            <trusting group="io.smallrye" name="smallrye-parent" version="47"/>
+            <trusting group="io.smallrye.common" name="smallrye-common-annotation" version="2.14.0"/>
+            <trusting group="io.smallrye.common" name="smallrye-common-bom" version="2.14.0"/>
+            <trusting group="io.smallrye.common" name="smallrye-common-constraint" version="2.14.0"/>
+            <trusting group="io.smallrye.common" name="smallrye-common-cpu" version="2.14.0"/>
+            <trusting group="io.smallrye.common" name="smallrye-common-function" version="2.14.0"/>
+            <trusting group="io.smallrye.common" name="smallrye-common-parent" version="2.14.0"/>
+         </trusted-key>
          <trusted-key id="4F7E32D440EF90A83011A8FC6425559C47CC79C4">
-            <trusting group="com.sun.activation"/>
-            <trusting group="javax.activation"/>
+            <trusting group="com.sun.activation" name="all" version="1.2.0"/>
+            <trusting group="javax.activation" name="javax.activation-api" version="1.2.0"/>
          </trusted-key>
-         <trusted-key id="50A628FFAF58480736B1079FD1031D14464180E0" group="org.reactivestreams"/>
+         <trusted-key id="50A628FFAF58480736B1079FD1031D14464180E0" group="org.reactivestreams" name="reactive-streams" version="1.0.4"/>
          <trusted-key id="5F9B2AF3084E4EADB2F5AE1EB0F79A98780D77FA">
-            <trusting group="com.badlogicgames.gdx"/>
-            <trusting group="com.badlogicgames.jlayer"/>
+            <trusting group="com.badlogicgames.gdx" name="gdx" version="1.14.2"/>
+            <trusting group="com.badlogicgames.gdx" name="gdx-backend-lwjgl3" version="1.14.2"/>
+            <trusting group="com.badlogicgames.gdx" name="gdx-jnigen-loader" version="2.5.2"/>
+            <trusting group="com.badlogicgames.gdx" name="gdx-platform" version="1.14.2"/>
+            <trusting group="com.badlogicgames.jlayer" name="jlayer" version="1.0.1-gdx"/>
          </trusted-key>
-         <trusted-key id="60200AC4AE761F1614D6C46766D68DAA073BE985" group="org.slf4j"/>
-         <trusted-key id="635EE627345F3C1DD422B2E207D3516820BCF6B1" group="com.github.ben-manes.caffeine"/>
-         <trusted-key id="6D2AF456B8CB597387901C786F29F72839B3A8E7" group="org.jboss.logging"/>
-         <trusted-key id="6DD3B8C64EF75253BEB2C53AD908A43FB7EC07AC" group="jakarta.activation"/>
+         <trusted-key id="60200AC4AE761F1614D6C46766D68DAA073BE985">
+            <trusting group="org.slf4j" name="slf4j-api" version="2.0.17"/>
+            <trusting group="org.slf4j" name="slf4j-bom" version="2.0.17"/>
+            <trusting group="org.slf4j" name="slf4j-nop" version="2.0.17"/>
+            <trusting group="org.slf4j" name="slf4j-parent" version="2.0.17"/>
+         </trusted-key>
+         <trusted-key id="635EE627345F3C1DD422B2E207D3516820BCF6B1">
+            <trusting group="com.github.ben-manes.caffeine" name="caffeine" version="2.9.3"/>
+            <trusting group="com.github.ben-manes.caffeine" name="caffeine" version="3.1.8"/>
+         </trusted-key>
+         <trusted-key id="6D2AF456B8CB597387901C786F29F72839B3A8E7" group="org.jboss.logging" name="jboss-logging" version="3.6.2.Final"/>
+         <trusted-key id="6DD3B8C64EF75253BEB2C53AD908A43FB7EC07AC" group="jakarta.activation" name="jakarta.activation-api" version="2.1.3"/>
          <trusted-key id="6F538074CCEBF35F28AF9B066A0975F8B1127B83">
-            <trusting group="org.jetbrains.kotlin"/>
-            <trusting group="org.jetbrains.kotlin.jvm"/>
+            <trusting group="org.jetbrains.kotlin" name="abi-tools" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="abi-tools-api" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="fus-statistics-gradle-plugin" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-build-statistics" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-build-tools-api" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-build-tools-impl" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-compiler-embeddable" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-compiler-runner" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-daemon-client" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-daemon-embeddable" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-gradle-plugin" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-gradle-plugin-annotations" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-gradle-plugin-api" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-gradle-plugin-idea" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-gradle-plugin-idea-proto" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-gradle-plugin-model" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-gradle-plugins-bom" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-klib-commonizer-api" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-klib-commonizer-embeddable" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-metadata-jvm" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-native-utils" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-reflect" version="1.6.10"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-script-runtime" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-scripting-common" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-scripting-compiler-embeddable" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-scripting-compiler-impl-embeddable" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-scripting-jvm" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-stdlib" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-stdlib" version="2.3.21"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-stdlib-common" version="2.3.21"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-stdlib-jdk7" version="1.8.21"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-stdlib-jdk7" version="1.9.10"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-stdlib-jdk8" version="1.8.21"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-stdlib-jdk8" version="1.9.10"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-test" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-test-junit5" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-tooling-core" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-util-io" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-util-klib" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="kotlin-util-klib-metadata" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin" name="swift-export-embeddable" version="2.2.20"/>
+            <trusting group="org.jetbrains.kotlin.jvm" name="org.jetbrains.kotlin.jvm.gradle.plugin" version="2.2.20"/>
          </trusted-key>
          <trusted-key id="70CD19BFD9F6C330027D6F260315BFB7970A144F">
-            <trusting group="com.sun.xml.bind"/>
-            <trusting group="com.sun.xml.bind.mvn"/>
-            <trusting group="javax.xml.bind"/>
-            <trusting group="org.glassfish.jaxb"/>
+            <trusting group="com.sun.xml.bind" name="jaxb-bom-ext" version="2.3.0.1"/>
+            <trusting group="com.sun.xml.bind" name="jaxb-core" version="2.3.0.1"/>
+            <trusting group="com.sun.xml.bind.mvn" name="jaxb-bundles" version="2.3.0.1"/>
+            <trusting group="com.sun.xml.bind.mvn" name="jaxb-parent" version="2.3.0.1"/>
+            <trusting group="javax.xml.bind" name="jaxb-api" version="2.3.1"/>
+            <trusting group="javax.xml.bind" name="jaxb-api-parent" version="2.3.1"/>
+            <trusting group="org.glassfish.jaxb" name="jaxb-bom" version="2.3.0.1"/>
          </trusted-key>
-         <trusted-key id="70DAD7074E509CFAC21D0FF04C5854FEFA80DC1E" group="org.lwjgl"/>
-         <trusted-key id="78DF98EF7F95578FD545B9A159A7C2A1BD98C013" group="org.jdom"/>
-         <trusted-key id="7B121B76A7ED6CE6E60AD51784E913A8E3A748C0" group="org.bouncycastle"/>
-         <trusted-key id="84789D24DF77A32433CE1F079EB80E92EB2135B1" group="org.apache"/>
-         <trusted-key id="8756C4F765C9AC3CB6B85D62379CE192D401AB61" group="org.jetbrains.intellij.deps"/>
-         <trusted-key id="8B22A34D7812A3E5BB496362F4030798D861A159" group="org.jetbrains.compose.hot-reload"/>
+         <trusted-key id="70DAD7074E509CFAC21D0FF04C5854FEFA80DC1E">
+            <trusting group="org.lwjgl" name="lwjgl" version="3.3.3"/>
+            <trusting group="org.lwjgl" name="lwjgl-glfw" version="3.3.3"/>
+            <trusting group="org.lwjgl" name="lwjgl-jemalloc" version="3.3.3"/>
+            <trusting group="org.lwjgl" name="lwjgl-openal" version="3.3.3"/>
+            <trusting group="org.lwjgl" name="lwjgl-opengl" version="3.3.3"/>
+            <trusting group="org.lwjgl" name="lwjgl-stb" version="3.3.3"/>
+         </trusted-key>
+         <trusted-key id="78DF98EF7F95578FD545B9A159A7C2A1BD98C013" group="org.jdom" name="jdom2" version="2.0.6.1"/>
+         <trusted-key id="7B121B76A7ED6CE6E60AD51784E913A8E3A748C0">
+            <trusting group="org.bouncycastle" name="bcpg-jdk18on" version="1.80"/>
+            <trusting group="org.bouncycastle" name="bcpkix-jdk18on" version="1.80"/>
+            <trusting group="org.bouncycastle" name="bcprov-jdk18on" version="1.80.2"/>
+            <trusting group="org.bouncycastle" name="bcutil-jdk18on" version="1.80.2"/>
+         </trusted-key>
+         <trusted-key id="84789D24DF77A32433CE1F079EB80E92EB2135B1" group="org.apache" name="apache" version="35"/>
+         <trusted-key id="8756C4F765C9AC3CB6B85D62379CE192D401AB61" group="org.jetbrains.intellij.deps" name="trove4j" version="1.0.20200330"/>
+         <trusted-key id="8B22A34D7812A3E5BB496362F4030798D861A159" group="org.jetbrains.compose.hot-reload" name="hot-reload-agent" version="1.1.0-alpha03"/>
          <trusted-key id="94976E17E18DD3201447286954963C3E875A56AE">
-            <trusting group="io.smallrye"/>
-            <trusting group="io.smallrye.common"/>
+            <trusting group="io.smallrye" name="smallrye-build-parent" version="42"/>
+            <trusting group="io.smallrye" name="smallrye-parent" version="42"/>
+            <trusting group="io.smallrye.common" name="smallrye-common-bom" version="2.4.0"/>
+            <trusting group="io.smallrye.common" name="smallrye-common-expression" version="2.4.0"/>
+            <trusting group="io.smallrye.common" name="smallrye-common-net" version="2.4.0"/>
+            <trusting group="io.smallrye.common" name="smallrye-common-os" version="2.4.0"/>
+            <trusting group="io.smallrye.common" name="smallrye-common-parent" version="2.4.0"/>
+            <trusting group="io.smallrye.common" name="smallrye-common-ref" version="2.4.0"/>
          </trusted-key>
          <trusted-key id="99E73B179E66D217E4C969152F732027B9B0B96C">
-            <trusting group="org.jboss"/>
-            <trusting group="org.jboss.threads"/>
+            <trusting group="org.jboss" name="jboss-parent" version="51"/>
+            <trusting group="org.jboss.threads" name="jboss-threads" version="3.9.2"/>
          </trusted-key>
-         <trusted-key id="AA70C7C433D501636392EC02153E7A3C2B4E5118" group="org.eclipse.ee4j"/>
-         <trusted-key id="AEB1E1AEC035C66FA39589D13EFC46EE83C40224" group="com.networknt"/>
-         <trusted-key id="B18679A17A21DE79FF9DE8B0636D10E7975B6E6F" group="com.ethlo.time"/>
-         <trusted-key id="BCA1F17506AF088F3A964A9C0459A2B383ED8C11" group="org.eclipse.angus"/>
-         <trusted-key id="C7BE5BCC9FEC15518CFDA882B0F3710FA64900E7" group="com.google.code.gson"/>
-         <trusted-key id="CA491704D613780D2BEE00F2C6FC46EB51CF569C" group="jaxen"/>
-         <trusted-key id="D477D51812E692011DB11E66A6EA2E2BF22E0543" group="io.github.java-diff-utils"/>
+         <trusted-key id="AA70C7C433D501636392EC02153E7A3C2B4E5118">
+            <trusting group="org.eclipse.ee4j" name="project" version="1.0.5"/>
+            <trusting group="org.eclipse.ee4j" name="project" version="1.0.7"/>
+            <trusting group="org.eclipse.ee4j" name="project" version="1.0.8"/>
+            <trusting group="org.eclipse.ee4j" name="project" version="1.0.9"/>
+         </trusted-key>
+         <trusted-key id="AEB1E1AEC035C66FA39589D13EFC46EE83C40224" group="com.networknt" name="json-schema-validator" version="3.0.0"/>
+         <trusted-key id="B18679A17A21DE79FF9DE8B0636D10E7975B6E6F" group="com.ethlo.time" name="itu" version="1.14.0"/>
+         <trusted-key id="BCA1F17506AF088F3A964A9C0459A2B383ED8C11">
+            <trusting group="org.eclipse.angus" name="angus-activation" version="2.0.0"/>
+            <trusting group="org.eclipse.angus" name="angus-activation-project" version="2.0.0"/>
+         </trusted-key>
+         <trusted-key id="C7BE5BCC9FEC15518CFDA882B0F3710FA64900E7">
+            <trusting group="com.google.code.gson" name="gson" version="2.10.1"/>
+            <trusting group="com.google.code.gson" name="gson" version="2.11.0"/>
+            <trusting group="com.google.code.gson" name="gson-parent" version="2.10.1"/>
+            <trusting group="com.google.code.gson" name="gson-parent" version="2.11.0"/>
+         </trusted-key>
+         <trusted-key id="CA491704D613780D2BEE00F2C6FC46EB51CF569C" group="jaxen" name="jaxen" version="1.2.0"/>
+         <trusted-key id="D477D51812E692011DB11E66A6EA2E2BF22E0543">
+            <trusting group="io.github.java-diff-utils" name="java-diff-utils" version="4.12"/>
+            <trusting group="io.github.java-diff-utils" name="java-diff-utils-parent" version="4.12"/>
+         </trusted-key>
          <trusted-key id="DBD744ACE7ADE6AA50DD591F66B50994442D2D40">
-            <trusting group="com.squareup.okhttp3"/>
-            <trusting group="com.squareup.okio"/>
-            <trusting group="com.squareup.retrofit2"/>
+            <trusting group="com.squareup.okhttp3" name="okhttp" version="4.12.0"/>
+            <trusting group="com.squareup.okio" name="okio" version="3.6.0"/>
+            <trusting group="com.squareup.okio" name="okio-jvm" version="3.6.0"/>
+            <trusting group="com.squareup.retrofit2" name="retrofit" version="2.11.0"/>
          </trusted-key>
-         <trusted-key id="E7DC75FC24FB3C8DFE8086AD3D5839A2262CBBFB" group="org.jetbrains.kotlinx"/>
-         <trusted-key id="EE0CA873074092F806F59B65D364ABAA39A47320" group="com.google.errorprone"/>
-         <trusted-key id="F16012A3F011B92BEBE5CA06D862781F02E5F82D" group="io.undertow"/>
-         <trusted-key id="F2D377ECA2698D0E2E4C42FE47CB96A7DCA5BDCD" group="org.jboss"/>
-         <trusted-key id="F3184BCD55F4D016E30D4C9BF42E87F9665015C9" group="org.jsoup"/>
-         <trusted-key id="FC411CD3CB7DCB0ABC9801058118B3BCDB1A5000" group="jakarta.xml.bind"/>
-         <trusted-key id="FEB9209F2F2F3F4664841E55AC107B386692DADD" group="software.amazon.awssdk"/>
+         <trusted-key id="E7DC75FC24FB3C8DFE8086AD3D5839A2262CBBFB">
+            <trusting group="org.jetbrains.kotlinx" name="kotlinx-coroutines-core-jvm" version="1.8.0"/>
+            <trusting group="org.jetbrains.kotlinx" name="kotlinx-serialization-bom" version="1.11.0"/>
+            <trusting group="org.jetbrains.kotlinx" name="kotlinx-serialization-bom" version="1.7.3"/>
+            <trusting group="org.jetbrains.kotlinx" name="kotlinx-serialization-core" version="1.11.0"/>
+            <trusting group="org.jetbrains.kotlinx" name="kotlinx-serialization-core" version="1.7.3"/>
+            <trusting group="org.jetbrains.kotlinx" name="kotlinx-serialization-core-jvm" version="1.11.0"/>
+            <trusting group="org.jetbrains.kotlinx" name="kotlinx-serialization-core-jvm" version="1.7.3"/>
+            <trusting group="org.jetbrains.kotlinx" name="kotlinx-serialization-json" version="1.11.0"/>
+            <trusting group="org.jetbrains.kotlinx" name="kotlinx-serialization-json-jvm" version="1.11.0"/>
+         </trusted-key>
+         <trusted-key id="EE0CA873074092F806F59B65D364ABAA39A47320">
+            <trusting group="com.google.errorprone" name="error_prone_annotations" version="2.27.0"/>
+            <trusting group="com.google.errorprone" name="error_prone_annotations" version="2.28.0"/>
+            <trusting group="com.google.errorprone" name="error_prone_parent" version="2.27.0"/>
+            <trusting group="com.google.errorprone" name="error_prone_parent" version="2.28.0"/>
+         </trusted-key>
+         <trusted-key id="F16012A3F011B92BEBE5CA06D862781F02E5F82D">
+            <trusting group="io.undertow" name="undertow-core" version="2.4.2.Final"/>
+            <trusting group="io.undertow" name="undertow-parent" version="2.4.2.Final"/>
+         </trusted-key>
+         <trusted-key id="F2D377ECA2698D0E2E4C42FE47CB96A7DCA5BDCD" group="org.jboss" name="jboss-parent" version="50"/>
+         <trusted-key id="F3184BCD55F4D016E30D4C9BF42E87F9665015C9" group="org.jsoup" name="jsoup" version="1.16.1"/>
+         <trusted-key id="FC411CD3CB7DCB0ABC9801058118B3BCDB1A5000">
+            <trusting group="jakarta.xml.bind" name="jakarta.xml.bind-api" version="4.0.2"/>
+            <trusting group="jakarta.xml.bind" name="jakarta.xml.bind-api-parent" version="4.0.2"/>
+         </trusted-key>
+         <trusted-key id="FEB9209F2F2F3F4664841E55AC107B386692DADD">
+            <trusting group="software.amazon.awssdk" name="aws-sdk-java-pom" version="2.11.9"/>
+            <trusting group="software.amazon.awssdk" name="bom" version="2.11.9"/>
+         </trusted-key>
          <trusted-key id="FF6E2C001948C5F2F38B0CC385911F425EC61B51">
-            <trusting group="org.apiguardian"/>
-            <trusting group="org.junit"/>
-            <trusting group="org.junit.jupiter"/>
-            <trusting group="org.junit.platform"/>
-            <trusting group="org.opentest4j"/>
+            <trusting group="org.apiguardian" name="apiguardian-api" version="1.1.2"/>
+            <trusting group="org.junit" name="junit-bom" version="5.10.0"/>
+            <trusting group="org.junit" name="junit-bom" version="5.10.2"/>
+            <trusting group="org.junit" name="junit-bom" version="5.11.4"/>
+            <trusting group="org.junit" name="junit-bom" version="5.13.1"/>
+            <trusting group="org.junit" name="junit-bom" version="5.13.4"/>
+            <trusting group="org.junit.jupiter" name="junit-jupiter" version="5.10.2"/>
+            <trusting group="org.junit.jupiter" name="junit-jupiter-api" version="5.10.2"/>
+            <trusting group="org.junit.jupiter" name="junit-jupiter-engine" version="5.10.2"/>
+            <trusting group="org.junit.jupiter" name="junit-jupiter-params" version="5.10.2"/>
+            <trusting group="org.junit.platform" name="junit-platform-commons" version="1.10.2"/>
+            <trusting group="org.junit.platform" name="junit-platform-engine" version="1.10.2"/>
+            <trusting group="org.junit.platform" name="junit-platform-launcher" version="1.10.2"/>
+            <trusting group="org.opentest4j" name="opentest4j" version="1.3.0"/>
          </trusted-key>
       </trusted-keys>
    </configuration>
