@@ -79,6 +79,36 @@ jobs:
           java-version: '25'
       - name: Configure Gradle
         uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
+      - name: Verify supply-chain enforcement (committed config, no bypass flags)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Strict dependency verification and STRICT dependency locking are committed
+          # configuration; every Gradle invocation (local, CI, release) inherits them.
+          grep -qx 'org.gradle.dependency.verification=strict' gradle.properties
+          grep -qx 'org.gradle.dependency.verification.console=verbose' gradle.properties
+          grep -q 'LockMode.STRICT' build.gradle.kts
+          # Workflows must never refresh dependencies, write locks, regenerate verification
+          # metadata, or run dependency verification in lenient/off mode. The flag fragments
+          # below are assembled from parts so this check can scan its own source without
+          # matching the policy text itself.
+          forbidden=(
+            'refresh-'"dependencies"
+            'write-'"locks"
+            'write-verification-'"metadata"
+            'dependency-verification '"lenient"
+            'dependency-verification '"off"
+            'dependency-verification='"lenient"
+            'dependency-verification='"off"
+          )
+          for flag in "${forbidden[@]}"; do
+            if grep -Rne "$flag" .github/workflows/; then
+              echo "Forbidden Gradle flag in workflows: --$flag" >&2
+              exit 1
+            fi
+          done
+      - name: Prove locked strict resolution and verification coverage (no writes)
+        run: ./gradlew resolveAndLockAll --warning-mode=fail
       - name: Install Linux virtual display
         run: sudo apt-get update && sudo apt-get install --yes xvfb
       - name: Run release gate and create signed Central bundle
