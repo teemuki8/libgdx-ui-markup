@@ -53,11 +53,13 @@ import java.util.Set;
  * <p>Where the provider supports {@link SecureDirectoryStream}, both the parent and the session
  * directory are held as open directory anchors: temp creation/writes/reads and the temp→target
  * install are directory-relative (an install race is a no-replace
- * {@link FileAlreadyExistsException}, compared no-follow), and cleanup deletes contents
- * directory-relative before removing the original session entry through the parent anchor — a
- * rename can never make cleanup delete a replacement silently. On providers without SDS, every
- * absolute operation is bracketed by a parent+session fileKey/owner recheck, and the parent must
- * hold a validated owner-only policy that denies other-principal rename/delete-child.
+ * {@link FileAlreadyExistsException}, compared no-follow), and cleanup runs its mandatory
+ * identity verification before deleting contents directory-relative, then removes the original
+ * session entry through the parent anchor — a rename can never make cleanup delete a replacement
+ * silently, and a same-inode re-ownership deletes neither contents nor entry (the leak is
+ * reported). On providers without SDS, every absolute operation is bracketed by a
+ * parent+session fileKey/owner recheck, and the parent must hold a validated owner-only policy
+ * that denies other-principal rename/delete-child.
  *
  * <p>Per-file, cumulative byte, and count quotas are enforced before retention under one lock;
  * identical content deduplicates without extra quota and mismatches are collisions (never
@@ -557,23 +559,34 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
     /**
      * Idempotent, retry-safe close: refuses publishes, deletes the owned contents
      * directory-relative through the session anchor (or the checked fallback), closes the
-     * anchors, then removes the original session entry through the parent anchor — a rename
-     * cannot make cleanup delete a replacement; each failure is aggregated and a retry
+     * anchors, then removes the original session entry through the parent anchor. Mandatory
+     * identity verification runs BEFORE any deletion: a same-inode re-ownership deletes
+     * neither children nor the entry (the leak is reported); a rename/replant never redirects
+     * the fd and the replacement entry is refused; each failure is aggregated and a retry
      * re-attempts whatever failed.
      */
     @Override
     public synchronized void close() {
         closed = true;
         RuntimeException failure = null;
+        // Mandatory identity verification ahead of deleteContentsDirRelative: never delete the
+        // children or the entry of a session whose identity cannot be proven (fileKey or owner
+        // missing/changed) — the leak is reported instead.
+        CleanupVerdict verdict = verifyCleanupIdentity();
+        boolean mayDeleteContents = verdict.state == CleanupVerdict.State.MATCHES
+                || verdict.state == CleanupVerdict.State.REPLACED
+                || verdict.state == CleanupVerdict.State.MISSING;
         if (dirStream != null && !sessionStreamClosed) {
-            failure = aggregate(failure, deleteContentsDirRelative());
+            if (mayDeleteContents) {
+                failure = aggregate(failure, deleteContentsDirRelative());
+            }
             failure = aggregate(failure, closeStream(sessionDir, dirStream, "session", () ->
                     sessionStreamClosed = true));
         }
         // With the session stream closed (or absent), remove the session entry itself through
         // the parent anchor — identity-verified so a replacement is never deleted.
         if (sessionStreamClosed || dirStream == null) {
-            failure = aggregate(failure, deleteSessionEntryThroughParent());
+            failure = aggregate(failure, deleteSessionEntryThroughParent(verdict));
         }
         if (parentStream != null && !parentStreamClosed) {
             failure = aggregate(failure, closeStream(parentReal, parentStream, "parent", () ->
@@ -581,6 +594,68 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
         }
         if (failure != null) {
             throw failure;
+        }
+    }
+
+    /**
+     * Mandatory pre-deletion identity verification for cleanup, run ahead of every deletion.
+     * The session entry's fileKey is proven through the parent anchor when available (anchored,
+     * no path race); the owner is proven through the identity source and must be non-null and
+     * equal to the captured owner (never a null comparison). A same-inode re-ownership yields
+     * {@link CleanupVerdict.State#REOWNED} — nothing may be deleted; a replant yields
+     * {@link CleanupVerdict.State#REPLACED} — only the replacement entry is refused; a missing
+     * entry yields {@link CleanupVerdict.State#MISSING}; an unreadable identity yields
+     * {@link CleanupVerdict.State#UNVERIFIABLE} — nothing may be deleted.
+     */
+    private CleanupVerdict verifyCleanupIdentity() {
+        if (parentStream != null && !parentStreamClosed) {
+            Path name = sessionReal.getFileName();
+            try {
+                BasicFileAttributeView view = parentStream.getFileAttributeView(name,
+                        BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
+                if (view == null) {
+                    return CleanupVerdict.missing();
+                }
+                if (!sessionFileKey.equals(view.readAttributes().fileKey())) {
+                    return CleanupVerdict.replaced();
+                }
+            } catch (NoSuchFileException alreadyGone) {
+                return CleanupVerdict.missing();
+            } catch (IOException | RuntimeException failure) {
+                return CleanupVerdict.unverifiable(unavailable(
+                        "session directory identity cannot be verified: "
+                                + failure.getMessage(), failure));
+            }
+        } else {
+            // No parent anchor (or already closed): fall back to path-based reads, idempotent
+            // when the session is already gone.
+            if (!Files.exists(sessionReal, LinkOption.NOFOLLOW_LINKS)) {
+                return CleanupVerdict.missing();
+            }
+            try {
+                Object currentKey = identitySource.fileKey(sessionReal);
+                if (currentKey == null || !sessionFileKey.equals(currentKey)) {
+                    return CleanupVerdict.replaced();
+                }
+            } catch (IOException failure) {
+                return CleanupVerdict.unverifiable(unavailable(
+                        "session directory identity cannot be verified: "
+                                + failure.getMessage(), failure));
+            }
+        }
+        // Owner is mandatory and must equal the captured owner (never a null comparison): a
+        // same-inode re-ownership must not have its children or entry deleted.
+        try {
+            UserPrincipal currentOwner = identitySource.owner(sessionReal);
+            if (currentOwner == null || !sessionOwner.equals(currentOwner)) {
+                return CleanupVerdict.reowned(unavailable(
+                        "session directory owner missing or changed: " + sessionReal, null));
+            }
+            return CleanupVerdict.matches();
+        } catch (IOException failure) {
+            return CleanupVerdict.unverifiable(unavailable(
+                    "session directory owner cannot be proven: " + failure.getMessage(),
+                    failure));
         }
     }
 
@@ -677,41 +752,53 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
     }
 
     /**
-     * Removes the original session entry through the parent anchor, but only after verifying
-     * its immutable identity (mandatory non-null fileKey and owner, both equal) still matches:
-     * if the session directory was renamed and a replacement planted at its name — even a real
-     * directory owned by a different principal — cleanup refuses to delete the replacement and
-     * reports the leak instead of deleting it silently.
+     * Removes the original session entry through the parent anchor, honoring the verdict of
+     * the mandatory pre-deletion identity verification: only a {@code MATCHES} verdict deletes
+     * (through the parent anchor, re-proving the entry's fileKey immediately before the
+     * delete, or the identity-verified fallback when the anchor is unavailable/closed); a
+     * re-owned same-inode session, a replaced entry, or an unprovable identity is refused and
+     * reported as a leak — never deleted.
      */
-    private RuntimeException deleteSessionEntryThroughParent() {
+    private RuntimeException deleteSessionEntryThroughParent(CleanupVerdict verdict) {
+        switch (verdict.state) {
+            case REOWNED:
+                return new IllegalStateException(
+                        "session directory owner changed; refusing to delete the re-owned "
+                                + "session (leak reported): " + sessionDir, verdict.cause);
+            case REPLACED:
+                return new IllegalStateException(
+                        "session directory was replaced; refusing to delete the replacement "
+                                + "(leak reported): " + sessionDir);
+            case MISSING:
+                return null; // already gone
+            case UNVERIFIABLE:
+                return new IllegalStateException(
+                        "session directory identity cannot be proven; refusing to delete "
+                                + "(leak reported): " + sessionDir, verdict.cause);
+            case MATCHES:
+                break;
+        }
+        if (sessionStreamClosed) {
+            // The session stream is gone; clean any remaining contents through the
+            // identity-verified fallback (refuses a replacement, never deletes it).
+            return deleteOwnedFallback();
+        }
         if (parentStream == null || parentStreamClosed) {
             return deleteSessionEntryFallback();
         }
         Path name = sessionReal.getFileName();
         try {
+            // Re-prove the entry's identity through the parent anchor immediately before the
+            // delete (no path race): a swap in the window since the close() verdict is refused.
             BasicFileAttributeView view = parentStream.getFileAttributeView(name,
                     BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
             if (view == null) {
                 return null; // already gone
             }
-            Object currentKey = view.readAttributes().fileKey();
-            if (!sessionFileKey.equals(currentKey)) {
+            if (!sessionFileKey.equals(view.readAttributes().fileKey())) {
                 return new IllegalStateException(
                         "session directory was replaced; refusing to delete the replacement "
                                 + "(leak reported): " + sessionDir);
-            }
-            // Owner must still match the captured immutable owner (mandatory, non-null).
-            try {
-                verifyIdentity(sessionReal, sessionFileKey, sessionOwner, "session");
-            } catch (ArtifactReference.ArtifactUnavailableException ownerChanged) {
-                return new IllegalStateException(
-                        "session directory owner changed; refusing to delete the replacement "
-                                + "(leak reported): " + sessionDir, ownerChanged);
-            }
-            if (sessionStreamClosed) {
-                // The session stream is gone; clean any remaining contents through the
-                // identity-verified fallback (refuses a replacement, never deletes it).
-                return deleteOwnedFallback();
             }
             parentStream.deleteDirectory(name);
             return null;
@@ -1058,6 +1145,59 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
 
         @Override public UserPrincipal owner(Path path) throws IOException {
             return Files.getOwner(path, LinkOption.NOFOLLOW_LINKS);
+        }
+    }
+
+    /** Outcome of the mandatory pre-deletion identity verification for {@link #close()}. */
+    private static final class CleanupVerdict {
+        enum State {
+            /** The session entry is the exact captured inode and owner: children and entry may
+             * be deleted. */
+            MATCHES,
+            /** Same inode but re-owned by a different principal: neither children nor the
+             * entry may be deleted. */
+            REOWNED,
+            /** The entry was replaced by a different inode: the replacement entry is refused,
+             * while the anchored fd still refers to the original and its contents may be
+             * cleaned. */
+            REPLACED,
+            /** No entry exists at the session path (already gone or renamed away): nothing to
+             * delete at the path; the anchored fd still refers to the original and its contents
+             * may be cleaned. */
+            MISSING,
+            /** The identity could not be read at all: nothing may be deleted. */
+            UNVERIFIABLE
+        }
+
+        final State state;
+        /** Verification failure preserved for aggregation; non-null for REOWNED/UNVERIFIABLE. */
+        final ArtifactReference.ArtifactUnavailableException cause;
+
+        private CleanupVerdict(State state,
+                ArtifactReference.ArtifactUnavailableException cause) {
+            this.state = state;
+            this.cause = cause;
+        }
+
+        static CleanupVerdict matches() {
+            return new CleanupVerdict(State.MATCHES, null);
+        }
+
+        static CleanupVerdict reowned(ArtifactReference.ArtifactUnavailableException cause) {
+            return new CleanupVerdict(State.REOWNED, cause);
+        }
+
+        static CleanupVerdict replaced() {
+            return new CleanupVerdict(State.REPLACED, null);
+        }
+
+        static CleanupVerdict missing() {
+            return new CleanupVerdict(State.MISSING, null);
+        }
+
+        static CleanupVerdict unverifiable(
+                ArtifactReference.ArtifactUnavailableException failure) {
+            return new CleanupVerdict(State.UNVERIFIABLE, failure);
         }
     }
 }

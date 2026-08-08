@@ -552,7 +552,17 @@ final class TmpDirArtifactPublisherTest {
                 new TmpDirArtifactPublisher(1024, 4096, 4, tempDir, null);
         try {
             Path sessionDir = publisher.sessionDir();
-            publisher.publish("text/plain", new byte[] {1});
+            byte[] payload = {1};
+            publisher.publish("text/plain", payload);
+            String digest = sha256(payload);
+            // Sentinel child and nested sentinel tree planted inside the owned session: their
+            // contents must remain intact when the same inode is re-owned by another principal.
+            Path sentinelFile = sessionDir.resolve("sentinel.txt");
+            Files.writeString(sentinelFile, "keep-me");
+            Path sentinelTree = sessionDir.resolve("sentinel-tree");
+            Files.createDirectories(sentinelTree);
+            Path sentinelNested = sentinelTree.resolve("nested.txt");
+            Files.writeString(sentinelNested, "nested-content");
             // Swap the identity source so the session path now reports a DIFFERENT owner (a
             // real directory re-owned by another principal): every path must fail closed on
             // the owner inequality even though the fileKey still matches.
@@ -569,16 +579,39 @@ final class TmpDirArtifactPublisherTest {
             assertThrows(ArtifactReference.ArtifactUnavailableException.class,
                     () -> publisher.publish("text/plain", new byte[] {2}),
                     "a session directory re-owned by another principal fails closed on publish");
-            // Cleanup must refuse to delete the re-owned replacement and report the leak.
+            // Cleanup must refuse to delete the re-owned session — neither its children nor
+            // the entry — and report the leak, preserving the verification failure as the
+            // aggregated cause.
             RuntimeException cleanup = assertThrows(RuntimeException.class, publisher::close,
                     "close reports the re-owned session as a leak");
             assertTrue(cleanup.getMessage().contains("replaced")
                             || cleanup.getMessage().contains("re-owned")
                             || cleanup.getMessage().contains("owner changed"),
-                    "the leak message names the replacement: " + cleanup.getMessage());
+                    "the leak message names the re-ownership: " + cleanup.getMessage());
+            assertTrue(cleanup.getCause() instanceof ArtifactReference.ArtifactUnavailableException,
+                    "the verification failure is aggregated as the cause: " + cleanup.getCause());
             assertTrue(Files.isDirectory(sessionDir),
                     "the re-owned session directory is never deleted by cleanup");
-            Files.deleteIfExists(sessionDir); // the replacement, after the leak was reported
+            assertArrayEquals(payload, Files.readAllBytes(sessionDir.resolve(digest)),
+                    "the published artifact survives a re-owned close with intact contents");
+            assertEquals("keep-me", Files.readString(sentinelFile),
+                    "the sentinel child survives a re-owned close with intact contents");
+            assertEquals("nested-content", Files.readString(sentinelNested),
+                    "the nested sentinel tree survives a re-owned close with intact contents");
+            // Idempotent retry: the first close already closed the anchors, so a second close
+            // reports the same leak without new stream errors and still deletes nothing.
+            RuntimeException retry = assertThrows(RuntimeException.class, publisher::close,
+                    "a retried close reports the same re-ownership leak");
+            assertTrue(retry.getMessage().contains("replaced")
+                            || retry.getMessage().contains("re-owned")
+                            || retry.getMessage().contains("owner changed"),
+                    "the retried leak message names the re-ownership: " + retry.getMessage());
+            assertFalse(retry.getMessage().contains("failed to close"),
+                    "the anchors were closed once; the retry adds no stream-close error");
+            assertEquals("keep-me", Files.readString(sentinelFile),
+                    "the sentinel child still survives the retried close");
+            // The re-owned directory (with its intact contents) is left for the finally block,
+            // which restores the real identity source and completes the cleanup.
         } finally {
             publisher.identitySource = new TmpDirArtifactPublisher.RealIdentitySource();
             try {
