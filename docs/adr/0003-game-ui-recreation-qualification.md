@@ -60,7 +60,7 @@ real game UI screenshots.
    entry's render is measured (the positive) together with its deterministic deliberate
    negatives: vertical flip, fixed translation (192×108 px), 120° hue rotation, box blur
    (radius 8, channels averaged independently — summing packed ARGB integers would corrupt
-   colors and inflate gradient energy), and uniform 0.75 scale anchored at the top-left.
+   colors and inflate gradient energy), and uniform 0.75 scale centered on the source canvas.
    Each transformation is a negative for the failure mode it exhibits and only contributes to
    that component's calibration: flip/translation/scale → geometry, hue → color,
    blur/scale → detail. The committed threshold per entry and component is the midpoint of
@@ -75,10 +75,9 @@ real game UI screenshots.
    `COLOR_FLOOR`, `DETAIL_FLOOR`, `floor(FidelityComponent)`). Each floor sits above the
    worst threshold a self-transform calibration ever minted (geometry 0.076, color 0.047,
    detail 0.044) so that failure mode can never be committed again, while staying below the
-   current faithful recreations after the fixed-canvas scale alignment (Hades
-   0.112/0.198/0.114, STS 0.107/0.230/0.186) so honest recreations can still calibrate;
-   Wesnoth must still improve its color and detail above the floors. The effective
-   calibrated threshold is
+   final faithful recreations after fixed-canvas scale alignment: Palisade
+   0.146/0.905/0.339, Hades 0.105/0.327/0.124, STS 0.101/0.242/0.178, and
+   Wesnoth 0.119/0.217/0.121 (geometry/color/detail). The effective calibrated threshold is
    `max(component floor, midpoint)`, so a midpoint that would undercut the floor is lifted to
    it, and a positive that itself scores below the floor refuses calibration outright
    (`calibrate` returns empty and the calibration task fails with a typed
