@@ -187,13 +187,7 @@ public final class CssParser {
     private static List<Selector> parseSelectors(String text, int line, int column,
             int totalSelectors) {
         String clean = removeComments(text).strip();
-        int commaCount = 0;
-        for (int index = 0; index < clean.length(); index++) {
-            if (clean.charAt(index) == ',') {
-                commaCount++;
-            }
-        }
-        int partCount = commaCount + 1;
+        int partCount = validateSelectorParts(clean, line, column);
         if (partCount > MAX_SELECTORS_PER_GROUP) {
             throw tooLarge(line, column, "selector group exceeds the "
                     + MAX_SELECTORS_PER_GROUP + "-selector limit");
@@ -207,10 +201,6 @@ public final class CssParser {
             String candidate = part.strip();
             if (candidate.isEmpty()) {
                 throw styleError(line, column, "empty selector in \"" + clean + "\"");
-            }
-            if (candidate.length() > MAX_SELECTOR_LENGTH) {
-                throw tooLarge(line, column, "selector \"" + part.strip() + "\" exceeds the "
-                        + MAX_SELECTOR_LENGTH + "-character limit");
             }
             String pseudo = null;
             int pseudoAt = candidate.indexOf(':');
@@ -229,6 +219,41 @@ public final class CssParser {
             selectors.add(parseSimple(candidate, pseudo, line, column));
         }
         return List.copyOf(selectors);
+    }
+
+    /**
+     * One pass over the comma-separated selector text that counts parts and validates each
+     * trimmed part's length against {@link #MAX_SELECTOR_LENGTH} without allocating split
+     * collections, so an overlong selector is rejected before {@code split} runs. Trimming
+     * mirrors {@link String#strip()} (whitespace plus ISO control characters).
+     */
+    private static int validateSelectorParts(String text, int line, int column) {
+        int partStart = 0;
+        int partCount = 0;
+        int index = 0;
+        int length = text.length();
+        while (index <= length) {
+            if (index == length || text.charAt(index) == ',') {
+                int start = partStart;
+                while (start < index && (Character.isWhitespace(text.charAt(start))
+                        || Character.isISOControl(text.charAt(start)))) {
+                    start++;
+                }
+                int end = index;
+                while (end > start && (Character.isWhitespace(text.charAt(end - 1))
+                        || Character.isISOControl(text.charAt(end - 1)))) {
+                    end--;
+                }
+                if (end - start > MAX_SELECTOR_LENGTH) {
+                    throw tooLarge(line, column, "selector \"" + text.substring(start, end)
+                            + "\" exceeds the " + MAX_SELECTOR_LENGTH + "-character limit");
+                }
+                partCount++;
+                partStart = index + 1;
+            }
+            index++;
+        }
+        return partCount;
     }
 
     private static Selector parseSimple(String candidate, String pseudo, int line, int column) {

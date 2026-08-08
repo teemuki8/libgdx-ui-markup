@@ -308,6 +308,21 @@ final class CssTest {
     }
 
     @Test
+    void overlongSelectorIsRejectedBeforeSplitAllocation() {
+        // The leading empty part would only surface after split(","); the length pre-pass must
+        // reject the trailing overlong selector first, so the failure is TOO_LARGE, not the
+        // split-time "empty selector" STYLE_ERROR.
+        String css = "," + "." + "c" + "x".repeat(CssParser.MAX_SELECTOR_LENGTH);
+        MarkupException failure = assertThrows(MarkupException.class,
+                () -> parser.parse(css + " { color: red; }"));
+        assertEquals(MarkupException.Kind.TOO_LARGE, failure.kind(),
+                "length validation precedes split allocation");
+        assertEquals(1, failure.line());
+        assertEquals(1, failure.column());
+        assertTrue(failure.getMessage().contains("selector"));
+    }
+
+    @Test
     void excessiveCommaGroupIsTooLarge() {
         String group = String.join(",", Collections.nCopies(
                 CssParser.MAX_SELECTORS_PER_GROUP + 1, "button"));
