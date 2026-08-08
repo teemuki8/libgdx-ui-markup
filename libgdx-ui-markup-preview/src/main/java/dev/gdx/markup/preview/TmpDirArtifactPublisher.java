@@ -585,7 +585,7 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
                 || verdict.state == CleanupVerdict.State.GONE;
         if (dirStream != null && !sessionStreamClosed) {
             if (mayDeleteContents) {
-                failure = aggregate(failure, deleteContentsDirRelative());
+                failure = aggregate(failure, deleteContents(verdict));
             }
             failure = aggregate(failure, closeStream(sessionDir, dirStream, "session", () ->
                     sessionStreamClosed = true));
@@ -737,57 +737,48 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
     }
 
     /**
-     * Bounded, no-follow scan for an entry with the captured session fileKey, proving whether
-     * the session inode is still linked somewhere in the parent (renamed away) rather than
-     * truly deleted. The scan is best-effort: exceeding the bound or failing to enumerate the
-     * parent is treated as still-linked (leak reported, fail closed).
+     * Bounded, no-follow scan of the CURRENT parent entries for the one whose fileKey equals
+     * the captured session identity, proving whether the session inode is still linked
+     * somewhere in the parent (renamed away) and, when it is, where. The scan opens a FRESH
+     * directory stream and reads each sibling by absolute path: a directory stream retained
+     * across a rename cannot enumerate reliably on every platform (the retained fd's readdir
+     * may not reflect the rename), while a fresh stream opened at scan time and path-based
+     * stat reads always reflect the current directory state. Returns the current path of the
+     * original session inode, or {@code null} when it is not linked in the parent. Exceeding
+     * the bound or failing to enumerate the parent is reported as an error (fail closed).
      */
-    private boolean sessionInodeStillLinkedInParent() {
-        int scanned = 0;
-        try {
-            if (parentStream != null && !parentStreamClosed) {
-                for (Path sibling : parentStream) {
-                    if (scanned++ >= PARENT_SCAN_LIMIT) {
-                        return true; // cannot prove gone within the bound
-                    }
-                    if (sibling.getFileName().equals(sessionReal.getFileName())) {
-                        continue; // the captured name itself (missing by now) is not a link elsewhere
-                    }
-                    try {
-                        BasicFileAttributeView view = parentStream.getFileAttributeView(sibling,
-                                BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
-                        if (view != null && sessionFileKey.equals(view.readAttributes().fileKey())) {
-                            return true;
-                        }
-                    } catch (IOException | RuntimeException unreadable) {
-                        // unreadable sibling: skip it
-                    }
+    private Path findSessionInodeInParent() throws IOException {
+        try (DirectoryStream<Path> siblings = Files.newDirectoryStream(parentReal)) {
+            int scanned = 0;
+            for (Path sibling : siblings) {
+                if (scanned++ >= PARENT_SCAN_LIMIT) {
+                    throw new IOException(
+                            "parent scan bound exceeded: " + parentReal);
                 }
-            } else {
-                try (DirectoryStream<Path> siblings = Files.newDirectoryStream(parentReal)) {
-                    for (Path sibling : siblings) {
-                        if (scanned++ >= PARENT_SCAN_LIMIT) {
-                            return true; // cannot prove gone within the bound
-                        }
-                        if (sibling.getFileName().equals(sessionReal.getFileName())) {
-                            continue;
-                        }
-                        try {
-                            if (sessionFileKey.equals(Files.readAttributes(sibling,
-                                    BasicFileAttributes.class,
-                                    LinkOption.NOFOLLOW_LINKS).fileKey())) {
-                                return true;
-                            }
-                        } catch (IOException | RuntimeException unreadable) {
-                            // unreadable sibling: skip it
-                        }
+                if (sibling.getFileName().equals(sessionReal.getFileName())) {
+                    continue; // the captured name itself (missing or replaced) is not a link elsewhere
+                }
+                try {
+                    if (sessionFileKey.equals(Files.readAttributes(sibling,
+                            BasicFileAttributes.class,
+                            LinkOption.NOFOLLOW_LINKS).fileKey())) {
+                        return sibling;
                     }
+                } catch (IOException | RuntimeException unreadable) {
+                    // unreadable sibling: skip it
                 }
             }
+        }
+        return null;
+    }
+
+    /** Whether the session inode is still linked somewhere in the parent (renamed away). */
+    private boolean sessionInodeStillLinkedInParent() {
+        try {
+            return findSessionInodeInParent() != null;
         } catch (IOException | RuntimeException failure) {
             return true; // cannot prove the inode is gone: fail closed (leak reported)
         }
-        return false;
     }
 
     /** Deletes the owned contents through the session directory stream (directory-relative),
@@ -800,6 +791,84 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
             primary = aggregate(primary, new IllegalStateException(
                     "failed to delete session contents: " + walkFailure.getMessage(),
                     walkFailure));
+        }
+        return primary;
+    }
+
+    /**
+     * Deletes the owned session contents for the verdict. The retained fd (name-independent)
+     * always gets the first attempt; for a REPLACED or RENAMED session the original inode no
+     * longer sits at the captured name, and a directory stream retained across that rename
+     * cannot enumerate its contents reliably on every platform — so the original's current
+     * name is located by fileKey through a FRESH parent scan and its contents are cleaned
+     * through a freshly opened, re-verified stream. A replacement is never touched: the fresh
+     * stream's anchored identity (its own fd fileKey) must equal the captured identity before
+     * anything is deleted.
+     */
+    private RuntimeException deleteContents(CleanupVerdict verdict) {
+        RuntimeException primary = deleteContentsDirRelative();
+        if (verdict.state == CleanupVerdict.State.REPLACED
+                || verdict.state == CleanupVerdict.State.RENAMED) {
+            primary = aggregate(primary, deleteOriginalContentsThroughCurrentName());
+        }
+        return primary;
+    }
+
+    /**
+     * Cleans the contents of the original session inode through a freshly opened stream at
+     * its current parent path (located by fileKey), deleting directory-relative and re-proving
+     * the anchored identity through the fresh fd before any deletion. Returns {@code null}
+     * when the original is not linked in the parent (the retained-fd attempt governs).
+     */
+    private RuntimeException deleteOriginalContentsThroughCurrentName() {
+        Path original;
+        try {
+            original = findSessionInodeInParent();
+        } catch (IOException | RuntimeException failure) {
+            return new IllegalStateException(
+                    "unable to locate the renamed original session directory: "
+                            + failure.getMessage(), failure);
+        }
+        if (original == null) {
+            return null; // not linked in the parent; the retained-fd attempt governs
+        }
+        RuntimeException primary = null;
+        SecureDirectoryStream<Path> fresh = openSecureStream(original);
+        if (fresh == null) {
+            return new IllegalStateException(
+                    "unable to open the renamed original session directory for cleanup: "
+                            + original);
+        }
+        try {
+            // Re-prove the anchored identity through the fresh fd before any deletion: a
+            // same-inode re-ownership or a raced replacement is refused, never deleted.
+            BasicFileAttributeView keyView = fresh.getFileAttributeView(Path.of("."),
+                    BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
+            Object fdKey = keyView != null ? keyView.readAttributes().fileKey() : null;
+            if (fdKey == null || !sessionFileKey.equals(fdKey)) {
+                return new IllegalStateException(
+                        "refusing to clean the unverified renamed original session directory: "
+                                + original);
+            }
+            try {
+                primary = aggregate(primary, deleteChildren(fresh, original));
+            } catch (RuntimeException walkFailure) {
+                primary = aggregate(primary, new IllegalStateException(
+                        "failed to delete the renamed original session contents: "
+                                + walkFailure.getMessage(), walkFailure));
+            }
+        } catch (IOException | RuntimeException failure) {
+            primary = aggregate(primary, new IllegalStateException(
+                    "unable to verify the renamed original session directory: "
+                            + failure.getMessage(), failure));
+        } finally {
+            try {
+                fresh.close();
+            } catch (IOException | RuntimeException closeFailure) {
+                primary = aggregate(primary, new IllegalStateException(
+                        "failed to close the renamed original session stream: "
+                                + closeFailure.getMessage(), closeFailure));
+            }
         }
         return primary;
     }
