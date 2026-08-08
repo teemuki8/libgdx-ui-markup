@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Deterministic-frame fixture: a full-width accent bar at the top, a full-width panel bar
+     at the bottom, and a transparent middle that must show the fixed clear color. The
+     top/bottom asymmetry makes PNG vertical orientation provable from the bar colors, and the
+     transparent middle makes stale-pixel ghosting provable. The root is a <table> so the
+     preview sizes it to the viewport exactly. -->
+<table>
+  <row/>
+  <image id="top-bar" drawable="accent" height="48" fill="true" expand="x"/>
+  <row/>
+  <group id="middle" expand="true" fill="true"/>
+  <row/>
+  <image id="bottom-bar" drawable="panel" height="48" fill="true" expand="x"/>
+</table>

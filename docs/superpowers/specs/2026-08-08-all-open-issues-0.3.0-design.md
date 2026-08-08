@@ -122,7 +122,7 @@ Version `MarkupStatus` and serialize separate bounded fields: `schemaVersion`, `
 
 ### Artifact storage — #12
 
-Each preview session creates a private, owner-only temporary directory. Artifact names use the full digest and writes use create-new semantics without following symbolic links. Enforce per-artifact and cumulative byte/count quotas before retention. Close deletes session artifacts and the directory; every write failure removes its temporary file. Published references remain transport-neutral.
+Preview artifact retention is in-memory per session: the publisher keeps payloads in bounded memory keyed by their full SHA-256 digest and publishes transport-neutral opaque `artifact:<128-bit digest prefix>` references. Enforce per-artifact and cumulative byte/count quotas before retention; identical content dedupes without extra quota and digest mismatches are typed collisions. Close zeroizes and removes retained payloads and rejects later publish/readback. The filesystem alternative was rejected: pure Java cannot atomically identity-condition a directory unlink (no JDK API conditions an unlink on the directory inode/owner, `renameat2`/`RENAME_EXCHANGE` is not exposed, and macOS/Windows lack it; the JDK Windows provider also returns a null `fileKey`), so every disk approach either races or fails closed by refusing cleanup — see the task-5 hosted report in the preview/IDEA lifecycle plan.
 
 ### IDEA process ownership — #24
 

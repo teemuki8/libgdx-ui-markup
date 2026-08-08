@@ -1,21 +1,35 @@
 package dev.gdx.markup.idea
 
 /**
- * One parsed {@code markup-status: {...}} line emitted by the preview application. The JSON is
- * bounded and produced by the preview, so a small scanner (no JSON dependency) is sufficient.
+ * One parsed {@code markup-status: {...}} line emitted by the preview application (schema
+ * version 2). The JSON is bounded and produced by the preview, so a small scanner (no JSON
+ * dependency) is sufficient. The IDEA panel consumes the typed fields directly — it never
+ * parses path or coordinates out of the message prose.
  */
 data class MarkupStatusLine(
+    val schemaVersion: Int,
     val ok: Boolean,
-    val nodes: Int?,
-    val message: String?,
+    val kind: String?,
+    val elementPath: String?,
     val line: Int?,
     val column: Int?,
+    val message: String?,
+    val nodes: Int?,
 )
 
 /** Parses {@code markup-status: {json}} lines; returns {@code null} for other output. */
 object MarkupStatusLineParser {
     private val PREFIX = "markup-status:"
+    private const val SUPPORTED_SCHEMA_VERSION = 2
+    private const val GENERIC_KIND = "GENERIC"
 
+    /**
+     * Parses one status line. Returns {@code null} for output that is not a status line or a
+     * malformed schema-v2 payload (negative nodes, errors without a kind or message, errors
+     * carrying nodes, negative locations, or a generic error with an element path); returns an
+     * error {@link MarkupStatusLine} carrying an actionable message when the line declares an
+     * unsupported schema version (the preview distribution is newer or older than the plugin).
+     */
     fun parse(line: String): MarkupStatusLine? {
         val trimmed = line.trim()
         if (!trimmed.startsWith(PREFIX)) {
@@ -25,15 +39,71 @@ object MarkupStatusLineParser {
         if (!json.startsWith("{") || !json.endsWith("}")) {
             return null
         }
+        val schemaVersion = int(json, "schemaVersion") ?: 1
+        if (schemaVersion != SUPPORTED_SCHEMA_VERSION) {
+            return unsupported(schemaVersion)
+        }
         val ok = boolean(json, "ok") ?: return null
+        val kind = string(json, "kind")
+        val elementPath = string(json, "elementPath")
+        val line = int(json, "line")
+        val column = int(json, "column")
+        val message = string(json, "message")
+        val nodes = int(json, "nodes")
+        if (ok) {
+            if (nodes == null || nodes < 0) {
+                return null
+            }
+            if (kind != null || elementPath != null || message != null
+                || line != null || column != null
+            ) {
+                return null
+            }
+        } else {
+            if (kind == null || kind.isBlank()) {
+                return null
+            }
+            if (message == null) {
+                return null
+            }
+            if (line != null && line < 0) {
+                return null
+            }
+            if (column != null && column < 0) {
+                return null
+            }
+            if (nodes != null && nodes != 0) {
+                return null
+            }
+            val pathEmpty = elementPath == null || elementPath.isEmpty()
+            if (kind == GENERIC_KIND && !pathEmpty) {
+                return null
+            }
+        }
         return MarkupStatusLine(
+            schemaVersion = schemaVersion,
             ok = ok,
-            nodes = int(json, "nodes"),
-            message = string(json, "message"),
-            line = int(json, "line"),
-            column = int(json, "column"),
+            kind = kind,
+            elementPath = elementPath,
+            line = line,
+            column = column,
+            message = message,
+            nodes = nodes,
         )
     }
+
+    private fun unsupported(schemaVersion: Int): MarkupStatusLine = MarkupStatusLine(
+        schemaVersion = schemaVersion,
+        ok = false,
+        kind = "UNSUPPORTED_SCHEMA",
+        elementPath = null,
+        line = null,
+        column = null,
+        message = "preview status schema v$schemaVersion is not supported by this plugin"
+            + " (supports v$SUPPORTED_SCHEMA_VERSION) — update the plugin or rebuild the"
+            + " preview distribution",
+        nodes = null,
+    )
 
     private fun boolean(json: String, key: String): Boolean? {
         val value = value(json, key) ?: return null
@@ -58,7 +128,25 @@ object MarkupStatusLineParser {
             while (index < body.length) {
                 val char = body[index]
                 if (char == '\\' && index + 1 < body.length) {
-                    append(body[index + 1])
+                    when (val escaped = body[index + 1]) {
+                        '"', '\\', '/' -> append(escaped)
+                        'n' -> append('\n')
+                        't' -> append('\t')
+                        'r' -> append('\r')
+                        'b' -> append('\b')
+                        'f' -> append('\u000C')
+                        'u' -> {
+                            val hex = body.substring(index + 2, (index + 6).coerceAtMost(body.length))
+                            val code = hex.toIntOrNull(16)
+                            if (hex.length == 4 && code != null) {
+                                append(code.toChar())
+                                index += 4
+                            } else {
+                                append(escaped)
+                            }
+                        }
+                        else -> append(escaped)
+                    }
                     index += 2
                 } else {
                     append(char)

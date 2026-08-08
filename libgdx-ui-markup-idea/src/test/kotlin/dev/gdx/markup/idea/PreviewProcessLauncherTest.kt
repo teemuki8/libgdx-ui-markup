@@ -5,6 +5,7 @@ import java.nio.file.Path
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -18,15 +19,55 @@ class PreviewProcessLauncherTest {
         val ui = Path.of("/tmp/app.xml")
         val css = Path.of("/tmp/app.css")
         val command = PreviewProcessLauncher.buildCommand(dist, ui, css)
-        assertEquals("--enable-native-access=ALL-UNNAMED", command[1])
-        assertEquals("-cp", command[2])
-        assertTrue(command[3].endsWith("${java.io.File.separator}lib"
+        // Host-agnostic assertions: on macOS a platform flag (-XstartOnFirstThread) is
+        // inserted at index 1, on other hosts the first JVM flag is at index 1; the
+        // dedicated macOs/nonMacOs builder tests pin the flag selection itself.
+        val nativeAccess = command.indexOf("--enable-native-access=ALL-UNNAMED")
+        assertTrue(nativeAccess >= 1, "the JVM flag follows the java executable: $command")
+        if (nativeAccess > 1) {
+            assertEquals("-XstartOnFirstThread", command[1],
+                "on macOS the platform flag precedes the JVM flags")
+        }
+        assertEquals("-cp", command[nativeAccess + 1], "-cp follows the JVM flags")
+        assertTrue(command[nativeAccess + 2].endsWith("${java.io.File.separator}lib"
             + "${java.io.File.separator}*"))
-        assertEquals("dev.gdx.markup.preview.PreviewApp", command[4])
-        assertEquals("--ui", command[5])
-        assertEquals(ui.toAbsolutePath().toString(), command[6])
-        assertEquals("--css", command[7])
-        assertEquals(css.toAbsolutePath().toString(), command[8])
+        assertEquals("dev.gdx.markup.preview.PreviewApp", command[nativeAccess + 3],
+            "the main class follows the classpath")
+        val uiIndex = command.indexOf("--ui")
+        assertEquals(uiIndex + 1, command.indexOf(ui.toAbsolutePath().toString()))
+        assertEquals(uiIndex + 2, command.indexOf("--css"))
+        assertEquals(uiIndex + 3, command.indexOf(css.toAbsolutePath().toString()))
+    }
+
+    @Test
+    fun macOsLauncherPutsXstartOnFirstThreadBeforeClasspathAndMain() {
+        val dist = createTempDirectory("dist")
+        Files.createDirectories(dist.resolve("lib"))
+        val ui = Path.of("/tmp/app.xml")
+        val command = PreviewProcessLauncher.buildCommand(dist, ui, null, "Mac OS X")
+        assertEquals("-XstartOnFirstThread", command[1],
+            "macOS production children run with -XstartOnFirstThread")
+        assertEquals("-cp", command[3],
+            "the platform flag precedes the classpath option")
+        assertTrue(command[4].endsWith("${java.io.File.separator}lib"
+            + "${java.io.File.separator}*"))
+        assertEquals("dev.gdx.markup.preview.PreviewApp", command[5],
+            "the main class follows the classpath")
+        assertEquals("--ui", command[6])
+    }
+
+    @Test
+    fun nonMacOsLauncherAddsNoPlatformFlag() {
+        val dist = createTempDirectory("dist")
+        Files.createDirectories(dist.resolve("lib"))
+        val ui = Path.of("/tmp/app.xml")
+        for (os in listOf("Linux", "Windows 11")) {
+            val command = PreviewProcessLauncher.buildCommand(dist, ui, null, os)
+            assertFalse(command.contains("-XstartOnFirstThread"),
+                "no platform flag on $os (it is macOS-only)")
+            assertEquals("--enable-native-access=ALL-UNNAMED", command[1])
+            assertEquals("-cp", command[2])
+        }
     }
 
     @Test

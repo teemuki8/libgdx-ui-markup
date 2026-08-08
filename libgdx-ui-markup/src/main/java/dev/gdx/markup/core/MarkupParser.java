@@ -1,10 +1,17 @@
 package dev.gdx.markup.core;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.StringReader;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Deque;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -78,7 +85,10 @@ public final class MarkupParser {
         this.extraTags = Set.copyOf(Objects.requireNonNull(extraTags, "extraTags"));
     }
 
-    /** Parses one bounded markup document into an immutable validated element tree. */
+    /**
+     * Parses one bounded markup document into an immutable validated element tree. The input's
+     * UTF-8 byte length is checked against the configured limit before parsing.
+     */
     public MarkupDocument parse(String xml) {
         Objects.requireNonNull(xml, "xml");
         byte[] utf8 = xml.getBytes(StandardCharsets.UTF_8);
@@ -87,8 +97,37 @@ public final class MarkupParser {
                     "markup input of " + utf8.length + " bytes exceeds the "
                             + maxInputBytes + "-byte limit");
         }
+        return parseUtf8(utf8.length, xml);
+    }
+
+    /**
+     * Parses one bounded markup document read from {@code path}. At most
+     * {@code maxInputBytes + 1} bytes are read, so an oversized file is rejected with a typed
+     * {@code TOO_LARGE} failure before its content is decoded into a String. The bytes are
+     * decoded as strict UTF-8; malformed or truncated sequences fail with a typed
+     * {@code MALFORMED_XML} diagnostic instead of a replacement character.
+     *
+     * @param path the markup file to read
+     * @return the parsed document
+     * @throws IOException if the file cannot be read
+     */
+    public MarkupDocument parse(Path path) throws IOException {
+        Objects.requireNonNull(path, "path");
+        byte[] utf8;
+        try (InputStream in = Files.newInputStream(path)) {
+            utf8 = readBounded(in, maxInputBytes);
+        }
+        if (utf8.length > maxInputBytes) {
+            throw new MarkupException(MarkupException.Kind.TOO_LARGE, "", 0, 0,
+                    "markup input exceeds the " + maxInputBytes + "-byte limit");
+        }
+        return parseUtf8(utf8.length, decodeUtf8(utf8));
+    }
+
+    /** Shared parse body for in-bounds UTF-8 markup, whether from a String or a file. */
+    private MarkupDocument parseUtf8(int byteLength, String xml) {
         try {
-            Handler handler = new Handler(utf8.length);
+            Handler handler = new Handler(byteLength);
             XMLReader reader = reader();
             reader.setContentHandler(handler);
             reader.setErrorHandler(handler);
@@ -106,6 +145,52 @@ public final class MarkupParser {
                     failure.getMessage());
         } catch (IOException | ParserConfigurationException impossible) {
             throw new IllegalStateException("SAX parser unavailable", impossible);
+        }
+    }
+
+    /**
+     * Reads at most {@code maxBytes + 1} bytes from {@code in}, stopping as soon as the
+     * limit-plus-one sentinel is reached so an oversized input is never materialized. The
+     * returned array holds exactly the bytes read.
+     */
+    private static byte[] readBounded(InputStream in, int maxBytes) throws IOException {
+        int capacity = maxBytes == Integer.MAX_VALUE ? maxBytes : maxBytes + 1;
+        byte[] buffer = new byte[Math.min(capacity, 4 * 1024)];
+        int total = 0;
+        while (total < capacity) {
+            if (total == buffer.length) {
+                buffer = Arrays.copyOf(buffer, nextBufferLength(buffer.length, capacity));
+            }
+            int read = in.read(buffer, total, buffer.length - total);
+            if (read < 0) {
+                break;
+            }
+            total += read;
+        }
+        return total == buffer.length ? buffer : Arrays.copyOf(buffer, total);
+    }
+
+    /**
+     * Next length when growing {@code current} toward {@code capacity}: doubles while below
+     * half of capacity, then jumps to capacity. Comparing against {@code capacity / 2} before
+     * doubling keeps the product strictly below {@code Integer.MAX_VALUE}, so growth never
+     * overflows the int range for any configured limit.
+     */
+    static int nextBufferLength(int current, int capacity) {
+        return current < capacity / 2 ? current * 2 : capacity;
+    }
+
+    /** Decodes strict UTF-8; malformed or truncated input fails with a typed diagnostic. */
+    private static String decodeUtf8(byte[] utf8) {
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(utf8))
+                    .toString();
+        } catch (CharacterCodingException failure) {
+            throw new MarkupException(MarkupException.Kind.MALFORMED_XML, "", 0, 0,
+                    "markup input is not valid UTF-8: " + failure.getMessage());
         }
     }
 
