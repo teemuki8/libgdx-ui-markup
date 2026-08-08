@@ -326,6 +326,62 @@ final class VisualFidelityTest {
         assertTrue(identity.detail() > ceiling, "identity detail must clear the ceiling");
     }
 
+    // ------------------------------------------------------ resolution invariance
+
+    @Test
+    @Timeout(60)
+    void colorAndDetailAreInvariantUnderProportionalResolutionScaling() {
+        BufferedImage small = syntheticUiScaled(1);
+        BufferedImage large = syntheticUiScaled(2);
+        FidelityScore score = VisualFidelity.measure(small, large);
+        assertEquals(1.0, score.color(), 0.01,
+                "identical color distributions at proportional resolutions must intersect "
+                        + "to near 1 on normalized bin proportions, not raw counts");
+        assertEquals(1.0, score.detail(), 0.05,
+                "identical detail at proportional resolutions must score near 1 once "
+                        + "energy is normalized per pixel and per cell area");
+        assertEquals(1.0, score.geometry(), 0.05,
+                "geometry is grid-based and must stay resolution invariant");
+    }
+
+    /**
+     * The synthetic UI canvas re-rendered at {@code scale} times its base resolution. The
+     * canvas carries a fixed 2-pixel deterministic checker texture (like the fine texture of
+     * the corpus references) whose per-pixel gradient energy is resolution invariant, so
+     * per-pixel/per-cell-area energy normalization yields near 1; the UI features scale
+     * proportionally with the canvas.
+     */
+    private static BufferedImage syntheticUiScaled(int scale) {
+        int baseWidth = 640;
+        int baseHeight = 360;
+        BufferedImage image = new BufferedImage(baseWidth * scale, baseHeight * scale,
+                BufferedImage.TYPE_INT_RGB);
+        fill(image, 0xff0e1116);
+        for (int y = 0; y < image.getHeight(); y++) {
+            for (int x = 0; x < image.getWidth(); x++) {
+                if (((x / 2) + (y / 2)) % 2 == 0) {
+                    image.setRGB(x, y, 0xff2a323c);
+                }
+            }
+        }
+        // Subtle, low-contrast features so the fixed-frequency texture dominates the
+        // gradient energy; per-pixel/per-cell-area normalization is then resolution
+        // invariant and the residual hard-edge sampling shows only as a small tolerance.
+        for (int panel = 0; panel < 4; panel++) {
+            int px = (40 + panel * 140) * scale;
+            int py = (30 + (panel % 2) * 150) * scale;
+            fillRect(image, px, py, 110 * scale, 70 * scale, 0xff141a20);
+            fillRect(image, px, py, 110 * scale, 3 * scale, 0xff20262c);
+            for (int row = 0; row < 3; row++) {
+                int ty = (py + 18 * scale) + row * 16 * scale;
+                for (int tx = px + 10 * scale; tx < px + 100 * scale; tx += 12 * scale) {
+                    fillRect(image, tx, ty, 7 * scale, 5 * scale, 0xff1e242b);
+                }
+            }
+        }
+        return image;
+    }
+
     // --------------------------------------- detail scope and allocation boundedness
 
     @Test

@@ -205,7 +205,14 @@ public final class VisualFidelity {
 
     // --------------------------------------------------------------------- color
 
-    /** Quantized RGB histogram intersection normalized by the larger image total. */
+    /**
+     * Quantized RGB histogram intersection over normalized bin proportions:
+     * {@code sum min(histA[i]/totalA, histB[i]/totalB)}. Normalizing by each image's own
+     * total makes the score invariant to resolution — a reference subsampled to 960x540 and
+     * a recreation rendered at 1280x720 with identical color proportions intersect to 1.0
+     * instead of being capped by the raw-count ratio (0.5625). A hue-rotated or re-paletted
+     * recreation still drops because its bin proportions move.
+     */
     private static double color(Pixels a, Pixels b) {
         int bins = 1 << (3 * COLOR_BITS);
         int[] histA = new int[bins];
@@ -215,11 +222,13 @@ public final class VisualFidelity {
         if (totalA == 0 || totalB == 0) {
             return 0.0;
         }
-        long intersection = 0;
+        double intersection = 0;
         for (int i = 0; i < bins; i++) {
-            intersection += Math.min(histA[i], histB[i]);
+            double shareA = histA[i] / (double) totalA;
+            double shareB = histB[i] / (double) totalB;
+            intersection += Math.min(shareA, shareB);
         }
-        return (double) intersection / Math.max(totalA, totalB);
+        return intersection;
     }
 
     private static long fillHistogram(Pixels pixels, int[] histogram) {
@@ -279,9 +288,14 @@ public final class VisualFidelity {
                 energyB += sobelMagnitude(grayB, widthB, heightB, x, y);
             }
         }
+        // Per-pixel mean gradient energy, so a 960x540 reference and a 1280x720 recreation
+        // with identical content compare 1.0 instead of being capped by the pixel-count ratio.
+        double energyPerPixelA = energyA / (double) ((long) widthA * heightA);
+        double energyPerPixelB = energyB / (double) ((long) widthB * heightB);
         double localMatch = localDetail(a, b, grayA, grayB);
-        double globalEnergyRatio = energyA == 0 && energyB == 0 ? 1.0
-                : Math.min(energyA, energyB) / (double) Math.max(energyA, energyB);
+        double globalEnergyRatio = energyPerPixelA == 0 && energyPerPixelB == 0 ? 1.0
+                : Math.min(energyPerPixelA, energyPerPixelB)
+                        / Math.max(energyPerPixelA, energyPerPixelB);
         return 0.5 * localMatch + 0.5 * globalEnergyRatio;
     }
 
@@ -329,16 +343,23 @@ public final class VisualFidelity {
                         }
                     }
                 }
-                if (energyA == 0) {
+                // Normalize each cell's energy by its own pixel count: a cell in a 2x image
+                // covers the same content with 4x the pixels, so raw energy would penalize
+                // the larger resolution; the per-pixel mean is resolution invariant.
+                long areaA = (long) (ax1 - ax0) * (ay1 - ay0);
+                long areaB = (long) (bx1 - bx0) * (by1 - by0);
+                double meanEnergyA = areaA == 0 ? 0.0 : energyA / (double) areaA;
+                double meanEnergyB = areaB == 0 ? 0.0 : energyB / (double) areaB;
+                if (meanEnergyA == 0) {
                     continue; // reference-blank cell: outside the local detail scope
                 }
-                if (energyB == 0) {
+                if (meanEnergyB == 0) {
                     total += 0.0; // missing reference detail
                     counted++;
                     continue;
                 }
                 double magnitudeSimilarity =
-                        Math.min(energyA, energyB) / (double) Math.max(energyA, energyB);
+                        Math.min(meanEnergyA, meanEnergyB) / Math.max(meanEnergyA, meanEnergyB);
                 double orientationSimilarity = 0.0;
                 if (sharpA > 0 && sharpB > 0) {
                     double totalVariation = 0;

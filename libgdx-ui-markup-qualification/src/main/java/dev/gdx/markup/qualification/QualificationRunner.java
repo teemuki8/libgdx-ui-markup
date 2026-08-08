@@ -580,6 +580,7 @@ public final class QualificationRunner implements AutoCloseable {
         // destroy/force waits AND the drain joins, so teardown is bounded as a whole.
         long drainDeadline = run.deadlineNanos;
         Throwable inFlight = null;
+        InterruptAccumulator teardownInterrupts = new InterruptAccumulator();
         try {
             try {
                 // Refuse to spawn when the run budget is already spent, then spawn and
@@ -601,7 +602,7 @@ public final class QualificationRunner implements AutoCloseable {
                 boolean finished = process.waitFor(waitNanos, TimeUnit.NANOSECONDS);
                 if (!finished) {
                     drainDeadline = teardownDeadline();
-                    if (!terminate(process, drainDeadline)) {
+                    if (!terminate(process, drainDeadline, teardownInterrupts)) {
                         // The child is still alive: fail fatally, retain the handle for close().
                         throw new UnkillableChildException(entry.id());
                     }
@@ -621,15 +622,20 @@ public final class QualificationRunner implements AutoCloseable {
             } catch (InterruptedException interrupted) {
                 // Hold the interrupt aside while the bounded teardown confirms the child (a
                 // timed process wait on an already-interrupted thread throws immediately),
-                // then restore it afterwards so the run loop stops starting later work.
+                // then restore it afterwards so the run loop stops starting later work. It is
+                // also recorded as the in-flight cause so an unjoined drain fatal suppresses
+                // it instead of losing the reason for the skip.
                 try {
                     if (process != null) {
                         drainDeadline = teardownDeadline();
-                        if (!forceKill(process, drainDeadline)) {
+                        if (!forceKill(process, drainDeadline, teardownInterrupts)) {
                             inFlight = new UnkillableChildException(entry.id());
                         } else {
                             unregisterProcess(process);
+                            inFlight = interrupted;
                         }
+                    } else {
+                        inFlight = interrupted;
                     }
                     return Optional.empty();
                 } finally {
@@ -660,6 +666,11 @@ public final class QualificationRunner implements AutoCloseable {
                 throw drainFatal;
             }
             unregisterDrains(drains);
+            // Restore any interrupt accumulated during the teardown waits exactly once, after
+            // the drain joins, so the run loop observes the cancellation.
+            if (teardownInterrupts.reassert) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
@@ -672,25 +683,29 @@ public final class QualificationRunner implements AutoCloseable {
      * Terminates a child inside the teardown window: destroy, bounded wait, force, final
      * bounded wait, each phase capped and drawing from the same window. Returns whether the
      * child was confirmed dead; a child still alive after the final wait must make the run
-     * fail fatally instead of being dropped.
+     * fail fatally instead of being dropped. A fresh interrupt during a teardown wait is
+     * accumulated (not reasserted) so the remaining confirmation waits can still wait.
      */
-    private boolean terminate(Process process, long teardownDeadline) {
+    private boolean terminate(Process process, long teardownDeadline,
+            InterruptAccumulator interrupts) {
         if (!process.isAlive()) {
             return true;
         }
         process.destroy();
-        if (await(process, Math.min(TERMINATION_GRACE.toNanos(), remaining(teardownDeadline)))) {
+        if (await(process, Math.min(TERMINATION_GRACE.toNanos(), remaining(teardownDeadline)),
+                interrupts)) {
             return true;
         }
         process.destroyForcibly();
         return await(process, Math.min(TERMINATION_FORCE_WAIT.toNanos(),
-                remaining(teardownDeadline)));
+                remaining(teardownDeadline)), interrupts);
     }
 
     /** Force-destroys a child and waits the remaining teardown window for it to die. */
-    private boolean forceKill(Process process, long teardownDeadline) {
+    private boolean forceKill(Process process, long teardownDeadline,
+            InterruptAccumulator interrupts) {
         process.destroyForcibly();
-        return await(process, remaining(teardownDeadline));
+        return await(process, remaining(teardownDeadline), interrupts);
     }
 
     /** Remaining monotonic budget of a deadline, floored at zero for a bounded wait. */
@@ -698,12 +713,17 @@ public final class QualificationRunner implements AutoCloseable {
         return Math.max(0, deadlineNanos - clock.nanoTime());
     }
 
-    /** Bounded, interrupt-preserving process wait used only for teardown phases. */
-    private static boolean await(Process process, long timeoutNanos) {
+    /**
+     * Bounded, interrupt-accumulating process wait used for teardown phases: an interrupt
+     * aborts this wait but is held aside (restored by the caller once after the whole
+     * teardown) so the remaining confirmation waits can actually wait.
+     */
+    private static boolean await(Process process, long timeoutNanos,
+            InterruptAccumulator interrupts) {
         try {
             return process.waitFor(timeoutNanos, TimeUnit.NANOSECONDS);
         } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
+            interrupts.reassert = true;
             return false;
         }
     }
@@ -879,7 +899,7 @@ public final class QualificationRunner implements AutoCloseable {
      */
     @Override public void close() {
         boolean reassert = Thread.interrupted();
-        CloseInterrupts interrupts = new CloseInterrupts();
+        InterruptAccumulator interrupts = new InterruptAccumulator();
         List<Throwable> failures = new ArrayList<>();
         try {
             // One absolute monotonic confirmation deadline for the whole close: every process
@@ -947,8 +967,12 @@ public final class QualificationRunner implements AutoCloseable {
         }
     }
 
-    /** Accumulates interrupt state across close's confirmation waits. */
-    private static final class CloseInterrupts {
+    /**
+     * Accumulates interrupt state across a teardown or close confirmation phase, so a fresh
+     * interrupt aborts only the current wait instead of cascading through the rest: the flag
+     * is held aside for the phase and restored exactly once at the end.
+     */
+    private static final class InterruptAccumulator {
         boolean reassert;
     }
 
@@ -958,7 +982,7 @@ public final class QualificationRunner implements AutoCloseable {
      * so the remaining confirmations can still wait). Never waits past the deadline.
      */
     private static boolean joinDrain(Thread drain, long closeDeadline,
-            CloseInterrupts interrupts) {
+            InterruptAccumulator interrupts) {
         drain.interrupt();
         while (drain.isAlive()) {
             long remaining = closeDeadline - System.nanoTime();
