@@ -1,3 +1,4 @@
+import org.gradle.api.artifacts.dsl.LockMode
 import org.gradle.plugins.signing.SigningExtension
 import java.util.zip.ZipFile
 
@@ -18,6 +19,16 @@ val junitPlatformLauncher = libs.junit.platform.launcher
 allprojects {
     group = mavenGroup
     version = releaseVersion.get()
+
+    // Every resolvable configuration in every project (including the IDEA and qualification
+    // modules used by CI/release) must resolve against a committed gradle.lockfile. STRICT mode
+    // fails closed: a missing or altered lock state breaks resolution of the affected
+    // configuration. The root resolveAndLockAll task regenerates the complete lock set, and
+    // --write-locks is the only way to update it.
+    dependencyLocking {
+        lockAllConfigurations()
+        lockMode = LockMode.STRICT
+    }
 }
 
 subprojects {
@@ -130,6 +141,30 @@ tasks.register("javadoc") {
     group = "documentation"
     description = "Generates warning-free Javadocs for all published modules"
     dependsOn(publishableModules.map { project(":$it").tasks.named("javadoc") })
+}
+
+// Visits and resolves every resolvable configuration across all projects so the committed
+// dependency locks stay exhaustive. For each configuration it first walks the full dependency
+// graph (which records lock state under --write-locks) and then resolves the configuration's
+// artifact/file view, which triggers Gradle's own lock validation. With LockMode.STRICT, running
+// without --write-locks fails on a deleted or altered lockfile instead of silently re-resolving.
+tasks.register("resolveAndLockAll") {
+    group = "verification"
+    description = "Resolves every resolvable configuration (graph and artifact view) in every project so committed dependency locks stay exhaustive and enforced"
+    doLast {
+        allprojects.forEach { target ->
+            target.configurations
+                .filter { it.isCanBeResolved }
+                .forEach { configuration ->
+                    println("${target.path}:${configuration.name}")
+                    // Resolve the dependency graph; under --write-locks this records lock state.
+                    configuration.incoming.resolutionResult.allDependencies
+                    // Resolve the artifact/file view so Gradle's lock validation runs; a missing
+                    // or drifted lock entry fails resolution in STRICT mode.
+                    configuration.incoming.files.files
+                }
+        }
+    }
 }
 
 val verifyPublishedLicenseFiles = tasks.register("verifyPublishedLicenseFiles") {
