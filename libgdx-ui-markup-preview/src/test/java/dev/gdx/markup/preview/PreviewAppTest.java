@@ -28,6 +28,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import javax.imageio.ImageIO;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -107,6 +108,14 @@ final class PreviewAppTest {
 
     private static final int BAR_HEIGHT = 48;
 
+    /** Skips GL scenarios on hosts where a child JVM cannot create an OpenGL window (e.g.
+     * Windows CI runners have no WGL/OpenGL driver). The real GL behavior is still covered on
+     * hosts that can (Linux under Xvfb, macOS). */
+    private static void requireGl() {
+        Assumptions.assumeTrue(PreviewTestProcess.glAvailable(),
+                "no OpenGL driver on this host; GL scenario skipped");
+    }
+
     /**
      * Two independent preview runs of the unchanged asymmetric fixture produce byte-identical
      * PNGs, the PNG is top-left normalized (accent bar on top, panel bar on bottom, fixed
@@ -115,6 +124,7 @@ final class PreviewAppTest {
     @Test
     @Timeout(120)
     void screenshotIsTopLeftNormalizedAndByteIdenticalAcrossRepeatedRuns() throws Exception {
+        requireGl();
         Path ui = fixture("asymmetric-top-bottom.xml");
         Path css = fixture("asymmetric-top-bottom.css");
 
@@ -139,6 +149,7 @@ final class PreviewAppTest {
     @Test
     @Timeout(120)
     void screenshotIsByteIdenticalAfterLargerDifferentPriorRender() throws Exception {
+        requireGl();
         Path ui = fixture("asymmetric-top-bottom.xml");
         Path css = fixture("asymmetric-top-bottom.css");
 
@@ -160,6 +171,7 @@ final class PreviewAppTest {
     @Test
     @Timeout(120)
     void childThatNeverExitsIsTerminatedByParentLadder() throws Exception {
+        requireGl();
         try (PreviewTestProcess child = PreviewTestProcess.launch(
                 "stuck", null, null, null, Duration.ofSeconds(3))) {
             AssertionError failure = assertThrows(AssertionError.class, child::await);
@@ -177,6 +189,7 @@ final class PreviewAppTest {
     @Test
     @Timeout(120)
     void childFailureIsReportedWithBoundedOutput() throws Exception {
+        requireGl();
         try (PreviewTestProcess child = PreviewTestProcess.launch(
                 "failing", null, null, null, Duration.ofSeconds(60))) {
             int exit = child.await();
@@ -196,6 +209,7 @@ final class PreviewAppTest {
     @Test
     @Timeout(120)
     void badEditAfterGoodBuildKeepsLastGoodAndRecovers() throws Exception {
+        requireGl();
         Path ui = tempDir.resolve("bad-after-good.xml");
         Path css = tempDir.resolve("bad-after-good.css");
         Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
@@ -217,6 +231,7 @@ final class PreviewAppTest {
     @Test
     @Timeout(120)
     void initialBadBuildShowsErrorOverlayAndRecovers() throws Exception {
+        requireGl();
         Path ui = tempDir.resolve("initial-bad.xml");
         Path css = tempDir.resolve("initial-bad.css");
         Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
@@ -238,6 +253,7 @@ final class PreviewAppTest {
     @Test
     @Timeout(120)
     void stageSwapFailureRestoresLastGoodSceneAndRecovers() throws Exception {
+        requireGl();
         Path ui = tempDir.resolve("swap-failure.xml");
         Path css = tempDir.resolve("swap-failure.css");
         Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
@@ -261,6 +277,7 @@ final class PreviewAppTest {
     @Test
     @Timeout(120)
     void interruptedParentStillTerminatesStuckChildAndPreservesInterrupt() throws Exception {
+        requireGl();
         PreviewTestProcess child = PreviewTestProcess.launch(
                 "stuck", null, null, null, Duration.ofSeconds(60));
         AtomicReference<Throwable> awaitFailure = new AtomicReference<>();

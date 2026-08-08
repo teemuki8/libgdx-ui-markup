@@ -8,6 +8,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Parent-side owner of one {@link PreviewTestChild} JVM. The parent launches the child with
@@ -30,6 +31,9 @@ final class PreviewTestProcess implements AutoCloseable {
     private static final Duration TERMINATE_WAIT = Duration.ofSeconds(5);
     private static final Duration FORCE_KILL_WAIT = Duration.ofSeconds(5);
     private static final Duration PUMP_JOIN_WAIT = Duration.ofSeconds(5);
+
+    /** Cached probe result: whether a child JVM can create an OpenGL window on this host. */
+    private static final AtomicReference<Boolean> GL_AVAILABLE = new AtomicReference<>();
 
     private final Process process;
     private final Duration deadline;
@@ -72,6 +76,38 @@ final class PreviewTestProcess implements AutoCloseable {
         }
         Process process = new ProcessBuilder(command).redirectErrorStream(false).start();
         return new PreviewTestProcess(process, deadline);
+    }
+
+    /**
+     * Whether a child JVM on this host can create an OpenGL window, probed once lazily in a
+     * dedicated child JVM launched through {@link #launch} with the exact same configuration
+     * as scenario children (so any platform JVM flags, e.g. macOS {@code -XstartOnFirstThread},
+     * apply identically). GL-less hosts — e.g. Windows CI runners whose WGL backend cannot
+     * provide OpenGL — return {@code false}; GL-scenario tests should gate on this with a
+     * JUnit assumption so they skip (never fail) where no window can be created.
+     */
+    static boolean glAvailable() {
+        Boolean cached = GL_AVAILABLE.get();
+        if (cached != null) {
+            return cached;
+        }
+        boolean available = probeGl();
+        GL_AVAILABLE.compareAndSet(null, available);
+        return GL_AVAILABLE.get();
+    }
+
+    /** Runs the child {@code gl-probe} scenario once and reads its result marker. */
+    private static boolean probeGl() {
+        try (PreviewTestProcess probe = launch("gl-probe", null, null, null,
+                Duration.ofSeconds(60))) {
+            int exit = probe.await();
+            return exit == 0 && probe.stdout().contains("preview-child: gl-probe ok");
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return false;
+        } catch (IOException launchFailure) {
+            return false;
+        }
     }
 
     /**

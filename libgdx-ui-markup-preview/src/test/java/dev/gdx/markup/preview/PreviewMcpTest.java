@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -25,9 +26,18 @@ final class PreviewMcpTest {
     @TempDir
     Path tempDir;
 
+    /** Skips GL scenarios on hosts where a child JVM cannot create an OpenGL window (e.g.
+     * Windows CI runners have no WGL/OpenGL driver). The real GL behavior is still covered on
+     * hosts that can (Linux under Xvfb, macOS). */
+    private static void requireGl() {
+        Assumptions.assumeTrue(PreviewTestProcess.glAvailable(),
+                "no OpenGL driver on this host; GL scenario skipped");
+    }
+
     @Test
     @Timeout(120)
     void candidateRuntimeFailureReinstallsOrPreservesLastGoodRegistration() throws Exception {
+        requireGl();
         Path ui = tempDir.resolve("mcp-attach.xml");
         Path css = tempDir.resolve("mcp-attach.css");
         Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
@@ -47,6 +57,7 @@ final class PreviewMcpTest {
     @Test
     @Timeout(120)
     void stageSwapFailureRestoresLastGoodRuntimeAndScene() throws Exception {
+        requireGl();
         Path ui = tempDir.resolve("mcp-swap-failure.xml");
         Path css = tempDir.resolve("mcp-swap-failure.css");
         Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
@@ -63,6 +74,7 @@ final class PreviewMcpTest {
     @Test
     @Timeout(120)
     void retirementFailureEntersTerminalState() throws Exception {
+        requireGl();
         Path ui = tempDir.resolve("retire-failure.xml");
         Path css = tempDir.resolve("retire-failure.css");
         Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
@@ -88,6 +100,7 @@ final class PreviewMcpTest {
     @Test
     @Timeout(120)
     void restoreFailureEntersTerminalState() throws Exception {
+        requireGl();
         Path ui = tempDir.resolve("restore-failure.xml");
         Path css = tempDir.resolve("restore-failure.css");
         Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
@@ -109,6 +122,7 @@ final class PreviewMcpTest {
     @Test
     @Timeout(120)
     void candidateCloseAndRestoreFailuresEnterTerminalState() throws Exception {
+        requireGl();
         Path ui = tempDir.resolve("mcp-cleanup-failure.xml");
         Path css = tempDir.resolve("mcp-cleanup-failure.css");
         Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
@@ -133,6 +147,7 @@ final class PreviewMcpTest {
     @Test
     @Timeout(120)
     void terminalCleanupCloseIsBestEffortAggregatingAndIdempotent() throws Exception {
+        requireGl();
         Path ui = tempDir.resolve("mcp-close-failure.xml");
         Path css = tempDir.resolve("mcp-close-failure.css");
         Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
@@ -163,6 +178,7 @@ final class PreviewMcpTest {
     @Test
     @Timeout(120)
     void terminalCauseChainIsNestedCycleSafeAndBounded() throws Exception {
+        requireGl();
         Path ui = tempDir.resolve("mcp-cause-chain.xml");
         Path css = tempDir.resolve("mcp-cause-chain.css");
         Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
@@ -195,6 +211,7 @@ final class PreviewMcpTest {
     @Test
     @Timeout(120)
     void stagedConstructorCleanupClosesEveryAcquiredResource() throws Exception {
+        requireGl();
         Path ui = tempDir.resolve("mcp-init-failure.xml");
         Path css = tempDir.resolve("mcp-init-failure.css");
         Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
@@ -211,6 +228,7 @@ final class PreviewMcpTest {
     @Test
     @Timeout(120)
     void successCloseClosesEveryAcquiredComponentOnce() throws Exception {
+        requireGl();
         Path ui = tempDir.resolve("mcp-close-all.xml");
         Path css = tempDir.resolve("mcp-close-all.css");
         Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);

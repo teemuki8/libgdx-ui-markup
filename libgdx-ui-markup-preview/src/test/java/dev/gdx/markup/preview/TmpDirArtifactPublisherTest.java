@@ -852,6 +852,66 @@ final class TmpDirArtifactPublisherTest {
         }
     }
 
+    @Test
+    void aclParentPolicyAcceptsCurrentUserFullControlUnderForeignOwner() throws Exception {
+        // The elevated-runner shape (Windows CI): the token default owner is a group
+        // (BUILTIN\Administrators) while the ACL grants the CURRENT USER full control. The
+        // actor's own grant is not an other-principal grant, so parent validation must accept
+        // it and must still reject a genuinely foreign grant. Only reproducible where an ACL
+        // view and directory re-owning exist.
+        UserPrincipal current = FileSystems.getDefault().getUserPrincipalLookupService()
+                .lookupPrincipalByName(System.getProperty("user.name"));
+        Path parent = Files.createDirectory(tempDir.resolve("acl-actor-parent"));
+        AclFileAttributeView view = Files.getFileAttributeView(parent, AclFileAttributeView.class);
+        Assumptions.assumeTrue(view != null, "an ACL view is available");
+        UserPrincipal originalOwner = view.getOwner();
+        try {
+            try {
+                view.setOwner(foreignPrincipal()); // may require elevation: skip when unsupported
+            } catch (java.io.IOException cannotReown) {
+                Assumptions.abort("re-owning a directory is unsupported on this host: "
+                        + cannotReown.getMessage());
+            }
+            List<AclEntry> original = new ArrayList<>(view.getAcl());
+            try {
+                // The current user holds full control while a different principal owns the
+                // directory: accepted (the actor is not an other-principal).
+                view.setAcl(List.of(AclEntry.newBuilder()
+                        .setType(AclEntryType.ALLOW)
+                        .setPrincipal(current)
+                        .setPermissions(EnumSet.allOf(AclEntryPermission.class))
+                        .build()));
+                new TmpDirArtifactPublisher.AclOwnerOnly().validateParent(parent);
+                // A genuinely foreign grant is still rejected even though the actor is trusted.
+                view.setAcl(List.of(
+                        AclEntry.newBuilder()
+                                .setType(AclEntryType.ALLOW)
+                                .setPrincipal(current)
+                                .setPermissions(EnumSet.allOf(AclEntryPermission.class))
+                                .build(),
+                        AclEntry.newBuilder()
+                                .setType(AclEntryType.ALLOW)
+                                .setPrincipal(foreignPrincipal())
+                                .setPermissions(EnumSet.of(AclEntryPermission.WRITE_DATA))
+                                .build()));
+                assertThrows(java.io.IOException.class,
+                        () -> new TmpDirArtifactPublisher.AclOwnerOnly()
+                                .validateParent(parent),
+                        "a foreign principal grant is rejected even when the actor is trusted");
+            } finally {
+                view.setAcl(original);
+                try {
+                    view.setOwner(originalOwner);
+                } catch (java.io.IOException restoreFailure) {
+                    // The current user retains full control through the restored ACL, so the
+                    // test-owned directory can still be removed.
+                }
+            }
+        } finally {
+            Files.deleteIfExists(parent);
+        }
+    }
+
     /** A minimal principal with an arbitrary name, for testing exact-equality ACL checks. */
     private static final class FakePrincipal implements UserPrincipal {
         private final String name;

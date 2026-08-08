@@ -134,6 +134,13 @@ public final class PreviewTestChild {
         }
         try {
             switch (scenario) {
+                case "gl-probe" -> {
+                    // Probes whether a child JVM can create an OpenGL window (Windows CI
+                    // runners have no WGL/OpenGL driver). Prints its own result line and
+                    // exits 0 either way; the parent gates GL scenarios on the marker.
+                    runGlProbe();
+                    return;
+                }
                 case "orientation" -> runOrientation(ui, css, png);
                 case "ghost" -> runGhost(ui, css, png);
                 case "stuck" -> runStuck();
@@ -1206,6 +1213,26 @@ public final class PreviewTestChild {
     private static String messageOf(Throwable thrown) {
         return thrown.getMessage() == null ? thrown.getClass().getSimpleName()
                 : thrown.getMessage();
+    }
+
+    /** Probes whether a GLFW window can actually be created on this host by exercising the
+     * exact {@link Lwjgl3Application} constructor the real scenarios use — GL-less hosts
+     * (e.g. Windows CI runners, whose WGL backend reports "The driver does not appear to
+     * support OpenGL") report {@code unavailable} instead of failing every scenario. Prints
+     * its own marker line and exits 0 either way; the parent gates GL scenarios on it. */
+    private static void runGlProbe() {
+        try {
+            launch(new ApplicationAdapter() {
+                @Override public void create() {
+                    Gdx.app.exit();
+                }
+            });
+            System.out.println("preview-child: gl-probe ok");
+        } catch (Throwable thrown) {
+            System.out.println("preview-child: gl-probe unavailable: "
+                    + bound(messageOf(thrown)));
+        }
+        System.out.flush();
     }
 
     private static void launch(ApplicationAdapter listener) {

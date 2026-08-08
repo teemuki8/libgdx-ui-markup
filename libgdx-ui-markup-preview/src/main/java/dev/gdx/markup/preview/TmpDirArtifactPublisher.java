@@ -1134,17 +1134,25 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
     }
 
     /** ACL owner-only policy for filesystems without POSIX views. The trusted principals are
-     * the exact resolved {@link UserPrincipal} objects for the owner, {@code SYSTEM}, and
-     * {@code BUILTIN\Administrators} (when resolvable on the platform) — never matched by name
-     * suffix or substring. The ACL is applied atomically at directory/file creation via the
-     * {@code acl:acl} attribute, and parent validation rejects other-principal
-     * WRITE_DATA/DELETE_CHILD/DELETE/WRITE_ACL/WRITE_OWNER. */
+     * the exact resolved {@link UserPrincipal} objects for the owner, the current process
+     * user (the actor), {@code SYSTEM}, and {@code BUILTIN\Administrators} (when resolvable
+     * on the platform) — never matched by name suffix or substring. The ACL is applied
+     * atomically at directory/file creation via the {@code acl:acl} attribute, and parent
+     * validation rejects other-principal WRITE_DATA/DELETE_CHILD/DELETE/WRITE_ACL/WRITE_OWNER. */
     static final class AclOwnerOnly implements OwnerOnlyPolicy {
         private static final String SYSTEM_PRINCIPAL = "SYSTEM";
         private static final String ADMINISTRATORS_PRINCIPAL = "BUILTIN\\Administrators";
 
         /** Exact resolved platform-required principals; empty when unresolvable. */
         private static final Set<UserPrincipal> REQUIRED_PRINCIPALS = resolveRequiredPrincipals();
+
+        /** The current process user (the actor creating the session entry), resolved once;
+         * {@code null} when unresolvable (then only the owner and the required principals are
+         * trusted). On Windows an elevated process's token default-owns new objects to
+         * {@code BUILTIN\Administrators}, so a directory the actor created can be owned by
+         * the Administrators group while its ACL grants the actor full control; the actor's
+         * own grant is not an other-principal grant and must not fail parent validation. */
+        private static final UserPrincipal CURRENT_USER = resolveCurrentUser();
 
         private static Set<UserPrincipal> resolveRequiredPrincipals() {
             Set<UserPrincipal> required = new HashSet<>();
@@ -1158,6 +1166,21 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
                 }
             }
             return required;
+        }
+
+        private static UserPrincipal resolveCurrentUser() {
+            try {
+                return FileSystems.getDefault().getUserPrincipalLookupService()
+                        .lookupPrincipalByName(System.getProperty("user.name"));
+            } catch (IOException | RuntimeException unresolvable) {
+                return null;
+            }
+        }
+
+        /** Whether the principal is the current process user: its own ACL grant cannot enable
+         * an other-principal to rename/delete the session entry. */
+        private static boolean isCurrentUser(UserPrincipal principal) {
+            return CURRENT_USER != null && CURRENT_USER.equals(principal);
         }
 
         @Override public FileAttribute<?>[] directoryCreationAttributes(UserPrincipal parentOwner) {
@@ -1180,6 +1203,7 @@ final class TmpDirArtifactPublisher implements ArtifactReference.Publisher, Auto
             for (AclEntry entry : view.getAcl()) {
                 if (entry.type() != AclEntryType.ALLOW
                         || owner.equals(entry.principal())
+                        || isCurrentUser(entry.principal())
                         || REQUIRED_PRINCIPALS.contains(entry.principal())) {
                     continue;
                 }
