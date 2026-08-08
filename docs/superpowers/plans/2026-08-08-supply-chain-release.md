@@ -29,9 +29,23 @@
 **Interfaces:**
 - `dependencyLocking { lockAllConfigurations() }` applies consistently to all projects, including IDEA and qualification configurations used by CI/release.
 
-- [ ] Run `./gradlew dependencies --write-locks` on a temporary branch state to expose currently unlocked configurations; do not commit until configuration is explicit.
-- [ ] Configure all projects to lock resolvable configurations and regenerate locks with the wrapper.
-- [ ] Run normal `./gradlew help`/`check` without `--write-locks`; mutate one lock in a disposable copy and prove resolution fails on drift.
+- [ ] Add a root `resolveAndLockAll` task whose `doLast` iterates `allprojects`, selects every `configuration.isCanBeResolved`, and calls `configuration.incoming.resolutionResult.allDependencies` so every resolvable graph is visited:
+```kotlin
+tasks.register("resolveAndLockAll") {
+    doLast {
+        allprojects.forEach { target ->
+            target.configurations
+                .filter { it.isCanBeResolved }
+                .forEach { configuration ->
+                    println("${target.path}:${configuration.name}")
+                    configuration.incoming.resolutionResult.allDependencies
+                }
+        }
+    }
+}
+```
+- [ ] Configure `dependencyLocking { lockAllConfigurations() }` for every project, then run `./gradlew resolveAndLockAll --write-locks --warning-mode=fail`.
+- [ ] Run `./gradlew resolveAndLockAll --warning-mode=fail` without lock writes and compare the task's enumerated project/configuration set with committed lock entries; mutate one lock in a disposable copy and prove resolution fails on drift.
 - [ ] Review lock files for dynamic/changing versions and unexpected repositories; remove the cause rather than pinning an unexplained artifact.
 - [ ] Commit `build: lock resolved dependencies`.
 
