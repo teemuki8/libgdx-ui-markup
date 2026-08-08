@@ -345,37 +345,28 @@ final class VisualFidelityTest {
     }
 
     /**
-     * The synthetic UI canvas re-rendered at {@code scale} times its base resolution. The
-     * canvas carries a fixed 2-pixel deterministic checker texture (like the fine texture of
-     * the corpus references) whose per-pixel gradient energy is resolution invariant, so
-     * per-pixel/per-cell-area energy normalization yields near 1; the UI features scale
-     * proportionally with the canvas.
+     * The synthetic UI canvas re-rendered at {@code scale} times its base resolution with
+     * clean solid rectangles, lines, and text-like glyphs (no fixed-frequency texture): the
+     * reviewer's resolution-invariance requirement. Both canvases are resampled to the fixed
+     * analysis resolution before scoring, so identical proportionally-scaled content scores
+     * near 1; the bilinear downsample blurs only the half-pixel-aligned edges, which is the
+     * allowed edge-sampling tolerance.
      */
     private static BufferedImage syntheticUiScaled(int scale) {
         int baseWidth = 640;
         int baseHeight = 360;
         BufferedImage image = new BufferedImage(baseWidth * scale, baseHeight * scale,
                 BufferedImage.TYPE_INT_RGB);
-        fill(image, 0xff0e1116);
-        for (int y = 0; y < image.getHeight(); y++) {
-            for (int x = 0; x < image.getWidth(); x++) {
-                if (((x / 2) + (y / 2)) % 2 == 0) {
-                    image.setRGB(x, y, 0xff2a323c);
-                }
-            }
-        }
-        // Subtle, low-contrast features so the fixed-frequency texture dominates the
-        // gradient energy; per-pixel/per-cell-area normalization is then resolution
-        // invariant and the residual hard-edge sampling shows only as a small tolerance.
+        fill(image, 0xff10141a);
         for (int panel = 0; panel < 4; panel++) {
             int px = (40 + panel * 140) * scale;
             int py = (30 + (panel % 2) * 150) * scale;
-            fillRect(image, px, py, 110 * scale, 70 * scale, 0xff141a20);
-            fillRect(image, px, py, 110 * scale, 3 * scale, 0xff20262c);
+            fillRect(image, px, py, 110 * scale, 70 * scale, 0xff223040);
+            fillRect(image, px, py, 110 * scale, 3 * scale, 0xffd8a040);
             for (int row = 0; row < 3; row++) {
                 int ty = (py + 18 * scale) + row * 16 * scale;
                 for (int tx = px + 10 * scale; tx < px + 100 * scale; tx += 12 * scale) {
-                    fillRect(image, tx, ty, 7 * scale, 5 * scale, 0xff1e242b);
+                    fillRect(image, tx, ty, 7 * scale, 5 * scale, 0xffe8e0c8);
                 }
             }
         }

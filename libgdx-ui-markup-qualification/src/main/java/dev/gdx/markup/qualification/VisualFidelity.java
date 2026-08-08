@@ -44,6 +44,15 @@ public final class VisualFidelity {
     static final int COLOR_BITS = 4;
     /** Classifier spread: cells above mean + 0.75 standard deviations are structured. */
     static final double CLASSIFIER_DEVIATIONS = 0.75;
+    /**
+     * Fixed analysis resolution: every input (subsampled references at 960x540, recreations
+     * at 1280x720, synthetic fixtures) is resampled once to this 16:9 canvas before any
+     * metric component runs, so color proportions, detail energy, and the grid geometry all
+     * operate on identical dimensions and no energy normalization is needed for resolution
+     * differences.
+     */
+    static final int ANALYSIS_WIDTH = 640;
+    static final int ANALYSIS_HEIGHT = 360;
 
     private VisualFidelity() {
     }
@@ -65,16 +74,90 @@ public final class VisualFidelity {
         return measure(pixels(reference), pixels(recreation));
     }
 
-    /** Package-private seam for allocation-bounded tests over counting pixel sources. */
+    /**
+     * Package-private seam for allocation-bounded tests over counting pixel sources. Both
+     * inputs are resampled exactly once into immutable packed-RGB primitive buffers at the
+     * fixed analysis resolution; every metric component then reads the buffers, never the
+     * source, so each source pixel is read a bounded number of times.
+     */
     static FidelityScore measure(Pixels reference, Pixels recreation) {
+        int[] referenceBuffer = resample(reference);
+        int[] recreationBuffer = resample(recreation);
+        Pixels normalizedReference = bufferPixels(referenceBuffer);
+        Pixels normalizedRecreation = bufferPixels(recreationBuffer);
         RegionSimilarity.Regions coarse = RegionSimilarity.measure(
-                reference.width(), reference.height(), reference::rgb,
-                recreation.width(), recreation.height(), recreation::rgb);
-        double geometry = geometry(reference, recreation);
-        double color = color(reference, recreation);
-        double detail = detail(reference, recreation);
+                ANALYSIS_WIDTH, ANALYSIS_HEIGHT, normalizedReference::rgb,
+                ANALYSIS_WIDTH, ANALYSIS_HEIGHT, normalizedRecreation::rgb);
+        double geometry = geometry(normalizedReference, normalizedRecreation);
+        double color = color(normalizedReference, normalizedRecreation);
+        double detail = detail(normalizedReference, normalizedRecreation);
         return new FidelityScore(coarse.dice(), geometry, color, detail,
                 coarse.referenceCells(), coarse.recreationCells());
+    }
+
+    /**
+     * Deterministic pixel-center bilinear resample of any source into the fixed analysis
+     * resolution. Each output pixel samples its source at {@code (ox+0.5)*sw/ow - 0.5},
+     * averaged over the four neighbors with replicate borders; channels are interpolated
+     * independently so packed-ARGB carries cannot corrupt colors. A source already at the
+     * analysis resolution still flows through the buffer so metrics never re-read it.
+     */
+    static int[] resample(Pixels source) {
+        int sourceWidth = source.width();
+        int sourceHeight = source.height();
+        int[] out = new int[ANALYSIS_WIDTH * ANALYSIS_HEIGHT];
+        for (int oy = 0; oy < ANALYSIS_HEIGHT; oy++) {
+            double y = ((oy + 0.5) * sourceHeight / ANALYSIS_HEIGHT) - 0.5;
+            for (int ox = 0; ox < ANALYSIS_WIDTH; ox++) {
+                double x = ((ox + 0.5) * sourceWidth / ANALYSIS_WIDTH) - 0.5;
+                out[oy * ANALYSIS_WIDTH + ox] =
+                        sampleBilinear(source, sourceWidth, sourceHeight, x, y);
+            }
+        }
+        return out;
+    }
+
+    private static int sampleBilinear(Pixels source, int width, int height, double x, double y) {
+        int x0 = (int) Math.floor(x);
+        int y0 = (int) Math.floor(y);
+        x0 = Math.max(0, Math.min(width - 1, x0));
+        y0 = Math.max(0, Math.min(height - 1, y0));
+        int x1 = Math.min(width - 1, x0 + 1);
+        int y1 = Math.min(height - 1, y0 + 1);
+        double tx = x - Math.floor(x);
+        double ty = y - Math.floor(y);
+        int c00 = source.rgb(x0, y0);
+        int c10 = source.rgb(x1, y0);
+        int c01 = source.rgb(x0, y1);
+        int c11 = source.rgb(x1, y1);
+        int r = (int) Math.round(lerp(lerp((c00 >> 16) & 0xff, (c10 >> 16) & 0xff, tx),
+                lerp((c01 >> 16) & 0xff, (c11 >> 16) & 0xff, tx), ty));
+        int g = (int) Math.round(lerp(lerp((c00 >> 8) & 0xff, (c10 >> 8) & 0xff, tx),
+                lerp((c01 >> 8) & 0xff, (c11 >> 8) & 0xff, tx), ty));
+        int b = (int) Math.round(lerp(lerp(c00 & 0xff, c10 & 0xff, tx),
+                lerp(c01 & 0xff, c11 & 0xff, tx), ty));
+        return (r << 16) | (g << 8) | b;
+    }
+
+    private static double lerp(double a, double b, double t) {
+        return a + (b - a) * t;
+    }
+
+    /** Read-only Pixels over an immutable packed-RGB buffer at the analysis resolution. */
+    private static Pixels bufferPixels(int[] rgb) {
+        return new Pixels() {
+            @Override public int width() {
+                return ANALYSIS_WIDTH;
+            }
+
+            @Override public int height() {
+                return ANALYSIS_HEIGHT;
+            }
+
+            @Override public int rgb(int x, int y) {
+                return rgb[y * ANALYSIS_WIDTH + x];
+            }
+        };
     }
 
     // ------------------------------------------------------------------ geometry
@@ -288,14 +371,12 @@ public final class VisualFidelity {
                 energyB += sobelMagnitude(grayB, widthB, heightB, x, y);
             }
         }
-        // Per-pixel mean gradient energy, so a 960x540 reference and a 1280x720 recreation
-        // with identical content compare 1.0 instead of being capped by the pixel-count ratio.
-        double energyPerPixelA = energyA / (double) ((long) widthA * heightA);
-        double energyPerPixelB = energyB / (double) ((long) widthB * heightB);
+        // Both images were resampled to the fixed analysis resolution, so their raw gradient
+        // energies are directly comparable; a box blur (an averaging operator) can never
+        // increase total high-frequency energy, keeping the anti-blur guarantee.
         double localMatch = localDetail(a, b, grayA, grayB);
-        double globalEnergyRatio = energyPerPixelA == 0 && energyPerPixelB == 0 ? 1.0
-                : Math.min(energyPerPixelA, energyPerPixelB)
-                        / Math.max(energyPerPixelA, energyPerPixelB);
+        double globalEnergyRatio = energyA == 0 && energyB == 0 ? 1.0
+                : Math.min(energyA, energyB) / (double) Math.max(energyA, energyB);
         return 0.5 * localMatch + 0.5 * globalEnergyRatio;
     }
 
@@ -343,23 +424,18 @@ public final class VisualFidelity {
                         }
                     }
                 }
-                // Normalize each cell's energy by its own pixel count: a cell in a 2x image
-                // covers the same content with 4x the pixels, so raw energy would penalize
-                // the larger resolution; the per-pixel mean is resolution invariant.
-                long areaA = (long) (ax1 - ax0) * (ay1 - ay0);
-                long areaB = (long) (bx1 - bx0) * (by1 - by0);
-                double meanEnergyA = areaA == 0 ? 0.0 : energyA / (double) areaA;
-                double meanEnergyB = areaB == 0 ? 0.0 : energyB / (double) areaB;
-                if (meanEnergyA == 0) {
+                // Cells of the fixed analysis grid have identical areas in both images, so
+                // raw cell energies are directly comparable; no area normalization is needed.
+                if (energyA == 0) {
                     continue; // reference-blank cell: outside the local detail scope
                 }
-                if (meanEnergyB == 0) {
+                if (energyB == 0) {
                     total += 0.0; // missing reference detail
                     counted++;
                     continue;
                 }
                 double magnitudeSimilarity =
-                        Math.min(meanEnergyA, meanEnergyB) / Math.max(meanEnergyA, meanEnergyB);
+                        Math.min(energyA, energyB) / (double) Math.max(energyA, energyB);
                 double orientationSimilarity = 0.0;
                 if (sharpA > 0 && sharpB > 0) {
                     double totalVariation = 0;
