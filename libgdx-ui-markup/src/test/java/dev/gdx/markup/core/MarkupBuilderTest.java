@@ -359,6 +359,144 @@ final class MarkupBuilderTest {
     }
 
     @Test
+    void sliderRangeAndStepAreValidated() throws Exception {
+        GdxTestHost.run(() -> {
+            MarkupException range = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("""
+                            <ui>
+                              <slider id="s" min="2" max="1"/>
+                            </ui>
+                            """), css.parse(""), DefaultSkin.create(), new NoopSink()));
+            assertEquals(MarkupException.Kind.INVALID_VALUE, range.kind());
+            assertEquals("ui/slider", range.elementPath());
+            assertEquals(2, range.line());
+            // JDK SAX reports the column just past the scanned start tag; assert presence.
+            assertTrue(range.column() >= 5);
+            assertTrue(range.getMessage().contains("min"),
+                    "the message names the conflicting fields");
+            assertTrue(range.getMessage().contains("max"),
+                    "the message names the conflicting fields");
+
+            MarkupException step = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("""
+                            <ui>
+                              <slider id="s" min="0" max="1" step="0"/>
+                            </ui>
+                            """), css.parse(""), DefaultSkin.create(), new NoopSink()));
+            assertEquals(MarkupException.Kind.INVALID_VALUE, step.kind());
+            assertEquals("ui/slider", step.elementPath());
+            assertEquals(2, step.line());
+            assertTrue(step.getMessage().contains("step"),
+                    "the message names the conflicting fields");
+        });
+    }
+
+    @Test
+    void progressBarRangeIsValidated() throws Exception {
+        GdxTestHost.run(() -> {
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("""
+                            <ui>
+                              <progressbar id="p" min="2" max="1"/>
+                            </ui>
+                            """), css.parse(""), DefaultSkin.create(), new NoopSink()));
+            assertEquals(MarkupException.Kind.INVALID_VALUE, failure.kind());
+            assertEquals("ui/progressbar", failure.elementPath());
+            assertEquals(2, failure.line());
+            // JDK SAX reports the column just past the scanned start tag; assert presence.
+            assertTrue(failure.column() >= 5);
+            assertTrue(failure.getMessage().contains("min"),
+                    "the message names the conflicting fields");
+            assertTrue(failure.getMessage().contains("max"),
+                    "the message names the conflicting fields");
+        });
+    }
+
+    @Test
+    void falseLayoutAxisValuesDisableBothAxes() throws Exception {
+        GdxTestHost.run(() -> {
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <table id="grid">
+                        <button id="a" expand="false"/>
+                        <button id="b" fill="false"/>
+                        <button id="c" grow="false"/>
+                      </table>
+                    </ui>
+                    """), css.parse(""), DefaultSkin.create(), new NoopSink());
+            Table table = (Table) built.root().getChildren().first();
+            table.validate();
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cellA = table.getCells().get(0);
+            assertEquals(0, cellA.getExpandX(), "expand=false enables neither axis");
+            assertEquals(0, cellA.getExpandY(), "expand=false enables neither axis");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cellB = table.getCells().get(1);
+            assertEquals(0f, cellB.getFillX(), "fill=false enables neither axis");
+            assertEquals(0f, cellB.getFillY(), "fill=false enables neither axis");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cellC = table.getCells().get(2);
+            assertEquals(0, cellC.getExpandX(), "grow=false enables neither axis");
+            assertEquals(0, cellC.getExpandY(), "grow=false enables neither axis");
+            assertEquals(0f, cellC.getFillX(), "grow=false enables neither axis");
+            assertEquals(0f, cellC.getFillY(), "grow=false enables neither axis");
+        });
+    }
+
+    @Test
+    void booleanAndAxisLayoutValuesPreserveBehavior() throws Exception {
+        GdxTestHost.run(() -> {
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <table id="grid">
+                        <button id="a" expand="true"/>
+                        <button id="b" expand="x"/>
+                        <button id="c" expand="y"/>
+                        <button id="d" fill="true"/>
+                        <button id="e" fill="x"/>
+                        <button id="f" fill="y"/>
+                        <button id="g" grow="true"/>
+                        <button id="h" grow="x"/>
+                        <button id="i" grow="y"/>
+                      </table>
+                    </ui>
+                    """), css.parse(""), DefaultSkin.create(), new NoopSink());
+            Table table = (Table) built.root().getChildren().first();
+            table.validate();
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> c0 = table.getCells().get(0);
+            assertEquals(1, c0.getExpandX(), "expand=true enables both axes");
+            assertEquals(1, c0.getExpandY(), "expand=true enables both axes");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> c1 = table.getCells().get(1);
+            assertEquals(1, c1.getExpandX(), "expand=x enables x only");
+            assertEquals(0, c1.getExpandY(), "expand=x enables x only");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> c2 = table.getCells().get(2);
+            assertEquals(0, c2.getExpandX(), "expand=y enables y only");
+            assertEquals(1, c2.getExpandY(), "expand=y enables y only");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> c3 = table.getCells().get(3);
+            assertEquals(1f, c3.getFillX(), "fill=true enables both axes");
+            assertEquals(1f, c3.getFillY(), "fill=true enables both axes");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> c4 = table.getCells().get(4);
+            assertEquals(1f, c4.getFillX(), "fill=x enables x only");
+            assertEquals(0f, c4.getFillY(), "fill=x enables x only");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> c5 = table.getCells().get(5);
+            assertEquals(0f, c5.getFillX(), "fill=y enables y only");
+            assertEquals(1f, c5.getFillY(), "fill=y enables y only");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> c6 = table.getCells().get(6);
+            assertEquals(1, c6.getExpandX(), "grow=true expands both axes");
+            assertEquals(1, c6.getExpandY(), "grow=true expands both axes");
+            assertEquals(1f, c6.getFillX(), "grow=true fills both axes");
+            assertEquals(1f, c6.getFillY(), "grow=true fills both axes");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> c7 = table.getCells().get(7);
+            assertEquals(1, c7.getExpandX(), "grow=x expands x only");
+            assertEquals(0, c7.getExpandY(), "grow=x expands x only");
+            assertEquals(1f, c7.getFillX(), "grow=x fills x only");
+            assertEquals(0f, c7.getFillY(), "grow=x fills x only");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> c8 = table.getCells().get(8);
+            assertEquals(0, c8.getExpandX(), "grow=y expands y only");
+            assertEquals(1, c8.getExpandY(), "grow=y expands y only");
+            assertEquals(0f, c8.getFillX(), "grow=y fills y only");
+            assertEquals(1f, c8.getFillY(), "grow=y fills y only");
+        });
+    }
+
+    @Test
     void selectboxAndListReceiveItems() throws Exception {
         GdxTestHost.run(() -> {
             BuiltUi built = MarkupBuilder.build(markup.parse("""

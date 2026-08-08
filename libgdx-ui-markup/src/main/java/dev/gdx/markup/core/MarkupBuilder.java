@@ -293,6 +293,7 @@ public final class MarkupBuilder {
             String expand = element.attr("expand");
             if (expand != null) {
                 switch (expand) {
+                    case "false" -> { }
                     case "x" -> cell.expandX();
                     case "y" -> cell.expandY();
                     default -> cell.expand();
@@ -301,6 +302,7 @@ public final class MarkupBuilder {
             String fill = element.attr("fill");
             if (fill != null) {
                 switch (fill) {
+                    case "false" -> { }
                     case "x" -> cell.fillX();
                     case "y" -> cell.fillY();
                     default -> cell.fill();
@@ -323,6 +325,7 @@ public final class MarkupBuilder {
             String grow = element.attr("grow");
             if (grow != null) {
                 switch (grow) {
+                    case "false" -> { }
                     case "x" -> cell.growX();
                     case "y" -> cell.growY();
                     default -> cell.grow();
