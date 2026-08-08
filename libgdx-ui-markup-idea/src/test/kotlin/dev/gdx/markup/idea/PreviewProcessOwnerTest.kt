@@ -395,6 +395,104 @@ class PreviewProcessOwnerTest {
         }
     }
 
+    @Test
+    fun replacementIsGatedOnConfirmedExit() {
+        val fake1 = FakeProcess(gracefulExit = false, neverExits = true)
+        val fake2 = FakeProcess()
+        val launcher = FakeLauncher(listOf(fake1, fake2), expectedLaunches = 2)
+        val stderr = CopyOnWriteArrayList<String>()
+        val failureLatch = CountDownLatch(1)
+        val exits = CopyOnWriteArrayList<ExitCause>()
+        val exitLatch = CountDownLatch(1)
+        val executor = newExecutor(AtomicReference())
+        val supervisor = newSupervisor(
+            launcher = launcher::launch,
+            executor = executor,
+            wait = defaultFakePolicy(),
+            onStderr = {
+                stderr += it
+                failureLatch.countDown()
+            },
+            onExit = {
+                exits += it
+                exitLatch.countDown()
+            },
+        )
+        try {
+            supervisor.replace(listOf("first"))
+            assertTrue(launcher.firstLaunch.await(5, TimeUnit.SECONDS))
+            fake1.writeStdout("markup-status: {\"schemaVersion\":2,\"ok\":true,\"nodes\":1}\n")
+            supervisor.replace(listOf("second"))
+            assertTrue(failureLatch.await(5, TimeUnit.SECONDS),
+                "a child that survives SIGKILL must be reported")
+            assertEquals(1, launcher.launchCount.get(),
+                "no replacement may launch without a confirmed exit")
+            assertTrue(stderr.any { it.contains("failed to terminate") },
+                "the failure must be reported: $stderr")
+            assertEquals(2, fake1.forceKillCalls.get(), "bounded force-kill retry")
+            // The child is still owned; once it finally dies on its own, a later replace
+            // retries termination and succeeds.
+            fake1.selfExit()
+            assertTrue(exitLatch.await(5, TimeUnit.SECONDS), "self exit must release ownership")
+            assertEquals(listOf(ExitCause.SELF), exits)
+            supervisor.replace(listOf("third"))
+            assertTrue(launcher.allLaunched.await(5, TimeUnit.SECONDS))
+            assertEquals(2, launcher.launchCount.get())
+            disposeAndAssertNoThreads(supervisor, executor)
+        } finally {
+            supervisor.dispose()
+            executor.awaitTermination(5, TimeUnit.SECONDS)
+        }
+    }
+
+    @Test
+    fun queuedReplaceAfterDisposeNeverLaunches() {
+        val fake1 = FakeProcess()
+        val fake2 = FakeProcess()
+        val launcher = FakeLauncher(listOf(fake1, fake2))
+        val waitStarted = CountDownLatch(1)
+        val releaseWait = CountDownLatch(1)
+        val wait: WaitPolicy = { process, _ ->
+            val fake = process as? FakeProcess
+            if (fake != null && fake.forceKillCalls.get() > 0) {
+                WaitOutcome.EXITED
+            } else {
+                waitStarted.countDown()
+                try {
+                    releaseWait.await(10, TimeUnit.SECONDS)
+                    WaitOutcome.EXITED
+                } catch (interrupted: InterruptedException) {
+                    WaitOutcome.INTERRUPTED
+                }
+            }
+        }
+        val executor = newExecutor(AtomicReference())
+        val supervisor = newSupervisor(
+            launcher = launcher::launch,
+            executor = executor,
+            wait = wait,
+        )
+        try {
+            supervisor.replace(listOf("first"))
+            assertTrue(launcher.firstLaunch.await(5, TimeUnit.SECONDS))
+            // A second replace is mid-flight (blocked terminating child #1) when disposal
+            // happens, and a third replace is already queued behind it.
+            supervisor.replace(listOf("second"))
+            assertTrue(waitStarted.await(5, TimeUnit.SECONDS), "termination must be in flight")
+            supervisor.replace(listOf("third"))
+            supervisor.dispose()
+            releaseWait.countDown()
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS))
+            assertEquals(1, launcher.launchCount.get(),
+                "no launch may happen once dispose has been called, even mid-flight")
+            assertNoPreviewThreads()
+        } finally {
+            releaseWait.countDown()
+            supervisor.dispose()
+            executor.awaitTermination(5, TimeUnit.SECONDS)
+        }
+    }
+
     private fun newSupervisor(
         launcher: (List<String>) -> Process,
         executor: ExecutorService,
@@ -422,14 +520,10 @@ class PreviewProcessOwnerTest {
             }
         }
 
-    /** Graceful children exit on destroy; stubborn ones only on destroyForcibly. */
+    /** EXITED only when the child is actually dead — graceful, stubborn, or never-exiting. */
     private fun defaultFakePolicy(): WaitPolicy = { process, _ ->
         val fake = process as? FakeProcess
-        when {
-            fake == null -> WaitOutcome.TIMED_OUT
-            fake.forceKillCalls.get() > 0 || !fake.alive -> WaitOutcome.EXITED
-            else -> WaitOutcome.TIMED_OUT
-        }
+        if (fake != null && !fake.alive) WaitOutcome.EXITED else WaitOutcome.TIMED_OUT
     }
 
     private fun assertNoPreviewThreads() {
@@ -450,7 +544,10 @@ class PreviewProcessOwnerTest {
     }
 
     /** Scripted child double: real pipes for the drains, recorded kill calls. */
-    private class FakeProcess(private val gracefulExit: Boolean = true) : Process() {
+    private class FakeProcess(
+        private val gracefulExit: Boolean = true,
+        private val neverExits: Boolean = false,
+    ) : Process() {
         private val stdoutSink = PipedOutputStream()
         private val stderrSink = PipedOutputStream()
         // Readers are connected eagerly so writes never race the drain thread's connection.
@@ -492,7 +589,7 @@ class PreviewProcessOwnerTest {
         override fun destroyForcibly(): Process {
             forceKillCalls.incrementAndGet()
             onForceKill()
-            die()
+            if (!neverExits) die()
             return this
         }
 

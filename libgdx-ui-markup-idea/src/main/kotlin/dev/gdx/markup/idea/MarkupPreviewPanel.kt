@@ -31,6 +31,8 @@ class MarkupPreviewPanel(private val project: Project, private val toolWindow: T
     private val reloadButton = JButton("Reload").apply { isEnabled = false }
     private val watchToggle = JToggleButton("Watch")
     private val debouncer = WatchDebouncer(300_000_000L)
+    @Volatile
+    private var disposed = false
 
     /**
      * Owns the preview child process for this panel. Created by the panel (it knows the status
@@ -79,6 +81,8 @@ class MarkupPreviewPanel(private val project: Project, private val toolWindow: T
 
     /** Launches (or relaunches) the preview for the XML file selected in the editor. */
     fun launchForCurrentFile() {
+        // No-ops after disposal: a watcher callback may already be queued on the EDT.
+        if (disposed) return
         val ui = currentXmlFile() ?: run {
             setStatus("open an .xml markup file first", false)
             return
@@ -131,7 +135,7 @@ class MarkupPreviewPanel(private val project: Project, private val toolWindow: T
         stopWatcher()
         watcherThread = Thread.ofPlatform().name("markup-watcher").daemon().start {
             var lastModified = 0L
-            while (!Thread.currentThread().isInterrupted) {
+            while (!disposed && !Thread.currentThread().isInterrupted) {
                 val ui = currentXmlFile()
                 if (ui != null) {
                     val stamp = try {
@@ -161,8 +165,12 @@ class MarkupPreviewPanel(private val project: Project, private val toolWindow: T
         watcherThread = null
     }
 
-    /** Stops the file watcher; the process owner is disposed through its own registration. */
+    /**
+     * Marks the panel disposed so any already-queued EDT launch callback no-ops, and stops
+     * the file watcher. The process owner is disposed through its own Disposer registration.
+     */
     override fun dispose() {
+        disposed = true
         stopWatcher()
     }
 

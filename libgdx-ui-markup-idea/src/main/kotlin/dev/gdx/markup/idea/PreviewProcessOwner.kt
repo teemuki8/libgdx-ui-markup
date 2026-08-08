@@ -72,7 +72,8 @@ internal class PreviewProcessSupervisor internal constructor(
     @Volatile
     private var active: ActiveChild? = null
 
-    /** Executor-confined: only ever read/written by the single lifecycle thread. */
+    /** Set synchronously by [dispose]; visible to every queued task via the volatile write. */
+    @Volatile
     private var disposed = false
 
     /** Schedules a switch to [command]; non-blocking and never throws. */
@@ -80,7 +81,10 @@ internal class PreviewProcessSupervisor internal constructor(
         try {
             executor.execute {
                 if (disposed) return@execute
-                terminateActive()
+                val terminated = terminateActive()
+                // Never launch a replacement unless the previous child is confirmed dead,
+                // and never launch once dispose has been called (a task may be mid-flight).
+                if (terminated != TerminateOutcome.EXITED || disposed) return@execute
                 launch(command)
             }
         } catch (_: RejectedExecutionException) {
@@ -90,10 +94,9 @@ internal class PreviewProcessSupervisor internal constructor(
 
     /** Terminates the child and shuts the executor down; non-blocking and idempotent. */
     fun dispose() {
+        disposed = true
         try {
             executor.execute {
-                if (disposed) return@execute
-                disposed = true
                 terminateActive()
                 executor.shutdown()
             }
@@ -102,33 +105,50 @@ internal class PreviewProcessSupervisor internal constructor(
         }
     }
 
-    private fun terminateActive() {
-        val child = active ?: return
+    /** Terminates the active child; keeps ownership (and reports) when it survives the ladder. */
+    private fun terminateActive(): TerminateOutcome {
+        val child = active ?: return TerminateOutcome.EXITED
         active = null
         closeStdin(child.process)
-        var interrupted = terminateProcess(child.process)
-        interrupted = awaitDrains(child, nowNanos() + DRAIN_JOIN_NANOS, interrupted)
+        val result = terminateProcess(child.process)
+        var interrupted = result.interrupted
+        if (result.exited) {
+            interrupted = awaitDrains(child, nowNanos() + DRAIN_JOIN_NANOS, interrupted)
+        } else {
+            // The child survived destroy + bounded force-kill retries. It is still running,
+            // so ownership is preserved for a later retry and the failure is reported.
+            active = child
+            onStderr("failed to terminate preview process; it is still running")
+        }
         if (interrupted) {
             Thread.currentThread().interrupt()
         }
+        return if (result.exited) TerminateOutcome.EXITED else TerminateOutcome.STILL_ALIVE
     }
 
-    /** destroy → bounded wait → destroyForcibly → final wait; returns whether interrupted. */
-    private fun terminateProcess(process: Process): Boolean {
+    /**
+     * destroy → bounded wait → destroyForcibly + bounded wait (bounded retry) → confirmed
+     * exit or failure. The interrupt flag from any wait is reported, never swallowed.
+     */
+    private fun terminateProcess(process: Process): TerminateResult {
         process.destroy()
         var interrupted = false
         var outcome = waitUntilExited(process, nowNanos() + GRACEFUL_TERMINATE_NANOS)
         if (outcome == WaitOutcome.INTERRUPTED) {
             interrupted = true
         }
-        if (outcome != WaitOutcome.EXITED) {
+        var exited = outcome == WaitOutcome.EXITED
+        var attempts = 0
+        while (!exited && attempts < FORCE_KILL_ATTEMPTS) {
             process.destroyForcibly()
+            attempts++
             outcome = waitUntilExited(process, nowNanos() + FORCE_TERMINATE_NANOS)
             if (outcome == WaitOutcome.INTERRUPTED) {
                 interrupted = true
             }
+            exited = outcome == WaitOutcome.EXITED
         }
-        return interrupted
+        return TerminateResult(exited, interrupted)
     }
 
     /** Bounded drain join; an interrupt during the join wins and is reported, never looped. */
@@ -210,10 +230,15 @@ internal class PreviewProcessSupervisor internal constructor(
         val remainingDrains = AtomicInteger(2)
     }
 
+    private class TerminateResult(val exited: Boolean, val interrupted: Boolean)
+
+    private enum class TerminateOutcome { EXITED, STILL_ALIVE }
+
     companion object {
         private const val GRACEFUL_TERMINATE_NANOS = 2_000_000_000L
         private const val FORCE_TERMINATE_NANOS = 2_000_000_000L
         private const val DRAIN_JOIN_NANOS = 5_000_000_000L
+        private const val FORCE_KILL_ATTEMPTS = 2
 
         /** Production wiring used by [PreviewProcessOwner]. */
         internal fun default(
