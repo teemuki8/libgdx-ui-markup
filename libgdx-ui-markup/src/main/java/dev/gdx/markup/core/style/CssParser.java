@@ -2,8 +2,16 @@ package dev.gdx.markup.core.style;
 
 import dev.gdx.markup.core.MarkupException;
 import dev.gdx.markup.core.TagSpec;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -113,6 +121,34 @@ public final class CssParser {
             throw styleError(1, 1, "stylesheet of " + utf8.length + " bytes exceeds the "
                     + maxInputBytes + "-byte limit");
         }
+        return parseUtf8(utf8.length, css);
+    }
+
+    /**
+     * Parses one bounded stylesheet read from {@code path}. At most {@code maxInputBytes + 1}
+     * bytes are read, so an oversized file is rejected with a typed {@code TOO_LARGE} failure
+     * before its content is decoded into a String. The bytes are decoded as strict UTF-8;
+     * malformed or truncated sequences fail with a typed {@code STYLE_ERROR} diagnostic instead
+     * of a replacement character.
+     *
+     * @param path the stylesheet file to read
+     * @return the parsed stylesheet
+     * @throws IOException if the file cannot be read
+     */
+    public CssDocument parse(Path path) throws IOException {
+        Objects.requireNonNull(path, "path");
+        byte[] utf8;
+        try (InputStream in = Files.newInputStream(path)) {
+            utf8 = readBounded(in, maxInputBytes);
+        }
+        if (utf8.length > maxInputBytes) {
+            throw tooLarge(1, 1, "stylesheet exceeds the " + maxInputBytes + "-byte limit");
+        }
+        return parseUtf8(utf8.length, decodeUtf8(utf8));
+    }
+
+    /** Shared parse body for in-bounds UTF-8 stylesheets, whether from a String or a file. */
+    private CssDocument parseUtf8(int byteLength, String css) {
         Cursor cursor = new Cursor(css);
         ArrayList<CssRule> rules = new ArrayList<>();
         int ruleIndex = 0;
@@ -177,7 +213,42 @@ public final class CssParser {
                         + "-rule limit");
             }
         }
-        return new CssDocument(List.copyOf(rules), utf8.length);
+        return new CssDocument(List.copyOf(rules), byteLength);
+    }
+
+    /**
+     * Reads at most {@code maxBytes + 1} bytes from {@code in}, stopping as soon as the
+     * limit-plus-one sentinel is reached so an oversized input is never materialized. The
+     * returned array holds exactly the bytes read.
+     */
+    private static byte[] readBounded(InputStream in, int maxBytes) throws IOException {
+        int capacity = maxBytes == Integer.MAX_VALUE ? maxBytes : maxBytes + 1;
+        byte[] buffer = new byte[Math.min(capacity, 4 * 1024)];
+        int total = 0;
+        while (total < capacity) {
+            if (total == buffer.length) {
+                buffer = Arrays.copyOf(buffer, Math.min(buffer.length * 2, capacity));
+            }
+            int read = in.read(buffer, total, buffer.length - total);
+            if (read < 0) {
+                break;
+            }
+            total += read;
+        }
+        return total == buffer.length ? buffer : Arrays.copyOf(buffer, total);
+    }
+
+    /** Decodes strict UTF-8; malformed or truncated input fails with a typed diagnostic. */
+    private static String decodeUtf8(byte[] utf8) {
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(utf8))
+                    .toString();
+        } catch (CharacterCodingException failure) {
+            throw styleError(1, 1, "stylesheet is not valid UTF-8: " + failure.getMessage());
+        }
     }
 
     private static String removeComments(String text) {

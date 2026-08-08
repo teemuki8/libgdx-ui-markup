@@ -23,9 +23,7 @@ import dev.gdx.markup.core.SemanticSink;
 import dev.gdx.markup.core.style.CssDocument;
 import dev.gdx.markup.core.style.CssParser;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystems;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardWatchEventKinds;
 import java.nio.file.WatchEvent;
@@ -116,10 +114,8 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
     /** Rebuilds the scene from disk on the GL thread and reports one bounded status line. */
     private void rebuild() {
         try {
-            MarkupDocument document = new MarkupParser().parse(
-                    Files.readString(options.ui(), StandardCharsets.UTF_8));
-            CssDocument css = new CssParser().parse(
-                    Files.readString(options.css(), StandardCharsets.UTF_8));
+            MarkupDocument document = new MarkupParser().parse(options.ui());
+            CssDocument css = new CssParser().parse(options.css());
             Skin newSkin = options.skin() == null ? DefaultSkin.create()
                     : new Skin(Gdx.files.absolute(options.skin().toString()));
             if (skin != null) {
