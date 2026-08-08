@@ -97,7 +97,12 @@ internal class PreviewProcessSupervisor internal constructor(
         disposed = true
         try {
             executor.execute {
-                terminateActive()
+                // Keep owning the child: retry the termination ladder until it is confirmed
+                // dead. Each round is paced by the bounded waits inside terminateProcess, so
+                // the retry never spins and a live child is never dropped.
+                while (terminateActive() == TerminateOutcome.STILL_ALIVE) {
+                    // retry on the next round
+                }
                 executor.shutdown()
             }
         } catch (_: RejectedExecutionException) {

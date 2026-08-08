@@ -493,6 +493,42 @@ class PreviewProcessOwnerTest {
         }
     }
 
+    @Test
+    fun disposeRetriesTerminationUntilConfirmedExit() {
+        // Survives destroy and the first ladder's two force-kills; dies on the disposal retry.
+        val fake = FakeProcess(gracefulExit = false, forceKillsToDie = 4)
+        val launcher = FakeLauncher(listOf(fake))
+        val exits = CopyOnWriteArrayList<ExitCause>()
+        val exitLatch = CountDownLatch(1)
+        val executor = newExecutor(AtomicReference())
+        val supervisor = newSupervisor(
+            launcher = launcher::launch,
+            executor = executor,
+            wait = defaultFakePolicy(),
+            onExit = {
+                exits += it
+                exitLatch.countDown()
+            },
+        )
+        try {
+            supervisor.replace(listOf("preview"))
+            assertTrue(launcher.firstLaunch.await(5, TimeUnit.SECONDS))
+            fake.writeStdout("markup-status: {\"schemaVersion\":2,\"ok\":true,\"nodes\":1}\n")
+            supervisor.dispose()
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS),
+                "executor must terminate once the retry confirms the exit")
+            assertEquals(4, fake.forceKillCalls.get(),
+                "disposal must keep force-killing until the child is confirmed dead")
+            assertFalse(fake.alive)
+            assertTrue(exitLatch.await(5, TimeUnit.SECONDS), "exit must fire after the drains complete")
+            assertEquals(listOf(ExitCause.TERMINATED), exits)
+            assertNoPreviewThreads()
+        } finally {
+            supervisor.dispose()
+            executor.awaitTermination(5, TimeUnit.SECONDS)
+        }
+    }
+
     private fun newSupervisor(
         launcher: (List<String>) -> Process,
         executor: ExecutorService,
@@ -547,6 +583,7 @@ class PreviewProcessOwnerTest {
     private class FakeProcess(
         private val gracefulExit: Boolean = true,
         private val neverExits: Boolean = false,
+        private val forceKillsToDie: Int = 1,
     ) : Process() {
         private val stdoutSink = PipedOutputStream()
         private val stderrSink = PipedOutputStream()
@@ -589,7 +626,7 @@ class PreviewProcessOwnerTest {
         override fun destroyForcibly(): Process {
             forceKillCalls.incrementAndGet()
             onForceKill()
-            if (!neverExits) die()
+            if (!neverExits && forceKillCalls.get() >= forceKillsToDie) die()
             return this
         }
 
