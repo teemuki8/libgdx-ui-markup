@@ -11,44 +11,21 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.URI;
 import java.net.UnknownHostException;
-import java.nio.ByteBuffer;
-import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.DirectoryIteratorException;
-import java.nio.file.DirectoryStream;
-import java.nio.file.FileSystems;
-import java.nio.file.Files;
-import java.nio.file.LinkOption;
-import java.nio.file.NoSuchFileException;
-import java.nio.file.OpenOption;
-import java.nio.file.Path;
-import java.nio.file.SecureDirectoryStream;
-import java.nio.file.StandardOpenOption;
-import java.nio.file.attribute.AclEntry;
-import java.nio.file.attribute.AclEntryFlag;
-import java.nio.file.attribute.AclEntryPermission;
-import java.nio.file.attribute.AclEntryType;
-import java.nio.file.attribute.AclFileAttributeView;
-import java.nio.file.attribute.BasicFileAttributeView;
-import java.nio.file.attribute.BasicFileAttributes;
-import java.nio.file.attribute.PosixFilePermission;
-import java.nio.file.attribute.PosixFilePermissions;
-import java.nio.file.attribute.UserPrincipal;
-import java.nio.file.attribute.UserPrincipalLookupService;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.EnumSet;
-import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -58,27 +35,29 @@ import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 
 /**
- * Fetches copyrighted reference images at test time into a gitignored, per-session, owner-only
- * cache and never redistributes them. Every remote entry declares its exact identity (HTTPS
- * URL, SHA-256, byte length, media type, dimensions) and the store refuses anything that does
- * not match: the URL must be https on port 443 with a host and no user info or fragment, the
- * host must be in the allowlist, and every fetch connects over TLS to one approved,
- * globally-routable resolved address (the transport never re-resolves, so a rebinding attack
- * cannot reach a different peer). Redirects are followed manually with the same policy applied
- * to a fresh approval per target, bounded to {@link #MAX_REDIRECTS}. The payload must match the
- * declared digest, byte length, media type, and header dimensions, and is decoded once into a
- * bounded {@link ReferenceImage} at the analysis resolution; the cache is written and re-read
- * through single {@code NOFOLLOW} handles so a forged or symlinked cache entry can never be
- * used or followed.
+ * Fetches copyrighted reference images at test time into a per-run, bounded, in-memory cache
+ * and never writes any remote bytes to disk. Every remote entry declares its exact identity
+ * (HTTPS URL, SHA-256, byte length, media type, dimensions) and the store refuses anything
+ * that does not match: the URL must be https on port 443 with a host and no user info or
+ * fragment, the host must be in the allowlist, and every fetch connects over TLS to one
+ * approved, globally-routable resolved address (the transport never re-resolves, so a
+ * rebinding attack cannot reach a different peer). Redirects are followed manually with the
+ * same policy applied to a fresh approval per target, bounded to {@link #MAX_REDIRECTS}. The
+ * payload must match the declared digest, byte length, media type, and header dimensions, and
+ * is decoded once (via {@code ImageReader} source subsampling) into an immutable
+ * {@link ReferenceImage} that exposes no mutable {@code BufferedImage} or array.
  *
- * <p>The session cache is anchored by a trust chain: every component from the filesystem root
- * down to the session parent is validated as a real directory that cannot be used to replace
- * its next component (sticky shared root, or writable only by a trusted owner), the identity is
- * revalidated immediately before every directory-relative operation, and on providers that
- * support it a {@link SecureDirectoryStream} is retained over the session so all cache I/O and
- * cleanup happen relative to the anchored directory handle. The security policy is abstracted
- * over POSIX mode bits and Windows ACLs ({@link FilesystemPolicy}); when neither policy can be
- * proven the store fails closed with a typed {@link ReferenceException}.
+ * <p>Verified references are retained in a bounded content-addressed cache keyed by the
+ * complete expected identity ({@link CacheKey}: digest, byte length, media type, and header
+ * dimensions — never the URL). The cache is limited by an explicit maximum entry count plus
+ * cumulative encoded bytes and cumulative decoded pixels, all with overflow-safe admission;
+ * when admitting would exceed a budget the least recently used entry is evicted first, and an
+ * entry that alone exceeds every budget is still served but never retained. Cache hits
+ * re-check the requested identity against the cached key and image invariants and return the
+ * same immutable image, so a hit can never be confused with another identity or mutated.
+ * Concurrent requests for the same identity share one verified fetch. The cache lives only
+ * for the store's lifetime: {@link #close()} clears every owned reference, and the owning
+ * {@link QualificationRunner} always closes the store.
  *
  * <p>HTTP framing is parsed byte-for-byte: every raw octet including the CRLF terminators
  * counts toward the per-line and total header bounds before normalization, lines must be
@@ -96,6 +75,13 @@ public final class ReferenceImageStore implements AutoCloseable {
     public static final int MAX_REDIRECTS = 5;
     /** Image media types accepted from servers and declared by the manifest. */
     public static final Set<String> ALLOWED_MEDIA_TYPES = Set.of("image/jpeg", "image/png");
+    /** Explicit maximum number of verified references retained per store. */
+    public static final int MAX_CACHE_ENTRIES = 8;
+    /** Cumulative encoded-byte budget for the retained cache (4 payloads at the cap). */
+    public static final long MAX_CACHE_ENCODED_BYTES = 4 * MAX_BYTES;
+    /** Cumulative decoded-pixel budget (4 analysis-resolution frames). */
+    public static final long MAX_CACHE_DECODED_PIXELS =
+            4L * BoundedDecode.MAX_ANALYSIS_DIMENSION * BoundedDecode.MAX_ANALYSIS_DIMENSION;
 
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(15);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(60);
@@ -107,9 +93,6 @@ public final class ReferenceImageStore implements AutoCloseable {
             java.util.regex.Pattern.compile("[0-9]+");
     private static final Set<String> DEFAULT_ALLOWED_HOSTS =
             Set.of("shared.akamai.steamstatic.com");
-    private static final Set<PosixFilePermission> OWNER_ONLY = Set.of(
-            PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
-            PosixFilePermission.OWNER_EXECUTE);
 
     /** One GET response: status, Content-Type, Location, and the bounded body bytes. */
     public record Response(int statusCode, String contentType, String location, byte[] body) {
@@ -149,371 +132,299 @@ public final class ReferenceImageStore implements AutoCloseable {
     }
 
     /**
-     * Immutable per-directory security facts, the pure input to the POSIX trust-chain
-     * decisions (extracted from {@code unix:mode}, {@code unix:uid}, and the owner). The
-     * decisions are pure functions of these facts so the policy is deterministically testable
-     * without a filesystem.
+     * The complete expected identity of a remote reference: the digest, byte length, media
+     * type, and header dimensions declared by the manifest. The cache is content-addressed by
+     * this key — never by URL — so two entries with the same authenticated identity share one
+     * verified fetch while entries with the same URL but different identities can never alias.
      */
-    record DirectorySecurity(boolean directory, boolean sticky, boolean groupOrOtherWritable,
-            boolean ownerIsCurrentUser, boolean ownerIsRoot) {
+    record CacheKey(String sha256, long bytes, String mediaType, int width, int height) {
 
-        static final DirectorySecurity UNPROVABLE =
-                new DirectorySecurity(false, false, false, false, false);
-
-        /**
-         * The session parent: a real directory that is private (owned by the current user,
-         * unshared) or a sticky shared root owned by a trusted principal, so no other
-         * principal can delete or replace the session directory inside it.
-         */
-        boolean secureParent() {
-            return directory
-                    && (ownerIsCurrentUser && !groupOrOtherWritable
-                        || sticky && (ownerIsCurrentUser || ownerIsRoot));
-        }
-
-        /**
-         * An ancestor that could replace its next component: a real directory that is either
-         * sticky (other principals cannot rename/delete a child they do not own) or writable
-         * only by its owner, and whose owner is a trusted principal (the current user or the
-         * platform root).
-         */
-        boolean secureAncestor() {
-            return directory
-                    && (sticky || !groupOrOtherWritable)
-                    && (ownerIsCurrentUser || ownerIsRoot);
+        static CacheKey of(CorpusEntry entry) {
+            return new CacheKey(entry.sha256(), entry.bytes(), entry.mediaType(),
+                    entry.referenceWidth(), entry.referenceHeight());
         }
     }
 
     /**
-     * Filesystem security policy abstraction: proves the trust chain for the session cache on
-     * POSIX filesystems (mode bits) or Windows (ACLs). The policy is selected once per parent;
-     * when neither implementation can probe the filesystem, the store fails closed with a
-     * typed {@link ReferenceException} instead of falling back to an unvalidated location.
+     * Bounded in-memory cache budgets: explicit maximum entries, cumulative encoded bytes, and
+     * cumulative decoded pixels. Injectable so adversarial limit tests are deterministic.
      */
-    interface FilesystemPolicy {
-        /** Whether this policy can prove security facts about the given directory. */
-        boolean canProbe(Path dir);
+    record CacheLimits(int maxEntries, long maxEncodedBytes, long maxDecodedPixels) {
 
-        /** Proves the final session parent is secure (see {@link DirectorySecurity#secureParent()}). */
-        boolean isSecureParent(Path parent);
-
-        /** Proves an ancestor cannot replace its next component (see
-         * {@link DirectorySecurity#secureAncestor()}). */
-        boolean isSecureAncestor(Path ancestor);
-
-        /** Creates a fresh private directory (owner-only mode or ACL) under the parent. */
-        Path createPrivateDirectory(Path parent, String prefix) throws IOException;
-
-        /** Selects the first policy that can probe the directory: POSIX, then ACL. */
-        static FilesystemPolicy detect(Path probe) {
-            PosixFilesystemPolicy posix = new PosixFilesystemPolicy();
-            if (posix.canProbe(probe)) {
-                return posix;
-            }
-            AclFilesystemPolicy acl = new AclFilesystemPolicy();
-            return acl.canProbe(probe) ? acl : null;
-        }
+        static final CacheLimits DEFAULT = new CacheLimits(MAX_CACHE_ENTRIES,
+                MAX_CACHE_ENCODED_BYTES, MAX_CACHE_DECODED_PIXELS);
     }
 
     /**
-     * POSIX mode-bit policy. On systems where {@code unix:mode} is unreadable (for example
-     * Windows) the directory is unprovable and refused, so the store falls through to the ACL
-     * policy or fails closed.
+     * Immutable decoded reference: the subsampled pixels are copied into a private array that
+     * is never exposed, so a caller can read {@link #rgb(int, int)} but cannot mutate the
+     * cached value. Identical instances are shared freely across cache hits and callers.
      */
-    static final class PosixFilesystemPolicy implements FilesystemPolicy {
-        @Override
-        public boolean canProbe(Path dir) {
-            try {
-                Files.getAttribute(dir, "unix:mode", LinkOption.NOFOLLOW_LINKS);
-                return true;
-            } catch (IOException | UnsupportedOperationException unprovable) {
-                return false;
+    public static final class ReferenceImage {
+        private final int width;
+        private final int height;
+        private final int[] argb;
+
+        /** Copies the bounded decoded pixels out of the transient {@code BufferedImage}. */
+        ReferenceImage(BufferedImage source) {
+            Objects.requireNonNull(source, "source");
+            this.width = source.getWidth();
+            this.height = source.getHeight();
+            long pixels = (long) width * height;
+            if (pixels > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("image too large for the immutable pixel "
+                        + "store: " + width + "x" + height);
             }
+            this.argb = source.getRGB(0, 0, width, height, new int[(int) pixels], 0, width);
         }
 
-        DirectorySecurity facts(Path dir) {
-            try {
-                int mode = (Integer) Files.getAttribute(dir, "unix:mode",
-                        LinkOption.NOFOLLOW_LINKS);
-                boolean directory = (mode & 0040000) != 0; // S_IFDIR
-                boolean sticky = (mode & 01000) != 0;
-                boolean groupOrOtherWritable = (mode & 0022) != 0;
-                boolean ownerIsRoot;
-                try {
-                    ownerIsRoot = (Integer) Files.getAttribute(dir, "unix:uid",
-                            LinkOption.NOFOLLOW_LINKS) == 0;
-                } catch (IOException | UnsupportedOperationException noUid) {
-                    ownerIsRoot = false; // cannot prove: treat the owner as untrusted
-                }
-                boolean ownerIsCurrentUser = Files.getOwner(dir).equals(currentUser());
-                return new DirectorySecurity(directory, sticky, groupOrOtherWritable,
-                        ownerIsCurrentUser, ownerIsRoot);
-            } catch (IOException | UnsupportedOperationException unprovable) {
-                return DirectorySecurity.UNPROVABLE;
-            }
+        /** Decoded width. */
+        public int width() {
+            return width;
         }
 
-        @Override
-        public boolean isSecureParent(Path parent) {
-            return facts(parent).secureParent();
+        /** Decoded height. */
+        public int height() {
+            return height;
         }
 
-        @Override
-        public boolean isSecureAncestor(Path ancestor) {
-            return facts(ancestor).secureAncestor();
-        }
-
-        @Override
-        public Path createPrivateDirectory(Path parent, String prefix) throws IOException {
-            return Files.createTempDirectory(parent, prefix,
-                    PosixFilePermissions.asFileAttribute(OWNER_ONLY));
+        /** ARGB pixel value at ({@code x}, {@code y}); read-only, bounds-checked. */
+        public int rgb(int x, int y) {
+            return argb[Objects.checkIndex(y * width + x, argb.length)];
         }
     }
 
-    /**
-     * Windows ACL policy. The session parent is provably secure when it is owned by the
-     * current user and no untrusted principal is granted entry-modifying permissions
-     * ({@code DELETE_CHILD}, {@code WRITE_DATA}, {@code APPEND_DATA}, {@code DELETE},
-     * {@code WRITE_ACL}, or {@code WRITE_OWNER}); an ancestor is provably secure when
-     * additionally its owner is a trusted principal (the current user or an exactly resolved
-     * well-known system/administrators account). Session directories are created with an
-     * owner-only ACL. When the ACL view cannot be read the directory is unprovable and
-     * refused (fail closed). The decisions are pure functions of the ACL entries and the
-     * exact resolved principal names, so they are deterministically testable on any platform.
-     */
-    static final class AclFilesystemPolicy implements FilesystemPolicy {
-        /**
-         * Permissions that let a principal create, modify, or delete the directory's entries,
-         * or take or rewrite its DACL/owner and thereby replace the session.
-         */
-        static final Set<AclEntryPermission> ENTRY_MODIFY = Set.of(
-                AclEntryPermission.DELETE_CHILD, AclEntryPermission.WRITE_DATA,
-                AclEntryPermission.APPEND_DATA, AclEntryPermission.DELETE,
-                AclEntryPermission.WRITE_ACL, AclEntryPermission.WRITE_OWNER);
+    /** One admitted cache entry: the identity key and the immutable decoded image. */
+    private static final class CachedEntry {
+        final CacheKey key;
+        final long encodedBytes;
+        final long decodedPixels;
+        final ReferenceImage image;
 
-        private final UserPrincipal currentUser;
-        /**
-         * Exactly resolved principal names trusted for the ancestor policy: the current user
-         * plus every well-known system/administrators account the platform's principal lookup
-         * service can resolve. A name is only trusted when it equals a resolved account name
-         * — display-name or substring matches are never used.
-         */
-        private final Set<String> trustedPrincipalNames;
-
-        AclFilesystemPolicy() {
-            this.currentUser = currentUser();
-            Set<String> trusted = new HashSet<>(resolveTrustedSystemPrincipalNames());
-            trusted.add(currentUser.getName());
-            this.trustedPrincipalNames = Set.copyOf(trusted);
-        }
-
-        /**
-         * Resolves the exact well-known system principals through the principal lookup
-         * service. Only accounts that resolve exactly are trusted; when an account is not
-         * resolvable on this platform it is conservatively not trusted. Package-private for
-         * tests.
-         */
-        static Set<String> resolveTrustedSystemPrincipalNames() {
-            Set<String> trusted = new HashSet<>();
-            UserPrincipalLookupService lookup = FileSystems.getDefault()
-                    .getUserPrincipalLookupService();
-            for (String candidate : List.of("SYSTEM", "NT AUTHORITY\\SYSTEM",
-                    "BUILTIN\\Administrators", "Administrators", "root")) {
-                try {
-                    trusted.add(lookup.lookupPrincipalByName(candidate).getName());
-                } catch (IOException | UnsupportedOperationException unavailable) {
-                    // the well-known account is not resolvable on this platform: not trusted
-                }
-            }
-            return trusted;
-        }
-
-        @Override
-        public boolean canProbe(Path dir) {
-            return aclView(dir) != null;
-        }
-
-        @Override
-        public boolean isSecureParent(Path parent) {
-            if (!Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS)) {
-                return false;
-            }
-            try {
-                AclFileAttributeView view = aclView(parent);
-                if (view == null) {
-                    return false;
-                }
-                UserPrincipal owner = view.getOwner();
-                return owner.getName().equals(currentUser.getName())
-                        && !allowsNonOwnerModification(view.getAcl(), owner,
-                                trustedPrincipalNames);
-            } catch (IOException | UnsupportedOperationException unprovable) {
-                return false;
-            }
-        }
-
-        @Override
-        public boolean isSecureAncestor(Path ancestor) {
-            if (!Files.isDirectory(ancestor, LinkOption.NOFOLLOW_LINKS)) {
-                return false;
-            }
-            try {
-                AclFileAttributeView view = aclView(ancestor);
-                if (view == null) {
-                    return false;
-                }
-                UserPrincipal owner = view.getOwner();
-                return ownerTrusted(owner, trustedPrincipalNames)
-                        && !allowsNonOwnerModification(view.getAcl(), owner,
-                                trustedPrincipalNames);
-            } catch (IOException | UnsupportedOperationException unprovable) {
-                return false;
-            }
-        }
-
-        @Override
-        public Path createPrivateDirectory(Path parent, String prefix) throws IOException {
-            Path dir = Files.createTempDirectory(parent, prefix);
-            try {
-                AclFileAttributeView view = aclView(dir);
-                if (view == null) {
-                    throw new IOException("ACL attribute view unavailable for " + dir);
-                }
-                UserPrincipal owner = view.getOwner();
-                List<AclEntry> acl = ownerOnlyAcl(owner);
-                view.setAcl(acl);
-                // Verify the private ACL was actually established: the owner must hold every
-                // permission and no untrusted principal may modify the entries.
-                if (!acl.equals(view.getAcl())
-                        || allowsNonOwnerModification(view.getAcl(), owner,
-                                Set.of(owner.getName()))) {
-                    throw new IOException("could not establish a private ACL on " + dir);
-                }
-                return dir;
-            } catch (IOException failure) {
-                try {
-                    Files.deleteIfExists(dir);
-                } catch (IOException ignored) {
-                    // preserve the original failure
-                }
-                throw failure;
-            }
-        }
-
-        private static AclFileAttributeView aclView(Path path) {
-            try {
-                return Files.getFileAttributeView(path, AclFileAttributeView.class,
-                        LinkOption.NOFOLLOW_LINKS);
-            } catch (UnsupportedOperationException unavailable) {
-                return null;
-            }
-        }
-
-        /**
-         * Pure: the private session ACL grants the owner every permission with inheritance and
-         * nothing to anyone else.
-         */
-        static List<AclEntry> ownerOnlyAcl(UserPrincipal owner) {
-            return List.of(AclEntry.newBuilder()
-                    .setType(AclEntryType.ALLOW)
-                    .setPrincipal(owner)
-                    .setPermissions(EnumSet.allOf(AclEntryPermission.class))
-                    .setFlags(AclEntryFlag.FILE_INHERIT, AclEntryFlag.DIRECTORY_INHERIT)
-                    .build());
-        }
-
-        /**
-         * Pure: true when any ALLOW entry grants entry-modifying, DACL-rewriting, or
-         * ownership-taking permissions to a principal other than the owner that is not one of
-         * the exactly resolved trusted principals. DENY entries and grants to the owner or to
-         * trusted principals are harmless.
-         */
-        static boolean allowsNonOwnerModification(List<AclEntry> acl, UserPrincipal owner,
-                Set<String> trustedPrincipalNames) {
-            for (AclEntry entry : acl) {
-                if (entry.type() == AclEntryType.ALLOW
-                        && !entry.principal().getName().equals(owner.getName())
-                        && !trustedPrincipalNames.contains(entry.principal().getName())
-                        && entry.permissions().stream().anyMatch(ENTRY_MODIFY::contains)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        /**
-         * Pure: an ancestor's owner may anchor the chain only when its name equals the exact
-         * name of the current user or of a resolved well-known system/administrators account.
-         */
-        static boolean ownerTrusted(UserPrincipal owner, Set<String> trustedPrincipalNames) {
-            return trustedPrincipalNames.contains(owner.getName());
+        CachedEntry(CacheKey key, ReferenceImage image) {
+            this.key = key;
+            this.encodedBytes = key.bytes();
+            this.decodedPixels = (long) image.width() * image.height();
+            this.image = image;
         }
     }
 
-    /**
-     * The anchored session: its path, real-path identity, non-null file key, and retained
-     * directory streams over the session's parent and the session itself.
-     */
-    record SessionAnchor(Path dir, Path realPath, Object fileKey,
-            SecureDirectoryStream<Path> parentStream, SecureDirectoryStream<Path> sessionStream) {
-    }
-
-    /** A reference whose bytes were authenticated and decoded once into a bounded image. */
-    public record ReferenceImage(BufferedImage image) {
-        public ReferenceImage {
-            Objects.requireNonNull(image, "image");
-        }
-    }
-
-    private final Path cacheDir;
-    private final Path anchorRealPath;
-    private final Object anchorFileKey;
-    private final SecureDirectoryStream<Path> parentStream;
-    private final SecureDirectoryStream<Path> sessionStream;
     private final Transport transport;
     private final HostResolver resolver;
     private final Set<String> allowedHosts;
     private final Clock clock;
+    private final CacheLimits limits;
+    /** Guards every cache and lifecycle field; access-order map gives least-recently-used order. */
+    private final Object lock = new Object();
+    private final Map<CacheKey, CachedEntry> cache =
+            new LinkedHashMap<>(16, 0.75f, true);
+    private final Map<CacheKey, CompletableFuture<Optional<ReferenceImage>>> inFlight =
+            new java.util.HashMap<>();
+    private long cacheEncodedBytes;
+    private long cacheDecodedPixels;
+    private boolean closed;
 
     /** Creates a store with the default pinned-TLS transport, DNS resolution, and host allowlist. */
-    public ReferenceImageStore(Path cacheDir) {
-        this(cacheDir, null, null, null, System::nanoTime);
+    public ReferenceImageStore() {
+        this(null, null, null, System::nanoTime, CacheLimits.DEFAULT);
     }
 
     /**
      * Creates a store over injected seams (transport, resolver, host allowlist); package-private
      * so deterministic tests never touch the network.
      */
-    ReferenceImageStore(Path cacheDir, Transport transport, HostResolver resolver,
-            Set<String> allowedHosts) {
-        this(cacheDir, transport, resolver, allowedHosts, System::nanoTime);
+    ReferenceImageStore(Transport transport, HostResolver resolver, Set<String> allowedHosts) {
+        this(transport, resolver, allowedHosts, System::nanoTime, CacheLimits.DEFAULT);
     }
 
-    /** Package-private seam with an injected clock for deterministic deadline tests. */
-    ReferenceImageStore(Path cacheDir, Transport transport, HostResolver resolver,
-            Set<String> allowedHosts, Clock clock) {
-        SessionAnchor anchor = createSessionDir(cacheDir);
-        this.cacheDir = anchor.dir();
-        this.anchorRealPath = anchor.realPath();
-        this.anchorFileKey = anchor.fileKey();
-        this.parentStream = anchor.parentStream();
-        this.sessionStream = anchor.sessionStream();
+    /** Package-private seam with injected clock and cache budgets for deterministic tests. */
+    ReferenceImageStore(Transport transport, HostResolver resolver, Set<String> allowedHosts,
+            Clock clock, CacheLimits limits) {
         this.transport = transport != null ? transport : this::httpsGet;
         this.resolver = resolver != null ? resolver : this::resolveAll;
         this.allowedHosts = allowedHosts != null ? allowedHosts : DEFAULT_ALLOWED_HOSTS;
         this.clock = clock;
+        this.limits = limits != null ? limits : CacheLimits.DEFAULT;
     }
 
     /**
-     * Returns the authenticated reference image for the entry, fetching it when absent. Empty
-     * only when the reference is explicitly absent (HTTP 404/410). Policy, identity, cache,
-     * decode, and transport failures raise {@link ReferenceException}.
+     * Returns the authenticated reference image for the entry, fetching it when absent and
+     * serving verified hits from the bounded in-memory cache. Empty only when the reference is
+     * explicitly absent (HTTP 404/410). Policy, identity, cache, decode, and transport
+     * failures raise {@link ReferenceException}; using the store after {@link #close()}
+     * raises {@link IllegalStateException}.
      */
     public Optional<ReferenceImage> reference(CorpusEntry entry) {
-        String name = cacheFileName(entry);
-        if (hasCacheFile(name)) {
-            return Optional.of(decodedFromCache(name, entry));
+        Objects.requireNonNull(entry, "entry");
+        CacheKey key = CacheKey.of(entry);
+        CompletableFuture<Optional<ReferenceImage>> pending;
+        boolean shared = false;
+        synchronized (lock) {
+            if (closed) {
+                throw new IllegalStateException("reference store is closed");
+            }
+            CachedEntry hit = cache.get(key);
+            if (hit != null) {
+                recheckInvariants(hit, key);
+                return Optional.of(hit.image);
+            }
+            pending = inFlight.get(key);
+            if (pending != null) {
+                // Another caller is already fetching this identity: share the verified result.
+                shared = true;
+            } else {
+                pending = new CompletableFuture<>();
+                inFlight.put(key, pending);
+            }
         }
+        if (shared) {
+            return await(pending);
+        }
+        return fetchAndComplete(key, entry, pending);
+    }
+
+    private Optional<ReferenceImage> fetchAndComplete(CacheKey key, CorpusEntry entry,
+            CompletableFuture<Optional<ReferenceImage>> pending) {
+        Optional<ReferenceImage> result;
+        try {
+            result = fetchVerifiedEntry(entry);
+        } catch (RuntimeException | Error failure) {
+            synchronized (lock) {
+                inFlight.remove(key);
+            }
+            pending.completeExceptionally(failure);
+            throw failure;
+        }
+        synchronized (lock) {
+            if (!closed && result.isPresent()) {
+                admit(key, result.orElseThrow());
+            }
+            inFlight.remove(key);
+        }
+        pending.complete(result);
+        return result;
+    }
+
+    /** Joins a shared in-flight fetch, unwrapping the original typed failure. */
+    private static Optional<ReferenceImage> await(
+            CompletableFuture<Optional<ReferenceImage>> pending) {
+        try {
+            return pending.join();
+        } catch (CompletionException failure) {
+            Throwable cause = failure.getCause();
+            if (cause instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            if (cause instanceof Error error) {
+                throw error;
+            }
+            throw failure;
+        }
+    }
+
+    /**
+     * Re-checks the cached entry against the requested identity and its own invariants before
+     * serving a hit, so a corrupted or mis-keyed entry can never be returned as another
+     * identity.
+     */
+    private static void recheckInvariants(CachedEntry entry, CacheKey requested) {
+        if (!entry.key.equals(requested) || entry.encodedBytes != requested.bytes()) {
+            throw new ReferenceException(ReferenceException.Kind.CACHE,
+                    "cached entry identity does not match the requested identity");
+        }
+        if (entry.image.width() != requested.width()
+                || entry.image.height() != requested.height()) {
+            throw new ReferenceException(ReferenceException.Kind.CACHE,
+                    "cached image dimensions do not match the requested identity");
+        }
+        if (entry.decodedPixels != (long) entry.image.width() * entry.image.height()) {
+            throw new ReferenceException(ReferenceException.Kind.CACHE,
+                    "cached image pixel accounting is inconsistent");
+        }
+    }
+
+    /**
+     * Admits a verified image under every budget. While the new entry would exceed a budget
+     * and the cache is non-empty, the least recently used entry is evicted; an entry that
+     * alone exceeds every budget is served but never retained.
+     */
+    private void admit(CacheKey key, ReferenceImage image) {
+        CachedEntry entry = new CachedEntry(key, image);
+        while (!cache.isEmpty() && !fitsWithinLimits(entry)) {
+            evictLeastRecentlyUsed();
+        }
+        if (!fitsWithinLimits(entry)) {
+            return;
+        }
+        cache.put(key, entry);
+        cacheEncodedBytes += entry.encodedBytes;
+        cacheDecodedPixels += entry.decodedPixels;
+    }
+
+    private boolean fitsWithinLimits(CachedEntry entry) {
+        return cache.size() + 1 <= limits.maxEntries
+                && !exceedsBudget(cacheEncodedBytes, entry.encodedBytes, limits.maxEncodedBytes)
+                && !exceedsBudget(cacheDecodedPixels, entry.decodedPixels,
+                        limits.maxDecodedPixels);
+    }
+
+    private void evictLeastRecentlyUsed() {
+        java.util.Iterator<Map.Entry<CacheKey, CachedEntry>> iterator = cache.entrySet().iterator();
+        Map.Entry<CacheKey, CachedEntry> eldest = iterator.next();
+        iterator.remove();
+        cacheEncodedBytes -= eldest.getValue().encodedBytes;
+        cacheDecodedPixels -= eldest.getValue().decodedPixels;
+    }
+
+    /**
+     * Pure overflow-safe budget check: true when {@code current + added} would exceed
+     * {@code budget}. Never performs the addition, so extreme values cannot overflow.
+     */
+    static boolean exceedsBudget(long current, long added, long budget) {
+        return added > budget - current;
+    }
+
+    /** Number of retained cache entries (package-private for tests). */
+    int cachedEntryCount() {
+        synchronized (lock) {
+            return cache.size();
+        }
+    }
+
+    /** Cumulative encoded bytes of the retained cache (package-private for tests). */
+    long cachedEncodedBytes() {
+        synchronized (lock) {
+            return cacheEncodedBytes;
+        }
+    }
+
+    /** Cumulative decoded pixels of the retained cache (package-private for tests). */
+    long cachedDecodedPixels() {
+        synchronized (lock) {
+            return cacheDecodedPixels;
+        }
+    }
+
+    /**
+     * Clears every owned reference so the retained bytes and pixels become garbage. Idempotent;
+     * the owning {@link QualificationRunner} always closes the store. Images already handed
+     * out remain readable because they are immutable and detached from the cache.
+     */
+    @Override
+    public void close() {
+        synchronized (lock) {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            cache.clear();
+            inFlight.clear();
+            cacheEncodedBytes = 0;
+            cacheDecodedPixels = 0;
+        }
+    }
+
+    private Optional<ReferenceImage> fetchVerifiedEntry(CorpusEntry entry) {
         byte[] body;
         try {
             body = fetchVerified(entry);
@@ -524,159 +435,7 @@ public final class ReferenceImageStore implements AutoCloseable {
         if (body == null) {
             return Optional.empty();
         }
-        ReferenceImage image = decodeVerified(body, entry, entry.sourceUrl());
-        writeCache(name, body);
-        return Optional.of(image);
-    }
-
-    /** Returns the private session cache directory (package-private for tests). */
-    Path sessionDir() {
-        return cacheDir;
-    }
-
-    /** Returns the retained secure directory stream over the session (null when unsupported). */
-    SecureDirectoryStream<Path> retainedSessionStream() {
-        return sessionStream;
-    }
-
-    private String cacheFileName(CorpusEntry entry) {
-        return entry.id() + extension(entry.mediaType());
-    }
-
-    /**
-     * Revalidates the session identity immediately before a directory-relative operation: the
-     * session path still names the same real directory created at construction (file key and
-     * real path), so a swapped, replaced, or symlinked path can never receive cache data.
-     */
-    private void revalidateSession() {
-        if (!Files.isDirectory(cacheDir, LinkOption.NOFOLLOW_LINKS)) {
-            throw new ReferenceException(ReferenceException.Kind.CACHE,
-                    "session cache directory vanished or was replaced: " + cacheDir);
-        }
-        try {
-            Object currentKey = fileKeyOf(cacheDir);
-            // The anchor key is non-null by construction; an unprovable current key is a
-            // mismatch, never proof of identity.
-            if (currentKey == null || !anchorFileKey.equals(currentKey)) {
-                throw new ReferenceException(ReferenceException.Kind.CACHE,
-                        "session cache directory was replaced or its identity is unprovable: "
-                                + cacheDir);
-            }
-            if (!cacheDir.toRealPath().equals(anchorRealPath)) {
-                throw new ReferenceException(ReferenceException.Kind.CACHE,
-                        "session cache path changed: " + cacheDir);
-            }
-        } catch (ReferenceException failure) {
-            throw failure;
-        } catch (IOException failure) {
-            throw new ReferenceException(ReferenceException.Kind.CACHE,
-                    "cannot revalidate the session cache path " + cacheDir, failure);
-        }
-    }
-
-    private static Object fileKeyOf(Path path) {
-        try {
-            return Files.readAttributes(path, BasicFileAttributes.class,
-                    LinkOption.NOFOLLOW_LINKS).fileKey();
-        } catch (IOException | UnsupportedOperationException unavailable) {
-            return null; // unprovable: never treated as proof of identity
-        }
-    }
-
-    /**
-     * Pure identity decision: two file keys prove the same directory only when both are
-     * non-null and equal. A missing key on either side is unprovable, never the same.
-     */
-    static boolean sameFileKey(Object firstKey, Object secondKey) {
-        return firstKey != null && secondKey != null && firstKey.equals(secondKey);
-    }
-
-    /**
-     * Opens a cache entry relative to the retained {@link SecureDirectoryStream} when the
-     * provider supports one (the fd anchors the original session directory, so no path
-     * traversal can redirect the open); otherwise a NOFOLLOW open on the session path.
-     */
-    private SeekableByteChannel sessionChannel(String name, Set<OpenOption> options)
-            throws IOException {
-        if (sessionStream != null) {
-            return sessionStream.newByteChannel(Path.of(name), options);
-        }
-        return Files.newByteChannel(cacheDir.resolve(name), options);
-    }
-
-    private boolean hasCacheFile(String name) {
-        revalidateSession();
-        try (SeekableByteChannel channel = sessionChannel(name,
-                Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
-            return channel.size() >= 0; // the entry exists and is readable
-        } catch (NoSuchFileException missing) {
-            return false;
-        } catch (IOException failure) {
-            throw new ReferenceException(ReferenceException.Kind.CACHE,
-                    "cannot inspect cache file " + name, failure);
-        }
-    }
-
-    /**
-     * Re-authenticates a cache hit from a single NOFOLLOW handle: reads the bytes once, then
-     * checks length, digest, and header dimensions before decoding. A forged or tampered cache
-     * entry fails the qualification with a typed {@code CACHE} error.
-     */
-    private ReferenceImage decodedFromCache(String name, CorpusEntry entry) {
-        revalidateSession();
-        byte[] bytes;
-        try (SeekableByteChannel channel = sessionChannel(name,
-                Set.of(StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
-            bytes = readAllBounded(channel, name);
-        } catch (IOException failure) {
-            throw new ReferenceException(ReferenceException.Kind.CACHE,
-                    "cannot read cache file " + name, failure);
-        }
-        if (bytes.length != entry.bytes()) {
-            throw new ReferenceException(ReferenceException.Kind.CACHE,
-                    "cache file " + name + " is " + bytes.length + " bytes, declared "
-                            + entry.bytes());
-        }
-        if (!digestMatches(bytes, entry.sha256())) {
-            throw new ReferenceException(ReferenceException.Kind.CACHE,
-                    "cache file " + name + " fails the declared SHA-256 identity");
-        }
-        return decodeVerified(bytes, entry, "cache " + name);
-    }
-
-    /**
-     * Writes the verified bytes with CREATE_NEW and NOFOLLOW relative to the anchored session,
-     * so a pre-planted regular file or symlink at the cache path is never replaced or followed.
-     */
-    private void writeCache(String name, byte[] body) {
-        revalidateSession();
-        try (SeekableByteChannel channel = sessionChannel(name,
-                Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE,
-                        LinkOption.NOFOLLOW_LINKS))) {
-            ByteBuffer buffer = ByteBuffer.wrap(body);
-            while (buffer.hasRemaining()) {
-                channel.write(buffer);
-            }
-        } catch (IOException failure) {
-            throw new ReferenceException(ReferenceException.Kind.CACHE,
-                    "cannot write cache file " + name, failure);
-        }
-    }
-
-    private static byte[] readAllBounded(SeekableByteChannel channel, String name)
-            throws IOException {
-        long size = channel.size();
-        if (size > MAX_BYTES) {
-            throw new IOException("cache file " + name + " exceeds the " + MAX_BYTES
-                    + " byte cap");
-        }
-        ByteBuffer buffer = ByteBuffer.allocate((int) size);
-        while (buffer.hasRemaining()) {
-            if (channel.read(buffer) < 0) {
-                throw new IOException("truncated cache file " + name);
-            }
-        }
-        return buffer.array();
+        return Optional.of(decodeVerified(body, entry, entry.sourceUrl()));
     }
 
     /**
@@ -828,14 +587,6 @@ public final class ReferenceImageStore implements AutoCloseable {
         return switch (mediaType) {
             case "image/jpeg" -> "jpeg";
             case "image/png" -> "png";
-            default -> throw new IllegalArgumentException("unexpected media type " + mediaType);
-        };
-    }
-
-    private static String extension(String mediaType) {
-        return switch (mediaType) {
-            case "image/jpeg" -> ".jpg";
-            case "image/png" -> ".png";
             default -> throw new IllegalArgumentException("unexpected media type " + mediaType);
         };
     }
@@ -1365,348 +1116,6 @@ public final class ReferenceImageStore implements AutoCloseable {
 
     private InetAddress[] resolveAll(String host) throws UnknownHostException {
         return InetAddress.getAllByName(host);
-    }
-
-    /**
-     * Creates a fresh, owner-only, randomly named session directory anchored under a parent
-     * whose whole trust chain is proven (see {@link #secureParent}). The chain is revalidated
-     * immediately before and immediately after the directory-relative creation, the session's
-     * real-path identity is captured, and a {@link SecureDirectoryStream} is retained over the
-     * session when the provider supports one so all later cache I/O is relative to the
-     * anchored directory handle.
-     */
-    private static SessionAnchor createSessionDir(Path configuredRoot) {
-        Path parent = secureParent(configuredRoot,
-                Path.of(System.getProperty("java.io.tmpdir")));
-        FilesystemPolicy policy = FilesystemPolicy.detect(parent);
-        if (policy == null) {
-            throw new ReferenceException(ReferenceException.Kind.IO,
-                    "no filesystem policy can prove the cache parent security under " + parent);
-        }
-        // Revalidate the whole chain immediately before the directory-relative creation, so a
-        // rename/replace of any component between selection and use cannot redirect the session.
-        if (!anchoredChainSecure(parent, policy)) {
-            throw new ReferenceException(ReferenceException.Kind.IO,
-                    "cache parent trust chain changed between validation and use: " + parent);
-        }
-        Path session;
-        try {
-            session = policy.createPrivateDirectory(parent, "libgdx-qualification-");
-        } catch (IOException | UnsupportedOperationException failure) {
-            // PosixFilePermissions.asFileAttribute and ACL views can be unsupported: convert
-            // to a typed failure instead of leaking a raw exception.
-            throw new ReferenceException(ReferenceException.Kind.IO,
-                    "cannot create private cache session under " + parent, failure);
-        }
-        try {
-            // Revalidate identity immediately after creation: the session is a real directory
-            // and its whole parent chain is still anchored (NOFOLLOW), so a swap during
-            // creation is detected before the session is ever used.
-            if (!Files.isDirectory(session, LinkOption.NOFOLLOW_LINKS)
-                    || !anchoredChainSecure(session.getParent(), policy)) {
-                throw new IOException("session dir identity revalidation failed under " + parent);
-            }
-            Path realSession = session.toRealPath();
-            Object fileKey = fileKeyOf(session);
-            if (fileKey == null) {
-                // A missing file key means the directory identity is unprovable; a store that
-                // cannot prove its own session identity fails closed instead of operating.
-                throw new IOException("cannot establish the session directory identity "
-                        + "(no file key) under " + parent);
-            }
-            return new SessionAnchor(session, realSession, fileKey,
-                    openSecureDirectoryStream(parent), openSecureDirectoryStream(session));
-        } catch (IOException failure) {
-            throw new ReferenceException(ReferenceException.Kind.IO,
-                    "cannot verify private cache session under " + parent, failure);
-        }
-    }
-
-    /**
-     * Chooses a provably secure session parent: the configured root when its whole trust chain
-     * is secure, otherwise the OS temp when ITS chain is secure; if neither can be proven, the
-     * store fails closed with a typed {@link ReferenceException} instead of falling back to an
-     * unvalidated location. Package-private for deterministic policy seams.
-     */
-    static Path secureParent(Path configuredRoot, Path osTemp) {
-        try {
-            Files.createDirectories(configuredRoot);
-        } catch (IOException ignored) {
-            // leave the directory missing; the trust-chain validation decides
-        }
-        FilesystemPolicy policy = FilesystemPolicy.detect(configuredRoot);
-        if (policy == null) {
-            policy = FilesystemPolicy.detect(osTemp);
-        }
-        if (policy == null) {
-            throw new ReferenceException(ReferenceException.Kind.IO,
-                    "no filesystem policy (POSIX attributes or ACLs) can prove the cache "
-                            + "parent security");
-        }
-        if (anchoredChainSecure(configuredRoot, policy)) {
-            return configuredRoot;
-        }
-        if (anchoredChainSecure(osTemp, policy)) {
-            return osTemp;
-        }
-        throw new ReferenceException(ReferenceException.Kind.IO,
-                "no provably secure cache parent: " + configuredRoot + " and " + osTemp
-                        + " both fail the trust-chain policy");
-    }
-
-    /**
-     * Proves every component from the filesystem root down to {@code root}: each ancestor must
-     * be a real directory (NOFOLLOW) that cannot be used to replace its next component —
-     * sticky shared root or writable only by a trusted owner — and the final component must be
-     * a provably secure session parent. A symlink or unprovable component anywhere in the
-     * chain breaks the anchor.
-     */
-    static boolean anchoredChainSecure(Path root, FilesystemPolicy policy) {
-        List<Path> components = new ArrayList<>();
-        for (Path current = root.toAbsolutePath().normalize();
-                current != null; current = current.getParent()) {
-            components.add(current);
-        }
-        Collections.reverse(components);
-        for (int i = 0; i < components.size(); i++) {
-            Path component = components.get(i);
-            boolean secure = (i == components.size() - 1)
-                    ? policy.isSecureParent(component)
-                    : policy.isSecureAncestor(component);
-            if (!secure) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /**
-     * Proves the parent is secure under the best available policy (POSIX mode bits, then ACL);
-     * when no policy can probe the filesystem the parent is refused (fail closed).
-     * Package-private for tests.
-     */
-    static boolean isSecureParent(Path parent) {
-        FilesystemPolicy policy = FilesystemPolicy.detect(parent);
-        return policy != null && policy.isSecureParent(parent);
-    }
-
-    private static SecureDirectoryStream<Path> openSecureDirectoryStream(Path dir) {
-        try {
-            DirectoryStream<Path> stream = Files.newDirectoryStream(dir);
-            if (stream instanceof SecureDirectoryStream<Path> secure) {
-                return secure;
-            }
-            stream.close();
-            return null;
-        } catch (IOException | UnsupportedOperationException unavailable) {
-            return null; // fall back to path-based (revalidated) cache operations
-        }
-    }
-
-    private static UserPrincipal currentUser() {
-        try {
-            return FileSystems.getDefault().getUserPrincipalLookupService()
-                    .lookupPrincipalByName(System.getProperty("user.name"));
-        } catch (IOException failure) {
-            throw new ReferenceException(ReferenceException.Kind.IO,
-                    "cannot resolve the current user for the cache policy", failure);
-        }
-    }
-
-    @Override
-    public void close() {
-        List<IOException> failures = new ArrayList<>();
-        if (sessionStream != null && parentStream != null) {
-            closeAnchored(failures);
-        } else if (sessionPathAnchored()) {
-            deleteRecursively(cacheDir, failures);
-            try {
-                Files.deleteIfExists(cacheDir);
-            } catch (IOException failure) {
-                failures.add(failure);
-            }
-        }
-        if (failures.isEmpty()) {
-            return;
-        }
-        IOException first = failures.get(0);
-        for (int i = 1; i < failures.size(); i++) {
-            first.addSuppressed(failures.get(i));
-        }
-        throw new ReferenceException(ReferenceException.Kind.IO,
-                "failed to clean the session cache " + cacheDir, first);
-    }
-
-    /**
-     * Anchored cleanup. The retained stream's directory iterator is stale on some filesystems
-     * (for example btrfs) once the directory has been modified, so contents are deleted
-     * through a FRESH stream that is proven — by two non-null equal file keys — to anchor the
-     * same directory as the retained fd. A replaced path is never opened or deleted
-     * recursively: the replacement tree stays untouched, only the retained fd's own contents
-     * may be cleaned, and the session entry is removed relative to the verified parent only
-     * when the entry still carries the anchored identity. Anything unprovable is reported as a
-     * typed cleanup failure instead of being deleted.
-     */
-    private void closeAnchored(List<IOException> failures) {
-        try (DirectoryStream<Path> fresh = Files.newDirectoryStream(cacheDir)) {
-            if (fresh instanceof SecureDirectoryStream<Path> freshSds) {
-                if (sameDirectory(freshSds, sessionStream)) {
-                    deleteThroughStream(freshSds, failures);
-                } else {
-                    failures.add(new IOException("session cache path no longer anchors the "
-                            + "session directory; the replacement tree is untouched: "
-                            + cacheDir));
-                    cleanupRetainedContents(failures);
-                }
-            } else if (sessionPathAnchored()) {
-                deleteRecursively(cacheDir, failures);
-            } else {
-                failures.add(new IOException("session cache path is no longer anchored: "
-                        + cacheDir));
-                cleanupRetainedContents(failures);
-            }
-        } catch (IOException failure) {
-            failures.add(failure);
-        }
-        // Remove the session entry only relative to the verified parent and only when the
-        // entry still carries the anchored identity; otherwise the entry leaks (reported).
-        if (sessionEntryMatchesAnchor()) {
-            try {
-                parentStream.deleteDirectory(Path.of(sessionName()));
-            } catch (IOException failure) {
-                failures.add(failure);
-            }
-        } else {
-            failures.add(new IOException("session entry lost the anchored identity; not "
-                    + "deleting through the parent: " + cacheDir));
-        }
-        try {
-            sessionStream.close();
-        } catch (IOException failure) {
-            failures.add(failure);
-        }
-        try {
-            parentStream.close();
-        } catch (IOException failure) {
-            failures.add(failure);
-        }
-    }
-
-    /** Best-effort cleanup of the original session contents through the retained fd. */
-    private void cleanupRetainedContents(List<IOException> failures) {
-        try {
-            deleteThroughStream(sessionStream, failures);
-        } catch (RuntimeException staleIterator) {
-            failures.add(new IOException("cannot enumerate the retained session contents for "
-                    + "cleanup: " + staleIterator));
-        }
-    }
-
-    private String sessionName() {
-        return cacheDir.getFileName().toString();
-    }
-
-    /**
-     * Proves the session entry inside the verified parent still has the anchored identity:
-     * a non-null file key equal to the anchor key. A missing, replaced, or unprovable entry
-     * is never deleted.
-     */
-    private boolean sessionEntryMatchesAnchor() {
-        try {
-            BasicFileAttributeView view = parentStream.getFileAttributeView(Path.of(sessionName()),
-                    BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
-            return view != null
-                    && sameFileKey(view.readAttributes().fileKey(), anchorFileKey);
-        } catch (IOException | UnsupportedOperationException unprovable) {
-            return false;
-        }
-    }
-
-    /**
-     * Proves two secure directory streams reference the same directory: both must expose a
-     * non-null file key and the keys must be equal. Null on either side is unprovable, never
-     * the same directory.
-     */
-    private static boolean sameDirectory(SecureDirectoryStream<Path> first,
-            SecureDirectoryStream<Path> second) {
-        try {
-            Object firstKey = first.getFileAttributeView(
-                    BasicFileAttributeView.class).readAttributes().fileKey();
-            Object secondKey = second.getFileAttributeView(
-                    BasicFileAttributeView.class).readAttributes().fileKey();
-            return sameFileKey(firstKey, secondKey);
-        } catch (IOException | UnsupportedOperationException unprovable) {
-            return false;
-        }
-    }
-
-    /** Identity check for path-based cleanup: the session path still names the anchor. */
-    private boolean sessionPathAnchored() {
-        if (!Files.isDirectory(cacheDir, LinkOption.NOFOLLOW_LINKS)) {
-            return false;
-        }
-        try {
-            return sameFileKey(fileKeyOf(cacheDir), anchorFileKey)
-                    && cacheDir.toRealPath().equals(anchorRealPath);
-        } catch (IOException | UnsupportedOperationException failure) {
-            return false;
-        }
-    }
-
-    /** Deletes the session tree through a secure stream without following symlinks. */
-    private static void deleteThroughStream(SecureDirectoryStream<Path> stream,
-            List<IOException> failures) {
-        List<Path> names = new ArrayList<>();
-        try {
-            for (Path entry : stream) {
-                names.add(entry.getFileName());
-            }
-        } catch (DirectoryIteratorException failure) {
-            failures.add(failure.getCause());
-            return;
-        }
-        for (Path name : names) {
-            try {
-                if (isDirectoryEntry(stream, name)) {
-                    try (SecureDirectoryStream<Path> child = stream.newDirectoryStream(name)) {
-                        deleteThroughStream(child, failures);
-                    }
-                    stream.deleteDirectory(name);
-                } else {
-                    stream.deleteFile(name);
-                }
-            } catch (IOException failure) {
-                failures.add(failure);
-            }
-        }
-    }
-
-    private static boolean isDirectoryEntry(SecureDirectoryStream<Path> stream, Path name) {
-        try {
-            BasicFileAttributeView view = stream.getFileAttributeView(name,
-                    BasicFileAttributeView.class, LinkOption.NOFOLLOW_LINKS);
-            return view != null && view.readAttributes().isDirectory();
-        } catch (IOException | UnsupportedOperationException unprovable) {
-            return false; // treat as a file; deleteFile surfaces the real error
-        }
-    }
-
-    /** Deletes the session tree without following symlinks, aggregating every failure. */
-    private static void deleteRecursively(Path root, List<IOException> failures) {
-        if (!Files.exists(root, LinkOption.NOFOLLOW_LINKS)) {
-            return;
-        }
-        try (var paths = Files.walk(root)) {
-            for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
-                try {
-                    Files.deleteIfExists(path);
-                } catch (IOException failure) {
-                    failures.add(failure);
-                }
-            }
-        } catch (IOException failure) {
-            failures.add(failure);
-        }
     }
 
     /**

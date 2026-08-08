@@ -1,5 +1,5 @@
 {
-  "comment" : "Reference game UIs for markup recreation qualification. Remote images are fetched at test time into a gitignored cache, authenticated against the committed SHA-256/byte/media-type identity, and never redistributed. Thresholds are measured baselines: each recreation must score at or above its threshold or the qualification fails.",
+  "comment" : "Reference game UIs for markup recreation qualification. Remote images are fetched at test time over pinned TLS into a bounded per-run in-memory cache, authenticated against the committed SHA-256/byte/media-type identity, and never redistributed; no remote bytes are written to disk. Thresholds are measured baselines: each recreation must score at or above its threshold or the qualification fails.",
   "entries" : [ {
     "id" : "palisade-skirmish",
     "referenceFile" : "reference/palisade-initial.png",

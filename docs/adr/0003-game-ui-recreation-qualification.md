@@ -21,8 +21,10 @@ real game UI screenshots.
    `sourceUrl` (Steam CDN, which hosts permanent per-screenshot hashes) with a license note.
    The agentic-palisade "Skirmish Configuration" screen (our own libgdx-ui-harness benchmark
    UI, Apache-2.0, spec-defined) anchors the corpus as an owned reference; the three
-   commercial entries are fetched at test time into a gitignored cache and never
-   redistributed. A fetch failure marks the entry `SKIPPED_REFERENCE`, which is lenient
+   commercial entries are fetched at test time over pinned TLS into a bounded per-run
+   in-memory cache, authenticated against the committed SHA-256/byte/media-type identity,
+   and never redistributed — no remote bytes are written to disk. A fetch failure marks the
+   entry `SKIPPED_REFERENCE`, which is lenient
    locally but a hard failure under `-PstrictQualification=true` (set in CI), so dead or
    unreachable references can never silently shrink coverage. At least one entry must be
    scored or the test fails, so a silent no-op cannot pass.

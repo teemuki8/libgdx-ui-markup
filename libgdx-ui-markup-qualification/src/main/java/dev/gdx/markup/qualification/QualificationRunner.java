@@ -25,11 +25,10 @@ public final class QualificationRunner implements AutoCloseable {
     private final Path previewDistribution;
     private final Path outputDir;
 
-    /** Creates a runner over the corpus, image cache, preview distribution, and output dir. */
-    public QualificationRunner(Path corpusDir, Path cacheDir, Path previewDistribution,
-            Path outputDir) {
+    /** Creates a runner over the corpus, preview distribution, and output dir. */
+    public QualificationRunner(Path corpusDir, Path previewDistribution, Path outputDir) {
         this.corpusDir = corpusDir;
-        this.store = new ReferenceImageStore(cacheDir);
+        this.store = new ReferenceImageStore();
         this.previewDistribution = previewDistribution;
         this.outputDir = outputDir;
         try {

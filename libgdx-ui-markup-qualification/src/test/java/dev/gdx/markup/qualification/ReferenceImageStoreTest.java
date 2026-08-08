@@ -3,7 +3,7 @@ package dev.gdx.markup.qualification;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -16,43 +16,34 @@ import java.net.InetAddress;
 import java.net.Socket;
 import java.net.URI;
 import java.net.UnknownHostException;
-import java.nio.ByteBuffer;
-import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.LinkOption;
-import java.nio.file.Path;
-import java.nio.file.SecureDirectoryStream;
-import java.nio.file.StandardOpenOption;
-import java.nio.file.attribute.AclEntry;
-import java.nio.file.attribute.AclEntryPermission;
-import java.nio.file.attribute.AclEntryType;
-import java.nio.file.attribute.PosixFilePermission;
-import java.nio.file.attribute.UserPrincipal;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Comparator;
+import java.util.Collections;
 import java.util.Deque;
-import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.CRC32;
 import javax.imageio.ImageIO;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 
 /**
  * Authenticated remote reference pipeline. The store refuses non-https, user-info, fragment,
  * wrong-host, and non-443 targets, pins every fetch to freshly approved globally-routable
  * resolved addresses (never re-resolving), validates each redirect hop against the same policy,
- * and verifies digest, media type, length, and header dimensions on both download and cache hit
- * through single NOFOLLOW handles. Policy, identity, cache, and decode failures raise typed
+ * and verifies digest, media type, length, and header dimensions before decoding into an
+ * immutable {@link ReferenceImageStore.ReferenceImage}. Verified references are retained in a
+ * bounded in-memory cache keyed by the complete expected identity with overflow-safe
+ * admission; hits re-check the identity, cannot be mutated, and share one fetch across
+ * concurrent callers. Policy, identity, cache, and decode failures raise typed
  * {@link ReferenceException}s; empty is reserved for explicitly absent references (404/410).
  * Transport and DNS are injected, so the suite never touches the network.
  */
@@ -64,13 +55,28 @@ final class ReferenceImageStoreTest {
     private static final byte[] PNG_2X2 = pngOrFail(2, 2);
     private static final String PNG_2X2_SHA256 = sha256(PNG_2X2);
 
-    @TempDir Path tempDir;
-
     // ---------------------------------------------------------------- helpers
 
     private static byte[] pngOrFail(int width, int height) {
         try {
             BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            ImageIO.write(image, "png", out);
+            return out.toByteArray();
+        } catch (IOException failure) {
+            throw new ExceptionInInitializerError(failure);
+        }
+    }
+
+    /** A deterministic PNG with a distinctive digest per (size, seed). */
+    private static byte[] png(int width, int height, int seed) {
+        try {
+            BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+            for (int y = 0; y < height; y++) {
+                for (int x = 0; x < width; x++) {
+                    image.setRGB(x, y, (0xFF << 24) | ((seed * 31 + x * 7 + y * 13) & 0xFFFFFF));
+                }
+            }
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             ImageIO.write(image, "png", out);
             return out.toByteArray();
@@ -134,12 +140,14 @@ final class ReferenceImageStoreTest {
 
     private ReferenceImageStore store(ReferenceImageStore.Transport transport,
             FakeResolver resolver, String... allowedHosts) {
-        return store(tempDir.resolve("cache"), transport, resolver, allowedHosts);
+        return store(transport, resolver, ReferenceImageStore.CacheLimits.DEFAULT, allowedHosts);
     }
 
-    private ReferenceImageStore store(Path root, ReferenceImageStore.Transport transport,
-            FakeResolver resolver, String... allowedHosts) {
-        return new ReferenceImageStore(root, transport, resolver, Set.of(allowedHosts));
+    private ReferenceImageStore store(ReferenceImageStore.Transport transport,
+            FakeResolver resolver, ReferenceImageStore.CacheLimits limits,
+            String... allowedHosts) {
+        return new ReferenceImageStore(transport, resolver, Set.of(allowedHosts),
+                System::nanoTime, limits);
     }
 
     private FakeResolver publicResolver() {
@@ -236,24 +244,68 @@ final class ReferenceImageStoreTest {
         return patched;
     }
 
-    // ---------------------------------------------------------------- happy path
+    // ---------------------------------------------------------------- happy path and cache
 
     @Test
-    void fetchesVerifiedReferenceIntoCache() throws IOException {
+    void fetchesVerifiedReferenceAndSecondCallHitsCache() throws IOException {
         String url = "https://" + ALLOWED_HOST + "/ref.png";
         FakeTransport transport = new FakeTransport(ok(PNG_2X2));
         try (ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST)) {
-            ReferenceImageStore.ReferenceImage image =
+            ReferenceImageStore.ReferenceImage first =
                     store.reference(canonicalEntry(url)).orElseThrow();
-            assertEquals(2, image.image().getWidth());
-            assertEquals(2, image.image().getHeight());
-            Path cached = store.sessionDir().resolve("ref.png");
-            assertTrue(Files.isRegularFile(cached));
-            assertArrayEquals(PNG_2X2, Files.readAllBytes(cached),
-                    "the session cache must hold exactly the verified bytes");
+            assertEquals(2, first.width());
+            assertEquals(2, first.height());
             assertEquals(1, transport.requested().size());
             assertEquals(List.of(PUBLIC_ADDRESS), transport.approved(0),
                     "the fetch must be pinned to the approved address");
+            assertEquals(1, store.cachedEntryCount());
+            assertEquals(PNG_2X2.length, store.cachedEncodedBytes());
+            assertEquals(4, store.cachedDecodedPixels());
+            ReferenceImageStore.ReferenceImage second =
+                    store.reference(canonicalEntry(url)).orElseThrow();
+            assertEquals(1, transport.requested().size(),
+                    "a verified in-memory hit must not touch the network again");
+            assertSame(first, second,
+                    "cache hits must return the same immutable image");
+        }
+    }
+
+    @Test
+    void sameIdentityAtDifferentUrlsSharesOneFetch() {
+        String urlA = "https://" + ALLOWED_HOST + "/a.png";
+        String urlB = "https://" + ALLOWED_HOST + "/b.png";
+        FakeTransport transport = new FakeTransport(ok(PNG_2X2));
+        try (ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST)) {
+            ReferenceImageStore.ReferenceImage imageA =
+                    store.reference(canonicalEntry(urlA)).orElseThrow();
+            ReferenceImageStore.ReferenceImage imageB =
+                    store.reference(canonicalEntry(urlB)).orElseThrow();
+            assertEquals(1, transport.requested().size(),
+                    "identical authenticated identities must share one verified fetch");
+            assertSame(imageA, imageB,
+                    "the content-addressed cache must serve the same immutable image");
+            assertEquals(1, store.cachedEntryCount());
+        }
+    }
+
+    @Test
+    void sameUrlDifferentIdentityDoesNotAlias() {
+        String url = "https://" + ALLOWED_HOST + "/ref.png";
+        CorpusEntry real = canonicalEntry(url);
+        CorpusEntry forged = new CorpusEntry("ref", url, null, "MIT", "ref.xml", 0.2, 2, 2,
+                "0".repeat(64), PNG_2X2.length, "image/png");
+        FakeTransport transport = new FakeTransport(ok(PNG_2X2), ok(PNG_2X2));
+        try (ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST)) {
+            assertTrue(store.reference(real).isPresent());
+            assertEquals(1, transport.requested().size());
+            ReferenceException failure = reject(() -> store.reference(forged));
+            assertEquals(ReferenceException.Kind.IDENTITY_MISMATCH, failure.kind(),
+                    "an entry with the same URL but a different declared identity must never "
+                            + "be served from the verified entry's cache slot");
+            assertEquals(2, transport.requested().size(),
+                    "the aliased identity must be fetched and verified independently");
+            assertEquals(1, store.cachedEntryCount(),
+                    "only the verified identity may remain cached");
         }
     }
 
@@ -264,7 +316,7 @@ final class ReferenceImageStoreTest {
         try (ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST)) {
             ReferenceImageStore.ReferenceImage image =
                     store.reference(canonicalEntry(url)).orElseThrow();
-            assertEquals(2, image.image().getWidth());
+            assertEquals(2, image.width());
             assertEquals(2, transport.requested().size());
             assertEquals(URI.create("https://" + ALLOWED_HOST + "/final.png"),
                     transport.requested().get(1),
@@ -716,94 +768,226 @@ final class ReferenceImageStoreTest {
         assertEquals(2, decoded.getHeight());
     }
 
-    // ---------------------------------------------------------------- session cache
+    // ---------------------------------------------------------------- bounded in-memory cache
 
     @Test
-    void sessionCacheDirIsOwnerOnly() throws IOException {
-        try (ReferenceImageStore store = store(silentTransport(), publicResolver(), ALLOWED_HOST)) {
-            try {
-                Set<PosixFilePermission> permissions =
-                        Files.getPosixFilePermissions(store.sessionDir());
-                assertEquals(Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
-                        PosixFilePermission.OWNER_EXECUTE), permissions,
-                        "the private session cache must be owner-only");
-            } catch (UnsupportedOperationException unsupported) {
-                org.junit.jupiter.api.Assumptions.abort(
-                        "POSIX permissions unavailable: " + unsupported);
-            }
+    void cacheEvictsLeastRecentlyUsedAtEntryCap() {
+        byte[] one = png(1, 1, 1);
+        byte[] two = png(2, 2, 2);
+        byte[] three = png(3, 3, 3);
+        ReferenceImageStore.CacheLimits limits = new ReferenceImageStore.CacheLimits(2,
+                Long.MAX_VALUE, Long.MAX_VALUE);
+        FakeTransport transport = new FakeTransport(ok(one), ok(two), ok(three), ok(one));
+        try (ReferenceImageStore store = store(transport, publicResolver(), limits,
+                ALLOWED_HOST)) {
+            store.reference(verifiedEntry("https://" + ALLOWED_HOST + "/one.png", one,
+                    "image/png", 1, 1)).orElseThrow();
+            store.reference(verifiedEntry("https://" + ALLOWED_HOST + "/two.png", two,
+                    "image/png", 2, 2)).orElseThrow();
+            store.reference(verifiedEntry("https://" + ALLOWED_HOST + "/three.png", three,
+                    "image/png", 3, 3)).orElseThrow();
+            assertEquals(2, store.cachedEntryCount(),
+                    "at most maxEntries identities may be retained");
+            // The least recently used identity was evicted: re-requesting it refetches.
+            store.reference(verifiedEntry("https://" + ALLOWED_HOST + "/one.png", one,
+                    "image/png", 1, 1)).orElseThrow();
+            assertEquals(4, transport.requested().size(),
+                    "an evicted identity must be refetched, never served stale");
+            assertEquals(2, store.cachedEntryCount());
         }
     }
 
     @Test
-    void sessionCacheDirIsFreshlyCreatedPerStore() {
-        ReferenceImageStore first = store(silentTransport(), publicResolver(), ALLOWED_HOST);
-        ReferenceImageStore second = store(silentTransport(), publicResolver(), ALLOWED_HOST);
-        try (first; second) {
-            assertNotEquals(first.sessionDir(), second.sessionDir(),
-                    "each store must own an unpredictable, freshly created session dir");
-            assertEquals(first.sessionDir().getParent(), second.sessionDir().getParent());
+    void cacheAdmissionTracksEncodedByteAndPixelTotals() {
+        byte[] one = png(1, 1, 1);
+        byte[] two = png(2, 2, 2);
+        ReferenceImageStore.CacheLimits limits = new ReferenceImageStore.CacheLimits(8,
+                Long.MAX_VALUE, Long.MAX_VALUE);
+        FakeTransport transport = new FakeTransport(ok(one), ok(two));
+        try (ReferenceImageStore store = store(transport, publicResolver(), limits,
+                ALLOWED_HOST)) {
+            store.reference(verifiedEntry("https://" + ALLOWED_HOST + "/one.png", one,
+                    "image/png", 1, 1)).orElseThrow();
+            store.reference(verifiedEntry("https://" + ALLOWED_HOST + "/two.png", two,
+                    "image/png", 2, 2)).orElseThrow();
+            assertEquals(one.length + two.length, store.cachedEncodedBytes(),
+                    "the cumulative encoded-byte total must equal the admitted payloads");
+            assertEquals(1L + 4L, store.cachedDecodedPixels(),
+                    "the cumulative decoded-pixel total must equal the admitted pixels");
         }
     }
 
     @Test
-    void validCacheHitSkipsNetwork() throws IOException {
-        FakeTransport transport = silentTransport();
-        try (ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST)) {
-            Files.write(store.sessionDir().resolve("ref.png"), PNG_2X2);
-            ReferenceImageStore.ReferenceImage image = store.reference(
-                    canonicalEntry("https://" + ALLOWED_HOST + "/ref.png")).orElseThrow();
-            assertEquals(2, image.image().getWidth());
-            assertTrue(transport.requested().isEmpty(),
-                    "a verified cache hit must not touch the network");
+    void cacheEvictsWhenEncodedByteBudgetExceeded() {
+        byte[] one = png(1, 1, 1);
+        byte[] two = png(2, 2, 2);
+        byte[] three = png(3, 3, 3);
+        // The budget fits exactly the two larger payloads; the third admission evicts the LRU.
+        ReferenceImageStore.CacheLimits limits = new ReferenceImageStore.CacheLimits(8,
+                two.length + three.length, Long.MAX_VALUE);
+        FakeTransport transport = new FakeTransport(ok(one), ok(two), ok(three), ok(one));
+        try (ReferenceImageStore store = store(transport, publicResolver(), limits,
+                ALLOWED_HOST)) {
+            store.reference(verifiedEntry("https://" + ALLOWED_HOST + "/one.png", one,
+                    "image/png", 1, 1)).orElseThrow();
+            store.reference(verifiedEntry("https://" + ALLOWED_HOST + "/two.png", two,
+                    "image/png", 2, 2)).orElseThrow();
+            store.reference(verifiedEntry("https://" + ALLOWED_HOST + "/three.png", three,
+                    "image/png", 3, 3)).orElseThrow();
+            assertEquals(2, store.cachedEntryCount());
+            assertEquals(two.length + three.length, store.cachedEncodedBytes(),
+                    "the cumulative encoded bytes must never exceed the budget");
+            // The evicted (least recently used) identity is refetched on demand.
+            store.reference(verifiedEntry("https://" + ALLOWED_HOST + "/one.png", one,
+                    "image/png", 1, 1)).orElseThrow();
+            assertEquals(4, transport.requested().size());
         }
     }
 
     @Test
-    void forgedCacheHitWithWrongLengthFailsLoudly() throws IOException {
-        try (ReferenceImageStore store = store(silentTransport(), publicResolver(), ALLOWED_HOST)) {
-            Files.write(store.sessionDir().resolve("ref.png"), new byte[]{0, 1, 2, 3});
-            ReferenceException failure = reject(() -> store.reference(
-                    canonicalEntry("https://" + ALLOWED_HOST + "/ref.png")));
-            assertEquals(ReferenceException.Kind.CACHE, failure.kind(),
-                    "a forged cache file must fail the qualification, never be used");
+    void cacheEvictsWhenDecodedPixelBudgetExceeded() {
+        byte[] one = png(2, 2, 1);
+        byte[] two = png(2, 2, 2);
+        byte[] three = png(2, 2, 3);
+        // Four pixels each; the budget holds exactly two decoded frames.
+        ReferenceImageStore.CacheLimits limits = new ReferenceImageStore.CacheLimits(8,
+                Long.MAX_VALUE, 8);
+        FakeTransport transport = new FakeTransport(ok(one), ok(two), ok(three));
+        try (ReferenceImageStore store = store(transport, publicResolver(), limits,
+                ALLOWED_HOST)) {
+            store.reference(verifiedEntry("https://" + ALLOWED_HOST + "/one.png", one,
+                    "image/png", 2, 2)).orElseThrow();
+            store.reference(verifiedEntry("https://" + ALLOWED_HOST + "/two.png", two,
+                    "image/png", 2, 2)).orElseThrow();
+            store.reference(verifiedEntry("https://" + ALLOWED_HOST + "/three.png", three,
+                    "image/png", 2, 2)).orElseThrow();
+            assertEquals(2, store.cachedEntryCount());
+            assertEquals(8, store.cachedDecodedPixels(),
+                    "the cumulative decoded pixels must never exceed the budget");
         }
     }
 
     @Test
-    void forgedCacheHitWithWrongDigestFailsLoudly() throws IOException {
-        try (ReferenceImageStore store = store(silentTransport(), publicResolver(), ALLOWED_HOST)) {
-            byte[] forged = Arrays.copyOf(PNG_2X2, PNG_2X2.length);
-            forged[forged.length - 1] ^= 0x01;
-            Files.write(store.sessionDir().resolve("ref.png"), forged);
-            ReferenceException failure = reject(() -> store.reference(
-                    canonicalEntry("https://" + ALLOWED_HOST + "/ref.png")));
-            assertEquals(ReferenceException.Kind.CACHE, failure.kind(),
-                    "a same-length forged cache file must fail the digest check");
+    void singleEntryOverEveryBudgetIsServedButNotCached() {
+        byte[] body = png(3, 3, 3);
+        ReferenceImageStore.CacheLimits limits = new ReferenceImageStore.CacheLimits(8,
+                body.length - 1, 8);
+        FakeTransport transport = new FakeTransport(ok(body), ok(body));
+        try (ReferenceImageStore store = store(transport, publicResolver(), limits,
+                ALLOWED_HOST)) {
+            CorpusEntry entry = verifiedEntry("https://" + ALLOWED_HOST + "/big.png", body,
+                    "image/png", 3, 3);
+            assertEquals(3, store.reference(entry).orElseThrow().width());
+            assertEquals(0, store.cachedEntryCount(),
+                    "an entry that alone exceeds a budget is served but never retained");
+            // Without retention the second request cannot hit and must refetch.
+            store.reference(entry).orElseThrow();
+            assertEquals(2, transport.requested().size());
         }
     }
 
     @Test
-    void plantedCacheSymlinkFailsLoudly() throws IOException {
-        Path outside = tempDir.resolve("outside.bin");
-        Files.writeString(outside, "sentinel");
+    void exceedsBudgetIsOverflowSafe() {
+        long max = Long.MAX_VALUE;
+        assertFalse(ReferenceImageStore.exceedsBudget(0, 1, max));
+        assertFalse(ReferenceImageStore.exceedsBudget(max, 0, max));
+        assertFalse(ReferenceImageStore.exceedsBudget(max - 1, 1, max));
+        assertTrue(ReferenceImageStore.exceedsBudget(max - 1, 2, max));
+        assertFalse(ReferenceImageStore.exceedsBudget(0, max, max));
+        assertTrue(ReferenceImageStore.exceedsBudget(1, max, max));
+        assertFalse(ReferenceImageStore.exceedsBudget(0, max - 1, max));
+        assertFalse(ReferenceImageStore.exceedsBudget(5, 10, 15));
+        assertTrue(ReferenceImageStore.exceedsBudget(5, 11, 15));
+    }
+
+    @Test
+    void concurrentSameReferenceFetchesExactlyOnce() throws Exception {
+        String url = "https://" + ALLOWED_HOST + "/ref.png";
         FakeTransport transport = new FakeTransport(ok(PNG_2X2));
         try (ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST)) {
-            createSymlinkOrAbort(store.sessionDir().resolve("ref.png"), outside);
-            ReferenceException failure = reject(() -> store.reference(
-                    canonicalEntry("https://" + ALLOWED_HOST + "/ref.png")));
-            assertEquals(ReferenceException.Kind.CACHE, failure.kind(),
-                    "a symlink planted at the cache path must never be followed");
-            assertEquals("sentinel", Files.readString(outside),
-                    "nothing may be written through the planted symlink");
+            int threads = 8;
+            CountDownLatch start = new CountDownLatch(1);
+            CountDownLatch done = new CountDownLatch(threads);
+            List<ReferenceImageStore.ReferenceImage> results =
+                    Collections.synchronizedList(new ArrayList<>());
+            List<Throwable> failures = Collections.synchronizedList(new ArrayList<>());
+            for (int i = 0; i < threads; i++) {
+                Thread.ofVirtual().start(() -> {
+                    try {
+                        start.await();
+                        results.add(store.reference(canonicalEntry(url)).orElseThrow());
+                    } catch (Throwable failure) {
+                        failures.add(failure);
+                    } finally {
+                        done.countDown();
+                    }
+                });
+            }
+            start.countDown();
+            assertTrue(done.await(10, TimeUnit.SECONDS),
+                    "every concurrent caller must finish");
+            assertTrue(failures.isEmpty(), "concurrent callers must not fail: " + failures);
+            assertEquals(threads, results.size());
+            for (ReferenceImageStore.ReferenceImage image : results) {
+                assertSame(results.get(0), image,
+                        "every concurrent caller must observe the same immutable image");
+            }
+            assertEquals(1, transport.requested().size(),
+                    "concurrent same-identity calls must share exactly one fetch");
+            assertEquals(1, store.cachedEntryCount());
         }
     }
 
-    private static void createSymlinkOrAbort(Path link, Path target) {
-        try {
-            Files.createSymbolicLink(link, target);
-        } catch (IOException | UnsupportedOperationException unavailable) {
-            org.junit.jupiter.api.Assumptions.abort("symbolic links unavailable: " + unavailable);
+    @Test
+    void referenceImageIsImmutableAndFaithful() throws IOException {
+        String url = "https://" + ALLOWED_HOST + "/ref.png";
+        FakeTransport transport = new FakeTransport(ok(PNG_2X2));
+        try (ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST)) {
+            ReferenceImageStore.ReferenceImage image =
+                    store.reference(canonicalEntry(url)).orElseThrow();
+            BufferedImage source = ImageIO.read(new ByteArrayInputStream(PNG_2X2));
+            assertEquals(source.getWidth(), image.width());
+            assertEquals(source.getHeight(), image.height());
+            int original = source.getRGB(0, 0);
+            assertEquals(original, image.rgb(0, 0),
+                    "the immutable pixel store must faithfully copy the decoded image");
+            // A caller mutating its own decoded copy cannot affect the cached value.
+            source.setRGB(0, 0, 0xFF0000);
+            assertEquals(original, image.rgb(0, 0),
+                    "a mutation on the caller's copy must never reach the immutable image");
+            // The same immutable instance is served on later hits.
+            assertSame(image, store.reference(canonicalEntry(url)).orElseThrow());
         }
+    }
+
+    @Test
+    void storeCloseClearsCacheAndFailsFastOnUse() throws IOException {
+        String url = "https://" + ALLOWED_HOST + "/ref.png";
+        FakeTransport transport = new FakeTransport(ok(PNG_2X2));
+        ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST);
+        store.reference(canonicalEntry(url)).orElseThrow();
+        assertEquals(1, store.cachedEntryCount());
+        store.close();
+        assertEquals(0, store.cachedEntryCount(), "close must clear every owned reference");
+        assertEquals(0, store.cachedEncodedBytes());
+        assertEquals(0, store.cachedDecodedPixels());
+        assertThrows(IllegalStateException.class, () -> store.reference(canonicalEntry(url)),
+                "a closed store must fail fast instead of silently refetching");
+        store.close(); // idempotent
+    }
+
+    @Test
+    void imageReturnedBeforeCloseRemainsReadable() throws IOException {
+        String url = "https://" + ALLOWED_HOST + "/ref.png";
+        FakeTransport transport = new FakeTransport(ok(PNG_2X2));
+        ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST);
+        ReferenceImageStore.ReferenceImage image =
+                store.reference(canonicalEntry(url)).orElseThrow();
+        store.close();
+        assertEquals(2, image.width());
+        assertEquals(2, image.height());
+        assertEquals(0xFF000000, image.rgb(0, 0),
+                "an immutable image handed out before close stays readable (detached)");
     }
 
     // ---------------------------------------------------------------- HTTP framing
@@ -968,76 +1152,6 @@ final class ReferenceImageStoreTest {
         }
     }
 
-    // ---------------------------------------------------------------- session root and cleanup
-
-    @Test
-    void sessionFallsBackToOsTempWhenConfiguredRootIsSymlink() throws IOException {
-        Path symlinkRoot = tempDir.resolve("cache-symlink");
-        Path target = Files.createDirectories(tempDir.resolve("cache-target"));
-        createSymlinkOrAbort(symlinkRoot, target);
-        try (ReferenceImageStore store =
-                store(symlinkRoot, silentTransport(), publicResolver(), ALLOWED_HOST)) {
-            Path osTemp = Path.of(System.getProperty("java.io.tmpdir")).toRealPath();
-            assertTrue(store.sessionDir().toRealPath().startsWith(osTemp),
-                    "a symlinked configured root must not host the session");
-            assertFalse(store.sessionDir().toRealPath().startsWith(target.toRealPath()),
-                    "the session must never be created through the planted symlink");
-        }
-    }
-
-    @Test
-    void sessionFallsBackToOsTempWhenConfiguredRootIsFile() throws IOException {
-        Path rootFile = tempDir.resolve("cache-file");
-        Files.writeString(rootFile, "not a directory");
-        try (ReferenceImageStore store =
-                store(rootFile, silentTransport(), publicResolver(), ALLOWED_HOST)) {
-            Path osTemp = Path.of(System.getProperty("java.io.tmpdir")).toRealPath();
-            assertTrue(store.sessionDir().toRealPath().startsWith(osTemp),
-                    "a non-directory configured root must not host the session");
-        }
-    }
-
-    @Test
-    void closeDeletesSessionRecursively() throws IOException {
-        Path session;
-        try (ReferenceImageStore store =
-                store(silentTransport(), publicResolver(), ALLOWED_HOST)) {
-            session = store.sessionDir();
-            Files.writeString(session.resolve("ref.png"), "x");
-            Files.createDirectories(session.resolve("sub"));
-            Files.writeString(session.resolve("sub").resolve("other.bin"), "y");
-            assertTrue(Files.exists(session));
-        }
-        assertFalse(Files.exists(session), "close must delete the whole session tree");
-    }
-
-    @Test
-    void closeAggregatesCleanupFailures() throws IOException {
-        ReferenceImageStore store = store(silentTransport(), publicResolver(), ALLOWED_HOST);
-        Path session = store.sessionDir();
-        Files.writeString(session.resolve("ref.png"), "x");
-        try {
-            try {
-                // 0500: the owner can read and list but cannot delete the children.
-                Files.setPosixFilePermissions(session, Set.of(PosixFilePermission.OWNER_READ,
-                        PosixFilePermission.OWNER_EXECUTE));
-            } catch (UnsupportedOperationException unsupported) {
-                org.junit.jupiter.api.Assumptions.abort(
-                        "POSIX permissions unavailable: " + unsupported);
-            }
-            ReferenceException failure = assertThrows(ReferenceException.class, store::close);
-            assertEquals(ReferenceException.Kind.IO, failure.kind());
-        } finally {
-            Files.setPosixFilePermissions(session, Set.of(PosixFilePermission.OWNER_READ,
-                    PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE));
-            try (var paths = Files.walk(session)) {
-                for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
-                    Files.deleteIfExists(path);
-                }
-            }
-        }
-    }
-
     // ---------------------------------------------------------------- Content-Length grammar
 
     @Test
@@ -1086,8 +1200,7 @@ final class ReferenceImageStoreTest {
         try (Socket socket = new Socket()) {
             ReferenceImageStore.Clock frozen = () -> 0L;
             long deadline = 1_000_000L; // 1 ms of budget: the watchdog fires almost immediately
-            java.util.concurrent.CountDownLatch watchdogObserved =
-                    new java.util.concurrent.CountDownLatch(1);
+            CountDownLatch watchdogObserved = new CountDownLatch(1);
             ReferenceImageStore.Handshake trickle = () -> {
                 while (!socket.isClosed()) {
                     Thread.onSpinWait();
@@ -1100,7 +1213,7 @@ final class ReferenceImageStoreTest {
                             deadline));
             assertTrue(failure.getMessage().contains("socket closed"),
                     "a trickling handshake must observe the watchdog-closed socket");
-            assertTrue(watchdogObserved.await(5, java.util.concurrent.TimeUnit.SECONDS),
+            assertTrue(watchdogObserved.await(5, TimeUnit.SECONDS),
                     "the watchdog must fire at the absolute deadline");
         }
     }
@@ -1115,96 +1228,6 @@ final class ReferenceImageStoreTest {
                     1_000_000_000L);
             assertTrue(ran[0], "a fast handshake must complete inside the deadline");
         }
-    }
-
-    // ---------------------------------------------------------------- secure parent policy
-
-    private static void setMode(Path path, Set<PosixFilePermission> permissions, int sticky) {
-        try {
-            Files.setPosixFilePermissions(path, permissions);
-            if (sticky != 0) {
-                int mode = (Integer) Files.getAttribute(path, "unix:mode");
-                Files.setAttribute(path, "unix:mode", mode | sticky);
-            }
-        } catch (UnsupportedOperationException unsupported) {
-            org.junit.jupiter.api.Assumptions.abort("POSIX attributes unavailable: " + unsupported);
-        } catch (IOException failure) {
-            throw new AssertionError("cannot set POSIX mode on " + path, failure);
-        }
-    }
-
-    private static Set<PosixFilePermission> allPermissions() {
-        return Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
-                PosixFilePermission.OWNER_EXECUTE, PosixFilePermission.GROUP_READ,
-                PosixFilePermission.GROUP_WRITE, PosixFilePermission.GROUP_EXECUTE,
-                PosixFilePermission.OTHERS_READ, PosixFilePermission.OTHERS_WRITE,
-                PosixFilePermission.OTHERS_EXECUTE);
-    }
-
-    @Test
-    void secureParentPolicySeam() throws IOException {
-        Path privateDir = Files.createDirectories(tempDir.resolve("private"));
-        setMode(privateDir, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
-                PosixFilePermission.OWNER_EXECUTE), 0);
-        Path sharedSticky = Files.createDirectories(tempDir.resolve("shared-sticky"));
-        setMode(sharedSticky, allPermissions(), 01000);
-        Path worldWritable = Files.createDirectories(tempDir.resolve("world-writable"));
-        setMode(worldWritable, allPermissions(), 0);
-
-        assertTrue(ReferenceImageStore.isSecureParent(privateDir),
-                "a private user-owned directory is provably secure");
-        assertTrue(ReferenceImageStore.isSecureParent(sharedSticky),
-                "a shared temp with the sticky bit is provably secure");
-        assertFalse(ReferenceImageStore.isSecureParent(worldWritable),
-                "a world-writable non-sticky directory cannot be proven secure");
-    }
-
-    @Test
-    void attackerWritableConfiguredRootIsNotUsed() throws IOException {
-        Path root = Files.createDirectories(tempDir.resolve("public-cache"));
-        setMode(root, allPermissions(), 0);
-        try (ReferenceImageStore store =
-                store(root, silentTransport(), publicResolver(), ALLOWED_HOST)) {
-            assertFalse(store.sessionDir().toRealPath().startsWith(root.toRealPath()),
-                    "an attacker-writable configured root must not host the session");
-        }
-    }
-
-    @Test
-    void intermediateSymlinkInConfiguredRootIsRejected() throws IOException {
-        Path elsewhere = Files.createDirectories(tempDir.resolve("elsewhere"));
-        Path link = tempDir.resolve("link");
-        createSymlinkOrAbort(link, elsewhere);
-        Path root = Files.createDirectories(link.resolve("sub"));
-        try (ReferenceImageStore store =
-                store(root, silentTransport(), publicResolver(), ALLOWED_HOST)) {
-            assertFalse(store.sessionDir().toRealPath().startsWith(root.toRealPath()),
-                    "a symlinked intermediate must make the configured root untrusted");
-        }
-    }
-
-    @Test
-    void secureParentFailsClosedWhenFallbackIsUnsafe() throws IOException {
-        Path unsafeRoot = Files.createDirectories(tempDir.resolve("unsafe-root"));
-        setMode(unsafeRoot, allPermissions(), 0);
-        Path unsafeTemp = Files.createDirectories(tempDir.resolve("unsafe-temp"));
-        setMode(unsafeTemp, allPermissions(), 0);
-        ReferenceException failure = assertThrows(ReferenceException.class,
-                () -> ReferenceImageStore.secureParent(unsafeRoot, unsafeTemp));
-        assertEquals(ReferenceException.Kind.IO, failure.kind(),
-                "when both the configured root and the fallback are unprovable, the store "
-                        + "must fail closed");
-    }
-
-    @Test
-    void secureParentUsesValidatedFallback() throws IOException {
-        Path unsafeRoot = Files.createDirectories(tempDir.resolve("unsafe-fallback-root"));
-        setMode(unsafeRoot, allPermissions(), 0);
-        Path privateTemp = Files.createDirectories(tempDir.resolve("private-temp"));
-        setMode(privateTemp, Set.of(PosixFilePermission.OWNER_READ,
-                PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE), 0);
-        assertEquals(privateTemp, ReferenceImageStore.secureParent(unsafeRoot, privateTemp),
-                "a validated fallback parent may host the session");
     }
 
     // ---------------------------------------------------------------- chunked trailers
@@ -1365,276 +1388,37 @@ final class ReferenceImageStoreTest {
                 () -> ReferenceImageStore.parseResponse(new ByteArrayInputStream(raw)));
     }
 
-    // ---------------------------------------------------------------- trust-chain policy
-
     @Test
-    void posixTrustChainPolicyTable() {
-        record Case(String name, boolean directory, boolean sticky, boolean groupOrOtherWritable,
-                boolean ownerIsCurrentUser, boolean ownerIsRoot, boolean secureParent,
-                boolean secureAncestor) {
-        }
-        List<Case> cases = List.of(
-                new Case("private user dir", true, false, false, true, false, true, true),
-                new Case("sticky shared root owned by us", true, true, true, true, false, true,
-                        true),
-                new Case("sticky shared root owned by root", true, true, true, false, true, true,
-                        true),
-                new Case("root-owned non-writable ancestor", true, false, false, false, true,
-                        false, true),
-                new Case("world-writable non-sticky", true, false, true, true, false, false,
-                        false),
-                new Case("group-writable non-sticky", true, false, true, true, false, false,
-                        false),
-                new Case("untrusted-owner non-writable", true, false, false, false, false, false,
-                        false),
-                new Case("untrusted-owner sticky", true, true, true, false, false, false, false),
-                new Case("not a directory", false, false, false, true, false, false, false));
-        for (Case testCase : cases) {
-            ReferenceImageStore.DirectorySecurity facts = new ReferenceImageStore.DirectorySecurity(
-                    testCase.directory(), testCase.sticky(), testCase.groupOrOtherWritable(),
-                    testCase.ownerIsCurrentUser(), testCase.ownerIsRoot());
-            assertEquals(testCase.secureParent(), facts.secureParent(),
-                    "parent decision: " + testCase.name());
-            assertEquals(testCase.secureAncestor(), facts.secureAncestor(),
-                    "ancestor decision: " + testCase.name());
-        }
-    }
-
-    @Test
-    void attackerWritableAncestorIsRejected() throws IOException {
-        Path attackerWritable = Files.createDirectories(
-                tempDir.resolve("attacker-writable-ancestor"));
-        setMode(attackerWritable, allPermissions(), 0);
-        Path root = Files.createDirectories(attackerWritable.resolve("chain").resolve("root"));
-        setMode(root, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
-                PosixFilePermission.OWNER_EXECUTE), 0);
-        try (ReferenceImageStore store =
-                store(root, silentTransport(), publicResolver(), ALLOWED_HOST)) {
-            assertFalse(store.sessionDir().toRealPath().startsWith(root.toRealPath()),
-                    "an attacker-writable ancestor must make the configured root untrusted");
-        }
-    }
-
-    @Test
-    void stickySharedAncestorIsAccepted() throws IOException {
-        Path shared = Files.createDirectories(tempDir.resolve("sticky-shared-ancestor"));
-        setMode(shared, allPermissions(), 01000);
-        Path root = Files.createDirectories(shared.resolve("chain").resolve("root"));
-        setMode(root, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
-                PosixFilePermission.OWNER_EXECUTE), 0);
-        try (ReferenceImageStore store =
-                store(root, silentTransport(), publicResolver(), ALLOWED_HOST)) {
-            assertTrue(store.sessionDir().toRealPath().startsWith(root.toRealPath()),
-                    "a sticky shared ancestor with a private root must host the session");
-        }
-    }
-
-    @Test
-    void attackerWritableAncestorFailsClosedWhenFallbackUnsafe() throws IOException {
-        Path attackerWritable = Files.createDirectories(tempDir.resolve("bad-ancestor"));
-        setMode(attackerWritable, allPermissions(), 0);
-        Path root = Files.createDirectories(attackerWritable.resolve("root"));
-        setMode(root, Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
-                PosixFilePermission.OWNER_EXECUTE), 0);
-        Path unsafeTemp = Files.createDirectories(tempDir.resolve("unsafe-ancestor-temp"));
-        setMode(unsafeTemp, allPermissions(), 0);
-        ReferenceException failure = assertThrows(ReferenceException.class,
-                () -> ReferenceImageStore.secureParent(root, unsafeTemp));
-        assertEquals(ReferenceException.Kind.IO, failure.kind(),
-                "when every candidate parent chain is untrusted, the store must fail closed");
-    }
-
-    // ---------------------------------------------------------------- Windows ACL policy
-
-    @Test
-    void aclPolicyDeterministicTable() {
-        UserPrincipal owner = () -> "alice";
-        UserPrincipal currentUser = () -> "alice";
-        UserPrincipal mallory = () -> "mallory";
-        UserPrincipal system = () -> "NT AUTHORITY\\SYSTEM";
-        UserPrincipal administrators = () -> "BUILTIN\\Administrators";
-        UserPrincipal spoofedSystem = () -> "DOMAIN\\systematic-user";
-        UserPrincipal spoofedAdmin = () -> "NotAdministrators";
-        // Only exactly resolved account names are trusted: the current user plus the exact
-        // well-known system/administrators accounts.
-        Set<String> trusted = Set.of(system.getName(), administrators.getName(),
-                currentUser.getName());
-
-        // An owner-only ACL is private.
-        assertFalse(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
-                List.of(allowAll(owner)), owner, trusted));
-        // Exact SYSTEM and Administrators accounts are trusted.
-        assertFalse(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
-                List.of(allowAll(owner), allowAll(system)), owner, trusted));
-        assertFalse(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
-                List.of(allowAll(owner), allowAll(administrators)), owner, trusted));
-        // Every entry-modifying permission on an untrusted principal is dangerous, including
-        // DACL/owner rewrite (WRITE_ACL, WRITE_OWNER) and delete-child/write.
-        for (AclEntryPermission permission : new AclEntryPermission[]{
-                AclEntryPermission.DELETE_CHILD, AclEntryPermission.WRITE_DATA,
-                AclEntryPermission.APPEND_DATA, AclEntryPermission.DELETE,
-                AclEntryPermission.WRITE_ACL, AclEntryPermission.WRITE_OWNER}) {
-            assertTrue(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
-                    List.of(allowAll(owner), allow(mallory, permission)), owner, trusted),
-                    "untrusted ALLOW " + permission + " must be treated as modification");
-        }
-        // Names that merely contain 'system' or 'administrators' are never trusted.
-        assertTrue(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
-                List.of(allowAll(owner), allow(spoofedSystem, AclEntryPermission.DELETE_CHILD)),
-                owner, trusted),
-                "a principal whose name merely contains 'system' must not be trusted");
-        assertTrue(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
-                List.of(allowAll(owner), allow(spoofedAdmin, AclEntryPermission.WRITE_ACL)),
-                owner, trusted),
-                "a principal whose name merely contains 'administrators' must not be trusted");
-        // A DENY entry for an untrusted principal is harmless (more restrictive).
-        assertFalse(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
-                List.of(allowAll(owner), deny(mallory, AclEntryPermission.WRITE_DATA)),
-                owner, trusted));
-        // Ancestor owners: exactly the current user or an exactly resolved system account.
-        assertTrue(ReferenceImageStore.AclFilesystemPolicy.ownerTrusted(owner, trusted));
-        assertTrue(ReferenceImageStore.AclFilesystemPolicy.ownerTrusted(system, trusted));
-        assertFalse(ReferenceImageStore.AclFilesystemPolicy.ownerTrusted(mallory, trusted));
-        assertFalse(ReferenceImageStore.AclFilesystemPolicy.ownerTrusted(spoofedSystem, trusted),
-                "a spoofed system-named owner must not anchor an ancestor");
-        assertFalse(ReferenceImageStore.AclFilesystemPolicy.ownerTrusted(spoofedAdmin, trusted));
-    }
-
-    @Test
-    void aclTrustsOnlyExactResolvedPrincipalNames() {
-        // The resolved set is the authority: a name is trusted only when it equals a resolved
-        // account name, never by substring or display-name heuristics.
-        Set<String> trusted = Set.of("NT AUTHORITY\\SYSTEM", "BUILTIN\\Administrators");
-        UserPrincipal owner = () -> "alice";
-        assertFalse(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
-                List.of(allowAll(owner), allow(() -> "NT AUTHORITY\\SYSTEM",
-                        AclEntryPermission.DELETE_CHILD)), owner, trusted),
-                "an exactly resolved SYSTEM principal is trusted");
-        assertTrue(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
-                List.of(allowAll(owner), allow(() -> "nt authority\\system",
-                        AclEntryPermission.DELETE_CHILD)), owner, trusted),
-                "case-changed names are different accounts and must not be trusted");
-        assertTrue(ReferenceImageStore.AclFilesystemPolicy.allowsNonOwnerModification(
-                List.of(allowAll(owner), allow(() -> "SYSTEM", AclEntryPermission.DELETE_CHILD)),
-                owner, trusted),
-                "an unresolved bare name must not be trusted");
-    }
-
-    @Test
-    void aclOwnerOnlyAclGrantsOwnerEverything() {
-        UserPrincipal owner = () -> "alice";
-        List<AclEntry> acl = ReferenceImageStore.AclFilesystemPolicy.ownerOnlyAcl(owner);
-        assertEquals(1, acl.size(), "the private session ACL must grant only the owner");
-        assertEquals(AclEntryType.ALLOW, acl.get(0).type());
-        assertEquals(owner, acl.get(0).principal());
-        assertEquals(EnumSet.allOf(AclEntryPermission.class), acl.get(0).permissions());
-    }
-
-    // ---------------------------------------------------------------- retained SecureDirectoryStream
-
-    @Test
-    void retainsSecureDirectoryStreamOnSupportedProviders() throws IOException {
-        try (ReferenceImageStore store =
-                store(silentTransport(), publicResolver(), ALLOWED_HOST)) {
-            SecureDirectoryStream<Path> stream = store.retainedSessionStream();
-            if (stream == null) {
-                org.junit.jupiter.api.Assumptions.abort("SecureDirectoryStream unsupported");
-            }
-            try (SeekableByteChannel channel = stream.newByteChannel(Path.of("probe.bin"),
-                    Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE))) {
-                channel.write(ByteBuffer.wrap(new byte[]{1, 2, 3}));
-            }
-            assertArrayEquals(new byte[]{1, 2, 3},
-                    Files.readAllBytes(store.sessionDir().resolve("probe.bin")),
-                    "the retained stream must anchor the same directory as the session path");
-        }
-    }
-
-    @Test
-    void replacedSessionPathFailsLoudly() throws IOException {
-        FakeTransport transport = new FakeTransport(ok(PNG_2X2));
-        ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST);
-        Path session = store.sessionDir();
-        Path moved = session.resolveSibling(session.getFileName() + "-moved");
-        try {
-            Files.move(session, moved);
-            Files.createDirectories(session); // a different directory now sits at the path
-            ReferenceException failure = reject(() -> store.reference(
-                    canonicalEntry("https://" + ALLOWED_HOST + "/ref.png")));
-            assertEquals(ReferenceException.Kind.CACHE, failure.kind(),
-                    "a replaced session path must fail the identity revalidation");
-        } finally {
-            try {
-                store.close();
-            } catch (ReferenceException expected) {
-                // the replaced path makes anchored recursive cleanup impossible; the failed
-                // revalidation above is the behavior under test
-            }
-            deleteTreeQuietly(moved);
-            deleteTreeQuietly(session);
-        }
-    }
-
-    private static AclEntry allowAll(UserPrincipal principal) {
-        return AclEntry.newBuilder().setType(AclEntryType.ALLOW).setPrincipal(principal)
-                .setPermissions(EnumSet.allOf(AclEntryPermission.class)).build();
-    }
-
-    private static AclEntry allow(UserPrincipal principal, AclEntryPermission permission) {
-        return AclEntry.newBuilder().setType(AclEntryType.ALLOW).setPrincipal(principal)
-                .setPermissions(Set.of(permission)).build();
-    }
-
-    private static AclEntry deny(UserPrincipal principal, AclEntryPermission permission) {
-        return AclEntry.newBuilder().setType(AclEntryType.DENY).setPrincipal(principal)
-                .setPermissions(Set.of(permission)).build();
-    }
-
-    private static void deleteTreeQuietly(Path root) {
-        if (!Files.exists(root, LinkOption.NOFOLLOW_LINKS)) {
-            return;
-        }
-        try (var paths = Files.walk(root)) {
-            for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
-                Files.deleteIfExists(path);
-            }
-        } catch (IOException ignored) {
-            // best-effort test cleanup only
-        }
-    }
-
-    @Test
-    void nullFileKeysAreNeverSame() {
-        assertFalse(ReferenceImageStore.sameFileKey(null, null),
-                "two unprovable file keys must never be treated as the same directory");
-        assertFalse(ReferenceImageStore.sameFileKey(new Object(), null));
-        assertFalse(ReferenceImageStore.sameFileKey(null, new Object()));
-        assertFalse(ReferenceImageStore.sameFileKey(new Object(), new Object()));
-        assertTrue(ReferenceImageStore.sameFileKey("key", "key"));
-    }
-
-    @Test
-    void replacedSessionTreeIsUntouchedAtClose() throws IOException {
-        FakeTransport transport = new FakeTransport(ok(PNG_2X2));
-        ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST);
-        Path session = store.sessionDir();
-        Path moved = session.resolveSibling(session.getFileName() + "-moved");
-        try {
-            Files.write(session.resolve("ref.png"), PNG_2X2); // our verified content
-            Files.move(session, moved); // the original session is relocated
-            Files.createDirectories(session); // an attacker replants the path
-            Files.writeString(session.resolve("precious.bin"), "attacker data");
-            ReferenceException failure = assertThrows(ReferenceException.class, store::close);
-            assertEquals(ReferenceException.Kind.IO, failure.kind(),
-                    "an unrecoverable session path must surface a typed cleanup failure");
-            assertEquals("attacker data", Files.readString(session.resolve("precious.bin")),
-                    "the replacement tree must never be deleted or modified");
-            assertTrue(Files.isDirectory(moved),
-                    "the original session directory must never be deleted through the "
-                            + "replaced path");
-        } finally {
-            deleteTreeQuietly(moved);
-            deleteTreeQuietly(session);
+    void evictionIsLeastRecentlyUsedAcrossIdentities() throws IOException {
+        byte[] one = png(1, 1, 1);
+        byte[] two = png(2, 2, 2);
+        byte[] three = png(3, 3, 3);
+        ReferenceImageStore.CacheLimits limits = new ReferenceImageStore.CacheLimits(2,
+                Long.MAX_VALUE, Long.MAX_VALUE);
+        // Scripted: one, two, hit(one), three, refetch(two), hit(one).
+        FakeTransport transport = new FakeTransport(ok(one), ok(two), ok(three), ok(two));
+        try (ReferenceImageStore store = store(transport, publicResolver(), limits,
+                ALLOWED_HOST)) {
+            CorpusEntry entryOne = verifiedEntry("https://" + ALLOWED_HOST + "/one.png", one,
+                    "image/png", 1, 1);
+            CorpusEntry entryTwo = verifiedEntry("https://" + ALLOWED_HOST + "/two.png", two,
+                    "image/png", 2, 2);
+            CorpusEntry entryThree = verifiedEntry("https://" + ALLOWED_HOST + "/three.png",
+                    three, "image/png", 3, 3);
+            store.reference(entryOne).orElseThrow();
+            store.reference(entryTwo).orElseThrow();
+            store.reference(entryOne).orElseThrow(); // access-order touch: one is now MRU
+            store.reference(entryThree).orElseThrow(); // evicts two (the LRU), keeps one
+            assertEquals(3, transport.requested().size());
+            assertEquals(2, store.cachedEntryCount());
+            // one is still cached: no new request.
+            assertEquals(1, store.reference(entryOne).orElseThrow().width());
+            assertEquals(3, transport.requested().size(),
+                    "the re-touched entry must be served from the cache after the eviction");
+            // two was evicted: requesting it refetches.
+            assertEquals(2, store.reference(entryTwo).orElseThrow().width());
+            assertEquals(4, transport.requested().size(),
+                    "the evicted entry must be refetched on demand");
         }
     }
 }

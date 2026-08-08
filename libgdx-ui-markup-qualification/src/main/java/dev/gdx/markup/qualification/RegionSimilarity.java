@@ -92,20 +92,20 @@ public final class RegionSimilarity {
         return count;
     }
 
-    /** Classifies the authenticated reference's already-decoded bounded image. */
+    /** Classifies the authenticated reference's already-decoded immutable pixels. */
     static boolean[][] regions(ReferenceImageStore.ReferenceImage reference) {
-        return regions(reference.image());
+        return regions(reference.width(), reference.height(), reference::rgb);
     }
 
     /** Classifies the caller's own recreation screenshot, decoded at the bounded resolution. */
     static boolean[][] regions(Path image) throws IOException {
-        return regions(BoundedDecode.decode(image));
+        BufferedImage decoded = BoundedDecode.decode(image);
+        return regions(decoded.getWidth(), decoded.getHeight(), decoded::getRGB);
     }
 
-    private static boolean[][] regions(BufferedImage source) {
-        int width = source.getWidth();
-        int height = source.getHeight();
-        int[][] gray = gray(source);
+    private static boolean[][] regions(int width, int height,
+            java.util.function.IntBinaryOperator rgb) {
+        int[][] gray = gray(width, height, rgb);
         int[][] sum = integral(gray);
         long[][] sumSquares = integralSquares(gray);
         double[] cells = new double[GRID_COLS * GRID_ROWS];
@@ -140,16 +140,14 @@ public final class RegionSimilarity {
         return result;
     }
 
-    private static int[][] gray(BufferedImage source) {
-        int width = source.getWidth();
-        int height = source.getHeight();
+    private static int[][] gray(int width, int height, java.util.function.IntBinaryOperator rgb) {
         int[][] gray = new int[height][width];
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
-                int rgb = source.getRGB(x, y);
-                int red = (rgb >> 16) & 0xff;
-                int green = (rgb >> 8) & 0xff;
-                int blue = rgb & 0xff;
+                int value = rgb.applyAsInt(x, y);
+                int red = (value >> 16) & 0xff;
+                int green = (value >> 8) & 0xff;
+                int blue = value & 0xff;
                 gray[y][x] = (red * 299 + green * 587 + blue * 114) / 1000;
             }
         }

@@ -149,7 +149,9 @@ closely their rendered structure matches the real screenshots. The corpus manife
 entry to either a committed, fully owned reference (the agentic-palisade "Skirmish
 Configuration" screen from libgdx-ui-harness) or a published source (Hades boon panel, Slay
 the Spire shop, Battle for Wesnoth gameplay) with a license note; remote images are fetched
-at test time into a gitignored cache and never redistributed. Each recreation is rendered by
+at test time over pinned TLS into a bounded per-run in-memory cache, authenticated against
+the committed SHA-256/byte/media-type identity, and never redistributed — no remote bytes are
+ever written to disk. Each recreation is rendered by
 the real preview binary and compared with a tolerance-aware structural Dice score (80×45
 variance cells, one-cell dilation); per-entry thresholds are measured baselines that guard
 regressions. Entries whose reference cannot be resolved are reported skipped locally; with

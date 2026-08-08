@@ -22,7 +22,6 @@ final class QualificationTest {
     void recreationRegionsOverlapTheReferenceGameUis() throws Exception {
         try (QualificationRunner runner = new QualificationRunner(
                 property("markup.qualification.corpus"),
-                property("markup.qualification.cache"),
                 property("markup.preview.distribution"),
                 property("markup.qualification.output"))) {
             QualificationReport report = runner.run();
