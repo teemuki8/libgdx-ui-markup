@@ -27,8 +27,9 @@
         </table>
         <row/>
         <table width="1134" height="104" pad="3">
-          <table class="panel-alt" width="567" height="98" pad="4"><label id="unit-label" class="title" text="X Elvish Archer  21/21 HP" align="center"/><progressbar id="unit-hp" min="0" max="21" value="21" width="190" height="12"/></table>
-          <table class="disabled-bg" width="567" height="98" pad="4"><label id="enemy-label" class="title" text="Orcish Grunt  12/12 HP" align="center"/><progressbar id="enemy-hp" min="0" max="12" value="12" width="150" height="12"/></table>
+          <table class="selection-bg" width="280" height="98" pad="4"><label class="section" text="##  ^ ^  ##" width="250" align="left"/><row/><label class="heading" text=". . X . ." width="250" align="right"/><row/><label class="section" text="^ ^  ###" width="250" align="center"/></table>
+          <table class="panel-alt" width="570" height="98" pad="4"><label id="unit-label" class="title" text="X Elvish Archer  21/21 HP" width="540" align="center"/><row/><progressbar id="unit-hp" min="0" max="21" value="21" width="260" height="12"/><row/><label id="enemy-label" class="title" text="Orcish Grunt  12/12 HP" width="540" align="center"/><row/><progressbar id="enemy-hp" min="0" max="12" value="12" width="220" height="12"/></table>
+          <table class="field-focused-bg" width="284" height="98" pad="4"><label class="section" text="~ ~  . . ~" width="250" align="right"/><row/><label class="heading" text=". X . ~ ~" width="250" align="left"/><row/><label class="section" text="~ ~  ^ ^" width="250" align="center"/></table>
         </table>
         <row/>
         <row/>
