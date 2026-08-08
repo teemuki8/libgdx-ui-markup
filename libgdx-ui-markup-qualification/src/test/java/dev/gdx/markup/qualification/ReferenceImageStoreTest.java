@@ -119,10 +119,14 @@ final class ReferenceImageStoreTest {
         }
     }
 
+    /** Valid per-component thresholds shared by every fabricated corpus entry. */
+    private static final FidelityThresholds CORPUS_THRESHOLDS =
+            new FidelityThresholds(0.2, 0.2, 0.2, 0.2);
+
     /** A remote entry whose declared identity exactly matches {@code body}. */
     private static CorpusEntry verifiedEntry(String url, byte[] body, String mediaType,
             int width, int height) {
-        return new CorpusEntry("ref", url, null, "MIT", "ref.xml", 0.2, width, height,
+        return new CorpusEntry("ref", url, null, "MIT", "ref.xml", CORPUS_THRESHOLDS, width, height,
                 sha256(body), body.length, mediaType);
     }
 
@@ -378,7 +382,7 @@ final class ReferenceImageStoreTest {
     void sameUrlDifferentIdentityDoesNotAlias() {
         String url = "https://" + ALLOWED_HOST + "/ref.png";
         CorpusEntry real = canonicalEntry(url);
-        CorpusEntry forged = new CorpusEntry("ref", url, null, "MIT", "ref.xml", 0.2, 2, 2,
+        CorpusEntry forged = new CorpusEntry("ref", url, null, "MIT", "ref.xml", CORPUS_THRESHOLDS, 2, 2,
                 "0".repeat(64), PNG_2X2.length, "image/png");
         FakeTransport transport = new FakeTransport(ok(PNG_2X2), ok(PNG_2X2));
         try (ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST)) {
@@ -735,7 +739,7 @@ final class ReferenceImageStoreTest {
     @Test
     void rejectsWrongDigest() {
         String url = "https://" + ALLOWED_HOST + "/ref.png";
-        CorpusEntry forged = new CorpusEntry("ref", url, null, "MIT", "ref.xml", 0.2, 2, 2,
+        CorpusEntry forged = new CorpusEntry("ref", url, null, "MIT", "ref.xml", CORPUS_THRESHOLDS, 2, 2,
                 "0".repeat(64), PNG_2X2.length, "image/png");
         FakeTransport transport = new FakeTransport(ok(PNG_2X2));
         try (ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST)) {
@@ -747,7 +751,7 @@ final class ReferenceImageStoreTest {
     @Test
     void rejectsWrongMediaType() {
         String url = "https://" + ALLOWED_HOST + "/ref.png";
-        CorpusEntry entry = new CorpusEntry("ref", url, null, "MIT", "ref.xml", 0.2, 2, 2,
+        CorpusEntry entry = new CorpusEntry("ref", url, null, "MIT", "ref.xml", CORPUS_THRESHOLDS, 2, 2,
                 PNG_2X2_SHA256, PNG_2X2.length, "image/jpeg");
         FakeTransport transport = new FakeTransport(ok(PNG_2X2));
         try (ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST)) {
@@ -770,7 +774,7 @@ final class ReferenceImageStoreTest {
     @Test
     void rejectsWrongLength() {
         String url = "https://" + ALLOWED_HOST + "/ref.png";
-        CorpusEntry entry = new CorpusEntry("ref", url, null, "MIT", "ref.xml", 0.2, 2, 2,
+        CorpusEntry entry = new CorpusEntry("ref", url, null, "MIT", "ref.xml", CORPUS_THRESHOLDS, 2, 2,
                 PNG_2X2_SHA256, PNG_2X2.length + 1, "image/png");
         FakeTransport transport = new FakeTransport(ok(PNG_2X2));
         try (ReferenceImageStore store = store(transport, publicResolver(), ALLOWED_HOST)) {
@@ -794,7 +798,7 @@ final class ReferenceImageStoreTest {
     void rejectsOversizedPayload() {
         String url = "https://" + ALLOWED_HOST + "/ref.png";
         byte[] oversized = new byte[(int) ReferenceImageStore.MAX_BYTES + 1];
-        CorpusEntry entry = new CorpusEntry("ref", url, null, "MIT", "ref.xml", 0.2, 2, 2,
+        CorpusEntry entry = new CorpusEntry("ref", url, null, "MIT", "ref.xml", CORPUS_THRESHOLDS, 2, 2,
                 sha256(oversized), ReferenceImageStore.MAX_BYTES, "image/png");
         FakeTransport transport = new FakeTransport(
                 new ReferenceImageStore.Response(200, "image/png", "", oversized));
@@ -1094,7 +1098,7 @@ final class ReferenceImageStoreTest {
     @Test
     void concurrentSameReferenceFailureIsShared() throws Exception {
         String url = "https://" + ALLOWED_HOST + "/ref.png";
-        CorpusEntry forged = new CorpusEntry("ref", url, null, "MIT", "ref.xml", 0.2, 2, 2,
+        CorpusEntry forged = new CorpusEntry("ref", url, null, "MIT", "ref.xml", CORPUS_THRESHOLDS, 2, 2,
                 "0".repeat(64), PNG_2X2.length, "image/png");
         int threads = 4;
         LatchedTransport transport = new LatchedTransport(ok(PNG_2X2));

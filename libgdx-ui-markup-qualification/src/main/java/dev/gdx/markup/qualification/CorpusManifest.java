@@ -43,8 +43,10 @@ public final class CorpusManifest {
     private static final Set<String> MANIFEST_FIELDS = Set.of("comment", "entries");
     private static final Set<String> ENTRY_FIELDS = Set.of(
             "id", "sourceUrl", "referenceFile", "license", "markupFile",
-            "threshold", "referenceWidth", "referenceHeight",
+            "thresholds", "referenceWidth", "referenceHeight",
             "sha256", "bytes", "mediaType");
+    private static final Set<String> THRESHOLD_FIELDS = Set.of(
+            "geometry", "color", "detail", "coarseLayout");
 
     private final String comment;
     private final List<CorpusEntry> entries;
@@ -119,7 +121,7 @@ public final class CorpusManifest {
             String referenceFile = optionalTextField(node, "referenceFile");
             String license = textField(node, "license", "entry");
             String markupFile = textField(node, "markupFile", "entry");
-            double threshold = doubleField(node, "threshold");
+            FidelityThresholds thresholds = thresholdsField(node, "thresholds");
             int referenceWidth = intField(node, "referenceWidth");
             int referenceHeight = intField(node, "referenceHeight");
             String sha256 = optionalTextField(node, "sha256");
@@ -134,13 +136,13 @@ public final class CorpusManifest {
             }
             aggregateWork += id.length() + stringLength(sourceUrl) + stringLength(referenceFile)
                     + license.length() + markupFile.length() + stringLength(sha256)
-                    + stringLength(mediaType);
+                    + stringLength(mediaType) + 64;
             if (aggregateWork > MAX_AGGREGATE_WORK) {
                 throw new ManifestException(ManifestException.Kind.WORK_LIMIT,
                         "aggregate string work across entries exceeds " + MAX_AGGREGATE_WORK);
             }
             parsed.add(new CorpusEntry(id, sourceUrl, referenceFile, license, markupFile,
-                    threshold, referenceWidth, referenceHeight, sha256,
+                    thresholds, referenceWidth, referenceHeight, sha256,
                     byteCount == null ? 0 : byteCount, mediaType));
         }
         return new CorpusManifest(comment, parsed);
@@ -167,7 +169,12 @@ public final class CorpusManifest {
                 }
                 node.put("license", entry.license());
                 node.put("markupFile", entry.markupFile());
-                node.put("threshold", Math.round(entry.threshold() * 1000) / 1000.0);
+                ObjectNode thresholds = node.putObject("thresholds");
+                thresholds.put("geometry", round3(entry.thresholds().geometry()));
+                thresholds.put("color", round3(entry.thresholds().color()));
+                thresholds.put("detail", round3(entry.thresholds().detail()));
+                entry.thresholds().coarseBaseline().ifPresent(
+                        coarse -> thresholds.put("coarseLayout", round3(coarse)));
                 node.put("referenceWidth", entry.referenceWidth());
                 node.put("referenceHeight", entry.referenceHeight());
             }
@@ -225,6 +232,58 @@ public final class CorpusManifest {
                         scope + " declares unknown field '" + name + "'");
             }
         }
+    }
+
+    /**
+     * Parses the immutable per-component thresholds object with strict field validation:
+     * geometry, color, and detail are required finite numbers in [0,1]; coarseLayout is an
+     * optional diagnostic baseline.
+     */
+    private static FidelityThresholds thresholdsField(JsonNode entry, String field) {
+        JsonNode value = entry.get(field);
+        if (value == null) {
+            throw new ManifestException(ManifestException.Kind.MISSING_FIELD,
+                    "entry is missing required field '" + field + "'");
+        }
+        if (!value.isObject()) {
+            throw new ManifestException(ManifestException.Kind.WRONG_TYPE,
+                    "entry field '" + field + "' must be an object");
+        }
+        rejectUnknownFields(value, THRESHOLD_FIELDS, "thresholds");
+        double geometry = componentThreshold(value, "geometry");
+        double color = componentThreshold(value, "color");
+        double detail = componentThreshold(value, "detail");
+        JsonNode coarse = value.get("coarseLayout");
+        if (coarse != null && !coarse.isNull()) {
+            if (!coarse.isNumber()) {
+                throw new ManifestException(ManifestException.Kind.WRONG_TYPE,
+                        "thresholds field 'coarseLayout' must be a number");
+            }
+            return new FidelityThresholds(geometry, color, detail, coarse.doubleValue());
+        }
+        return new FidelityThresholds(geometry, color, detail, null);
+    }
+
+    private static double componentThreshold(JsonNode thresholds, String field) {
+        JsonNode value = thresholds.get(field);
+        if (value == null) {
+            throw new ManifestException(ManifestException.Kind.MISSING_FIELD,
+                    "thresholds is missing required field '" + field + "'");
+        }
+        if (!value.isNumber()) {
+            throw new ManifestException(ManifestException.Kind.WRONG_TYPE,
+                    "thresholds field '" + field + "' must be a number");
+        }
+        double threshold = value.doubleValue();
+        if (!Double.isFinite(threshold) || threshold < 0 || threshold > 1) {
+            throw new ManifestException(ManifestException.Kind.INVALID_VALUE,
+                    "thresholds field '" + field + "' must be finite and between 0 and 1");
+        }
+        return threshold;
+    }
+
+    private static double round3(double value) {
+        return Math.round(value * 1000) / 1000.0;
     }
 
     private static String textField(JsonNode node, String field, String scope) {

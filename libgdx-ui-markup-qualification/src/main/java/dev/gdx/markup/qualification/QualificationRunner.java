@@ -2,6 +2,7 @@ package dev.gdx.markup.qualification;
 
 import dev.gdx.markup.qualification.QualificationReport.EntryResult;
 import dev.gdx.markup.qualification.QualificationReport.Verdict;
+import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -10,11 +11,13 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalDouble;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Renders each corpus recreation with the real preview binary and measures its structural
- * region overlap against the fetched reference game UI.
+ * Renders each corpus recreation with the real preview binary and measures its multi-signal
+ * visual fidelity (geometry, color, detail, plus the coarse layout diagnostic) against the
+ * fetched reference game UI. Every required component gates independently.
  */
 public final class QualificationRunner implements AutoCloseable {
     private static final int RENDER_FRAMES = 10;
@@ -53,44 +56,112 @@ public final class QualificationRunner implements AutoCloseable {
     }
 
     private EntryResult qualify(CorpusEntry entry) {
-        Optional<RegionSimilarity.Regions> regions = measure(entry);
-        if (regions.isEmpty()) {
+        Optional<FidelityScore> measured = measure(entry);
+        if (measured.isEmpty()) {
             Verdict skipped = reference(entry).isPresent() ? Verdict.SKIPPED_RENDER
                     : Verdict.SKIPPED_REFERENCE;
-            return new EntryResult(entry.id(), entry.license(), entry.threshold(), 0, 0, 0,
-                    skipped);
+            return new EntryResult(entry.id(), entry.license(), FidelityScore.ZERO,
+                    entry.thresholds(), skipped, List.of());
         }
-        RegionSimilarity.Regions measured = regions.orElseThrow();
-        Verdict verdict = measured.dice() >= entry.threshold() ? Verdict.PASS : Verdict.FAIL;
-        return new EntryResult(entry.id(), entry.license(), entry.threshold(), measured.dice(),
-                measured.referenceCells(), measured.recreationCells(), verdict);
+        FidelityScore score = measured.orElseThrow();
+        List<FidelityComponent> failed =
+                QualificationPolicy.failedComponents(score, entry.thresholds());
+        Verdict verdict = failed.isEmpty() ? Verdict.PASS : Verdict.FAIL;
+        return new EntryResult(entry.id(), entry.license(), score, entry.thresholds(), verdict,
+                failed);
     }
 
     /**
-     * Measures every entry and rewrites the manifest thresholds to the calibrated fraction of
-     * each measured score (skipped entries keep their committed threshold). Run when the corpus
-     * or a recreation changes; the qualification test then gates on the refreshed baselines.
+     * Measures every entry and its deliberate negatives, then rewrites the manifest thresholds
+     * so each component sits inside its safe interval: below the measured positive by the
+     * documented margin and above the maximum deliberate-negative score. When the ranges
+     * overlap for any entry and component the calibration fails loudly instead of committing a
+     * meaningless gate. Skipped entries keep their committed thresholds. Strict CI never runs
+     * this task; the committed thresholds are the baselines the qualification test gates on.
      */
     public void calibrate() {
         CorpusManifest manifest = CorpusManifest.load(corpusDir.resolve("manifest.json"));
         List<CorpusEntry> updated = new ArrayList<>();
         for (CorpusEntry entry : manifest.entries()) {
-            Optional<RegionSimilarity.Regions> regions = measure(entry);
-            if (regions.isEmpty()) {
+            Optional<FidelityScore> positive = measure(entry);
+            if (positive.isEmpty()) {
                 updated.add(entry);
-                System.out.println("calibration: " + entry.id()
-                        + " skipped, threshold kept " + compact(entry.threshold()));
+                System.out.println("calibration: " + entry.id() + " skipped, thresholds kept");
                 continue;
             }
-            double threshold = QualificationPolicy.threshold(regions.orElseThrow().dice());
+            FidelityScore score = positive.orElseThrow();
+            List<List<Double>> negativeObservations = measureNegatives(entry);
+            double geometry = calibrateComponent(entry, FidelityComponent.GEOMETRY,
+                    score.geometry(), negativeObservations.get(0));
+            double color = calibrateComponent(entry, FidelityComponent.COLOR,
+                    score.color(), negativeObservations.get(1));
+            double detail = calibrateComponent(entry, FidelityComponent.DETAIL,
+                    score.detail(), negativeObservations.get(2));
+            double coarse = QualificationPolicy.threshold(score.coarseLayout());
             updated.add(new CorpusEntry(entry.id(), entry.sourceUrl(), entry.referenceFile(),
-                    entry.license(), entry.markupFile(), threshold, entry.referenceWidth(),
-                    entry.referenceHeight(), entry.sha256(), entry.bytes(), entry.mediaType()));
-            System.out.println("calibration: " + entry.id() + " dice="
-                    + compact(regions.orElseThrow().dice()) + " threshold "
-                    + compact(entry.threshold()) + " -> " + compact(threshold));
+                    entry.license(), entry.markupFile(),
+                    new FidelityThresholds(geometry, color, detail, coarse),
+                    entry.referenceWidth(), entry.referenceHeight(),
+                    entry.sha256(), entry.bytes(), entry.mediaType()));
+            System.out.println("calibration: " + entry.id() + " geometry="
+                    + compact(score.geometry()) + "->" + compact(geometry) + " color="
+                    + compact(score.color()) + "->" + compact(color) + " detail="
+                    + compact(score.detail()) + "->" + compact(detail)
+                    + " coarse=" + compact(score.coarseLayout()) + "->" + compact(coarse));
         }
         manifest.write(corpusDir.resolve("manifest.json"), updated);
+    }
+
+    /**
+     * Applies the five deterministic deliberate negatives to the rendered recreation and
+     * measures each against the reference, returning per-component observation lists aligned
+     * with {@link FidelityComponent#REQUIRED}.
+     */
+    private List<List<Double>> measureNegatives(CorpusEntry entry) {
+        Optional<ReferenceImageStore.ReferenceImage> reference = reference(entry);
+        Optional<Path> recreation = render(entry);
+        if (reference.isEmpty() || recreation.isEmpty()) {
+            throw new IllegalStateException("negative measurement requires the rendered entry");
+        }
+        BufferedImage recreationImage;
+        try {
+            recreationImage = BoundedDecode.decode(recreation.orElseThrow());
+        } catch (IOException failure) {
+            throw new ReferenceException(ReferenceException.Kind.DECODE,
+                    "cannot decode recreation for calibration of " + entry.id(), failure);
+        }
+        List<Double> geometryNegatives = new ArrayList<>();
+        List<Double> colorNegatives = new ArrayList<>();
+        List<Double> detailNegatives = new ArrayList<>();
+        BufferedImage[] negatives = NegativeTransforms.all(recreationImage);
+        String[] names = NegativeTransforms.names();
+        for (int i = 0; i < negatives.length; i++) {
+            FidelityScore negativeScore =
+                    VisualFidelity.measure(reference.orElseThrow(), negatives[i]);
+            geometryNegatives.add(negativeScore.geometry());
+            colorNegatives.add(negativeScore.color());
+            detailNegatives.add(negativeScore.detail());
+            System.out.println("calibration: " + entry.id() + " negative " + names[i]
+                    + " geometry=" + compact(negativeScore.geometry()) + " color="
+                    + compact(negativeScore.color()) + " detail="
+                    + compact(negativeScore.detail()));
+        }
+        return List.of(geometryNegatives, colorNegatives, detailNegatives);
+    }
+
+    private static double calibrateComponent(CorpusEntry entry, FidelityComponent component,
+            double positive, List<Double> negatives) {
+        OptionalDouble threshold = QualificationPolicy.calibrate(List.of(positive), negatives);
+        if (threshold.isEmpty()) {
+            throw new ReferenceException(ReferenceException.Kind.CALIBRATION,
+                    "no safe threshold interval for " + entry.id() + " " + component
+                            + ": positive " + compact(positive)
+                            + " does not clear the deliberate negatives " + negatives
+                            + " by the documented margin "
+                            + QualificationPolicy.SEPARATION_MARGIN
+                            + "; improve the recreation or re-examine the corpus");
+        }
+        return Math.round(threshold.orElseThrow() * 1000) / 1000.0;
     }
 
     /**
@@ -153,11 +224,11 @@ public final class QualificationRunner implements AutoCloseable {
     }
 
     /**
-     * Fetches the reference and renders the recreation, returning the measured regions; empty
+     * Fetches the reference and renders the recreation, returning the multi-signal score; empty
      * when the reference is explicitly absent or the preview process failed. Policy, identity,
      * cache, and decode failures raise {@link ReferenceException} so the qualification fails.
      */
-    private Optional<RegionSimilarity.Regions> measure(CorpusEntry entry) {
+    private Optional<FidelityScore> measure(CorpusEntry entry) {
         Optional<ReferenceImageStore.ReferenceImage> reference = reference(entry);
         if (reference.isEmpty()) {
             return Optional.empty();
@@ -167,7 +238,7 @@ public final class QualificationRunner implements AutoCloseable {
             return Optional.empty();
         }
         try {
-            return Optional.of(RegionSimilarity.measure(reference.get(), recreation.get()));
+            return Optional.of(VisualFidelity.measure(reference.get(), recreation.get()));
         } catch (IOException failure) {
             throw new ReferenceException(ReferenceException.Kind.DECODE,
                     "cannot measure entry " + entry.id(), failure);

@@ -37,10 +37,23 @@ final class CorpusManifestTest {
         node.put("referenceFile", referenceFile);
         node.put("license", license);
         node.put("markupFile", id + ".xml");
-        node.put("threshold", 0.2);
+        ObjectNode thresholds = node.putObject("thresholds");
+        thresholds.put("geometry", 0.2);
+        thresholds.put("color", 0.2);
+        thresholds.put("detail", 0.2);
+        thresholds.put("coarseLayout", 0.2);
         node.put("referenceWidth", 1280);
         node.put("referenceHeight", 720);
         return node;
+    }
+
+    /** A thresholds object for remote-entry tests that omit the optional coarse baseline. */
+    private static ObjectNode thresholds(double geometry, double color, double detail) {
+        ObjectNode thresholds = JSON.createObjectNode();
+        thresholds.put("geometry", geometry);
+        thresholds.put("color", color);
+        thresholds.put("detail", detail);
+        return thresholds;
     }
 
     private Path writeManifest(ObjectNode root) throws IOException {
@@ -219,7 +232,8 @@ final class CorpusManifestTest {
         assertEquals("https://example.com/beta.png", manifest.entries().get(1).sourceUrl());
         assertThrows(UnsupportedOperationException.class,
                 () -> manifest.entries().add(new CorpusEntry("gamma", null, "gamma.png", "MIT",
-                        "gamma.xml", 0.2, 1280, 720, null, 0, null)));
+                        "gamma.xml", new FidelityThresholds(0.2, 0.2, 0.2, 0.2),
+                        1280, 720, null, 0, null)));
     }
 
     @Test
@@ -307,9 +321,34 @@ final class CorpusManifestTest {
     @Test
     void rejectsStringThreshold() throws IOException {
         ObjectNode node = entry("a", "a.png");
-        node.put("threshold", "low");
+        node.put("thresholds", "low");
         ManifestException failure = reject(writeEntries(node));
         assertEquals(ManifestException.Kind.WRONG_TYPE, failure.kind());
+    }
+
+    @Test
+    void rejectsNonObjectThresholds() throws IOException {
+        ObjectNode node = entry("a", "a.png");
+        node.put("thresholds", 42);
+        ManifestException failure = reject(writeEntries(node));
+        assertEquals(ManifestException.Kind.WRONG_TYPE, failure.kind());
+    }
+
+    @Test
+    void rejectsMissingComponentThreshold() throws IOException {
+        ObjectNode node = entry("a", "a.png");
+        node.set("thresholds", thresholds(0.2, 0.2, 0.2));
+        ((ObjectNode) node.get("thresholds")).remove("detail");
+        ManifestException failure = reject(writeEntries(node));
+        assertEquals(ManifestException.Kind.MISSING_FIELD, failure.kind());
+    }
+
+    @Test
+    void rejectsUnknownThresholdField() throws IOException {
+        ObjectNode node = entry("a", "a.png");
+        ((ObjectNode) node.get("thresholds")).put("fuzz", 0.1);
+        ManifestException failure = reject(writeEntries(node));
+        assertEquals(ManifestException.Kind.UNKNOWN_FIELD, failure.kind());
     }
 
     @Test
@@ -323,7 +362,7 @@ final class CorpusManifestTest {
     @Test
     void rejectsThresholdOutsideUnitInterval() throws IOException {
         ObjectNode node = entry("a", "a.png");
-        node.put("threshold", 1.5);
+        ((ObjectNode) node.get("thresholds")).put("color", 1.5);
         ManifestException failure = reject(writeEntries(node));
         assertEquals(ManifestException.Kind.INVALID_VALUE, failure.kind());
     }

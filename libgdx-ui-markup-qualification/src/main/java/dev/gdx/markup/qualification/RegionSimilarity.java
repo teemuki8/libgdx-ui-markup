@@ -32,8 +32,16 @@ public final class RegionSimilarity {
     /** Measures region overlap between the authenticated reference and the recreation image. */
     public static Regions measure(ReferenceImageStore.ReferenceImage reference, Path recreation)
             throws IOException {
-        boolean[][] referenceRegions = regions(reference);
-        boolean[][] recreationRegions = regions(recreation);
+        BufferedImage decoded = BoundedDecode.decode(recreation);
+        return measure(reference.width(), reference.height(), reference::rgb,
+                decoded.getWidth(), decoded.getHeight(), decoded::getRGB);
+    }
+
+    /** Package-private: dilated Dice over two caller-supplied bounded pixel sources. */
+    static Regions measure(int widthA, int heightA, java.util.function.IntBinaryOperator rgbA,
+            int widthB, int heightB, java.util.function.IntBinaryOperator rgbB) {
+        boolean[][] referenceRegions = regions(widthA, heightA, rgbA);
+        boolean[][] recreationRegions = regions(widthB, heightB, rgbB);
         boolean[][] dilatedReference = dilate(referenceRegions);
         boolean[][] dilatedRecreation = dilate(recreationRegions);
         int intersection = 0;
@@ -103,7 +111,8 @@ public final class RegionSimilarity {
         return regions(decoded.getWidth(), decoded.getHeight(), decoded::getRGB);
     }
 
-    private static boolean[][] regions(int width, int height,
+    /** Package-private: grid classifier over a caller-supplied bounded pixel source. */
+    static boolean[][] regions(int width, int height,
             java.util.function.IntBinaryOperator rgb) {
         int[][] gray = gray(width, height, rgb);
         int[][] sum = integral(gray);

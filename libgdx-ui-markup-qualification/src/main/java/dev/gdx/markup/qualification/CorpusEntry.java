@@ -28,7 +28,7 @@ public record CorpusEntry(
         String referenceFile,
         String license,
         String markupFile,
-        double threshold,
+        FidelityThresholds thresholds,
         int referenceWidth,
         int referenceHeight,
         String sha256,
@@ -70,9 +70,9 @@ public record CorpusEntry(
                                 + "(sha256, bytes, mediaType)");
             }
         }
-        if (threshold < 0 || threshold > 1) {
-            throw new ManifestException(ManifestException.Kind.INVALID_VALUE,
-                    "threshold must be between 0 and 1");
+        if (thresholds == null) {
+            throw new ManifestException(ManifestException.Kind.MISSING_FIELD,
+                    "entry is missing required field 'thresholds'");
         }
         if (referenceWidth < 1 || referenceHeight < 1) {
             throw new ManifestException(ManifestException.Kind.INVALID_VALUE,

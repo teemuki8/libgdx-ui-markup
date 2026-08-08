@@ -31,6 +31,9 @@ public final class ReferenceException extends RuntimeException {
         UNEXPECTED_STATUS,
         /** The store was closed while a fetch was in progress; no result is delivered. */
         CLOSED,
+        /** No safe threshold interval exists between a measured positive and its deliberate
+         *  negatives, so the calibration must fail instead of committing a meaningless gate. */
+        CALIBRATION,
     }
 
     private final Kind kind;
