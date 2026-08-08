@@ -419,6 +419,24 @@ final class CssTest {
     }
 
     @Test
+    void buildComparisonCounterDoesNotWrapAtIntegerMax() {
+        CssDocument document = parser.parse("""
+                button { width: 1px; }
+                label { height: 2px; }
+                """);
+        // Seed the per-build counter one below Integer.MAX_VALUE: the second comparison of the
+        // first resolve must hit the limit and fail, proving the counter never wraps past it.
+        CssStyleResolver nearLimit = new CssStyleResolver(document.rules(),
+                CssStyleResolver.MAX_COMPARISONS_PER_RESOLVE, Integer.MAX_VALUE,
+                Integer.MAX_VALUE - 1);
+        MarkupException failure = assertThrows(MarkupException.class,
+                () -> nearLimit.resolve(element("button", null, List.of())));
+        assertEquals(MarkupException.Kind.TOO_LARGE, failure.kind(),
+                "the per-build counter must saturate at its limit instead of wrapping");
+        assertEquals("button", failure.elementPath());
+    }
+
+    @Test
     void commaGroupUsesMaximumMatchingSpecificity() {
         CssDocument document = parser.parse("""
                 .primary { color: from-class; }

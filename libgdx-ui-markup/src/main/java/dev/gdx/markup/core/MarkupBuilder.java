@@ -99,6 +99,30 @@ public final class MarkupBuilder {
                 MarkupParser.MAX_ELEMENTS, MarkupParser.MAX_DEPTH).build();
     }
 
+    /**
+     * Package-private seam for tests: explicit cascade work limits on the per-build resolver.
+     */
+    static BuiltUi build(MarkupDocument document, CssDocument css, Skin skin, SemanticSink sink,
+            MarkupRegistry registry, int maxComparisonsPerResolve, int maxComparisonsPerBuild) {
+        return new MarkupBuilder(document, css, skin, sink, registry,
+                MarkupParser.MAX_ELEMENTS, MarkupParser.MAX_DEPTH,
+                maxComparisonsPerResolve, maxComparisonsPerBuild).build();
+    }
+
+    private MarkupBuilder(MarkupDocument document, CssDocument css, Skin skin, SemanticSink sink,
+            MarkupRegistry registry, int maxElements, int maxDepth,
+            int maxComparisonsPerResolve, int maxComparisonsPerBuild) {
+        this.document = Objects.requireNonNull(document, "document");
+        this.css = Objects.requireNonNull(css, "css");
+        this.skin = Objects.requireNonNull(skin, "skin");
+        this.sink = Objects.requireNonNull(sink, "sink");
+        this.registry = Objects.requireNonNull(registry, "registry");
+        this.resolver = new CssStyleResolver(css, maxComparisonsPerResolve, maxComparisonsPerBuild);
+        this.taglessPseudoStates = taglessPseudoStates(css);
+        this.maxElements = maxElements;
+        this.maxDepth = maxDepth;
+    }
+
     private BuiltUi build() {
         SkinStyleCompiler.compile(skin, css);
         Walk walk = new Walk();
@@ -147,7 +171,9 @@ public final class MarkupBuilder {
             }
             ResolvedStyle style = byPseudo.get(pseudo);
             if (style == null) {
-                style = resolver.resolve(element, pseudo);
+                // The element's path frame is entered for every caller, so the current tracked
+                // path is this element's own; limit failures then report the full path.
+                style = resolver.resolve(element, pseudo, paths.current());
                 byPseudo.put(pseudo, style);
             }
             return style;

@@ -192,6 +192,28 @@ final class MarkupBuilderTest {
     }
 
     @Test
+    void cascadeLimitReportsFullTrackedPath() throws Exception {
+        GdxTestHost.run(() -> {
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("""
+                            <ui>
+                              <table>
+                                <button/>
+                                <button/>
+                              </table>
+                            </ui>
+                            """), css.parse("button { width: 1px; }\nlabel { height: 2px; }"),
+                            DefaultSkin.create(), new NoopSink(), MarkupRegistry.defaultRegistry(),
+                            dev.gdx.markup.core.style.CssStyleResolver.MAX_COMPARISONS_PER_RESOLVE,
+                            5));
+            assertEquals(MarkupException.Kind.TOO_LARGE, failure.kind());
+            assertEquals("ui/table/button[1]", failure.elementPath(),
+                    "cascade limit failures carry the full tracked path of the element "
+                            + "being resolved");
+        });
+    }
+
+    @Test
     void builderElementPathsAreScopedPerParent() throws Exception {
         GdxTestHost.run(() -> {
             MarkupException firstTableFirstButton = buildWithInvalidPad(

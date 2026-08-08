@@ -47,6 +47,15 @@ public final class CssStyleResolver {
     /** Creates a resolver over an explicit rule list with explicit work limits. */
     public CssStyleResolver(List<CssRule> rules, int maxComparisonsPerResolve,
             int maxComparisonsPerBuild) {
+        this(rules, maxComparisonsPerResolve, maxComparisonsPerBuild, 0);
+    }
+
+    /**
+     * Package-private seam for boundary tests: seeds the per-build comparison counter near its
+     * limit so the non-wrapping behavior can be exercised without billions of comparisons.
+     */
+    CssStyleResolver(List<CssRule> rules, int maxComparisonsPerResolve, int maxComparisonsPerBuild,
+            int seededBuildComparisons) {
         this.rules = List.copyOf(Objects.requireNonNull(rules, "rules"));
         if (maxComparisonsPerResolve <= 0) {
             throw new IllegalArgumentException("maxComparisonsPerResolve must be positive");
@@ -54,35 +63,51 @@ public final class CssStyleResolver {
         if (maxComparisonsPerBuild <= 0) {
             throw new IllegalArgumentException("maxComparisonsPerBuild must be positive");
         }
+        if (seededBuildComparisons < 0) {
+            throw new IllegalArgumentException("seededBuildComparisons must be non-negative");
+        }
         this.maxComparisonsPerResolve = maxComparisonsPerResolve;
         this.maxComparisonsPerBuild = maxComparisonsPerBuild;
+        this.comparisonsThisBuild = seededBuildComparisons;
     }
 
     /** Resolves the base (non-pseudo) style for one element. */
     public ResolvedStyle resolve(Element element) {
-        return resolve(element, null);
+        return resolve(element, null, null);
+    }
+
+    /** Resolves the style variant for one element and pseudo-state (or {@code null} for base). */
+    public ResolvedStyle resolve(Element element, String pseudo) {
+        return resolve(element, pseudo, null);
     }
 
     /**
-     * Resolves the style variant for one element and pseudo-state (or {@code null} for base).
-     * Every {@link Selector#matches} call is counted against the per-resolve and per-build work
-     * limits; exceeding either throws a located {@code TOO_LARGE} diagnostic at the element.
+     * Resolves the style variant for one element and pseudo-state (or {@code null} for base),
+     * reporting limit failures with {@code path} — the element's full tracked path, as threaded
+     * by the builder — or with the element tag when {@code path} is {@code null} (direct GL-free
+     * use). Every {@link Selector#matches} call is counted against the per-resolve and
+     * per-build work limits using compare-before-increment, so the counters saturate at their
+     * limits and can never wrap even when a limit is {@link Integer#MAX_VALUE}.
      */
-    public ResolvedStyle resolve(Element element, String pseudo) {
+    public ResolvedStyle resolve(Element element, String pseudo, String path) {
         Objects.requireNonNull(element, "element");
+        String diagnosticPath = path != null ? path : element.tag();
         int comparisons = 0;
         List<Candidate> matching = new ArrayList<>();
         for (CssRule rule : rules) {
             int bestSpecificity = -1;
             for (Selector selector : rule.selectors()) {
-                if (++comparisons > maxComparisonsPerResolve) {
-                    throw tooLarge(element, "style resolution for <" + element.tag()
-                            + "> exceeds the " + maxComparisonsPerResolve + "-comparison limit");
+                if (comparisons >= maxComparisonsPerResolve) {
+                    throw tooLarge(diagnosticPath, element, "style resolution for <"
+                            + element.tag() + "> exceeds the " + maxComparisonsPerResolve
+                            + "-comparison limit");
                 }
-                if (++comparisonsThisBuild > maxComparisonsPerBuild) {
-                    throw tooLarge(element, "style resolution exceeds the "
+                comparisons++;
+                if (comparisonsThisBuild >= maxComparisonsPerBuild) {
+                    throw tooLarge(diagnosticPath, element, "style resolution exceeds the "
                             + maxComparisonsPerBuild + "-comparison build limit");
                 }
+                comparisonsThisBuild++;
                 // Every matching part of a comma group counts; the strongest part scores the
                 // whole rule, so `button, #save` beats a class rule even though `button` also
                 // matches.
@@ -108,8 +133,8 @@ public final class CssStyleResolver {
         return builder.build();
     }
 
-    private static MarkupException tooLarge(Element element, String message) {
-        return new MarkupException(MarkupException.Kind.TOO_LARGE, element.tag(),
+    private static MarkupException tooLarge(String path, Element element, String message) {
+        return new MarkupException(MarkupException.Kind.TOO_LARGE, path,
                 element.line(), element.column(), message);
     }
 
