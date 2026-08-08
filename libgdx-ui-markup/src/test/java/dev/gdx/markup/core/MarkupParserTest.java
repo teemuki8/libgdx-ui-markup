@@ -406,4 +406,24 @@ final class MarkupParserTest {
         assertEquals(first.kind(), second.kind());
         assertEquals(first.getMessage(), second.getMessage());
     }
+
+    @Test
+    void nextBufferGrowthDoublesBelowHalfCapacity() {
+        assertEquals(8192, MarkupParser.nextBufferLength(4096, 10_000));
+    }
+
+    @Test
+    void nextBufferGrowthCapsAtCapacityFromHalfWay() {
+        assertEquals(10_000, MarkupParser.nextBufferLength(8192, 10_000));
+    }
+
+    @Test
+    void nextBufferGrowthNeverOverflowsNearIntegerMax() {
+        // current * 2 would wrap to Integer.MIN_VALUE around 2^30; the growth must cap at
+        // capacity instead of overflowing (a negative length would throw NegativeArraySizeException).
+        assertEquals(1_073_741_824, MarkupParser.nextBufferLength(1_073_741_824, 1_073_741_824));
+        assertEquals(2_147_483_647, MarkupParser.nextBufferLength(1_073_741_824, 2_147_483_647));
+        assertEquals(2_147_483_647, MarkupParser.nextBufferLength(1_073_741_823, 2_147_483_647));
+        assertEquals(2_147_483_644, MarkupParser.nextBufferLength(1_073_741_822, 2_147_483_647));
+    }
 }

@@ -545,4 +545,33 @@ final class CssTest {
         assertEquals(first.kind(), second.kind());
         assertEquals(first.getMessage(), second.getMessage());
     }
+
+    @Test
+    void limitPlusOneByteStringStylesheetIsRejectedAsTooLarge() {
+        String css = "/*" + "x".repeat(CssParser.MAX_INPUT_BYTES - 3) + "*/";
+        MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse(css));
+        assertEquals(MarkupException.Kind.TOO_LARGE, failure.kind(),
+                "the String entry point must share the same TOO_LARGE kind as parse(Path)");
+        assertTrue(failure.getMessage().contains("limit"));
+    }
+
+    @Test
+    void nextBufferGrowthDoublesBelowHalfCapacity() {
+        assertEquals(8192, CssParser.nextBufferLength(4096, 10_000));
+    }
+
+    @Test
+    void nextBufferGrowthCapsAtCapacityFromHalfWay() {
+        assertEquals(10_000, CssParser.nextBufferLength(8192, 10_000));
+    }
+
+    @Test
+    void nextBufferGrowthNeverOverflowsNearIntegerMax() {
+        // current * 2 would wrap to Integer.MIN_VALUE around 2^30; the growth must cap at
+        // capacity instead of overflowing (a negative length would throw NegativeArraySizeException).
+        assertEquals(1_073_741_824, CssParser.nextBufferLength(1_073_741_824, 1_073_741_824));
+        assertEquals(2_147_483_647, CssParser.nextBufferLength(1_073_741_824, 2_147_483_647));
+        assertEquals(2_147_483_647, CssParser.nextBufferLength(1_073_741_823, 2_147_483_647));
+        assertEquals(2_147_483_644, CssParser.nextBufferLength(1_073_741_822, 2_147_483_647));
+    }
 }

@@ -159,7 +159,7 @@ public final class MarkupParser {
         int total = 0;
         while (total < capacity) {
             if (total == buffer.length) {
-                buffer = Arrays.copyOf(buffer, Math.min(buffer.length * 2, capacity));
+                buffer = Arrays.copyOf(buffer, nextBufferLength(buffer.length, capacity));
             }
             int read = in.read(buffer, total, buffer.length - total);
             if (read < 0) {
@@ -168,6 +168,16 @@ public final class MarkupParser {
             total += read;
         }
         return total == buffer.length ? buffer : Arrays.copyOf(buffer, total);
+    }
+
+    /**
+     * Next length when growing {@code current} toward {@code capacity}: doubles while below
+     * half of capacity, then jumps to capacity. Comparing against {@code capacity / 2} before
+     * doubling keeps the product strictly below {@code Integer.MAX_VALUE}, so growth never
+     * overflows the int range for any configured limit.
+     */
+    static int nextBufferLength(int current, int capacity) {
+        return current < capacity / 2 ? current * 2 : capacity;
     }
 
     /** Decodes strict UTF-8; malformed or truncated input fails with a typed diagnostic. */
