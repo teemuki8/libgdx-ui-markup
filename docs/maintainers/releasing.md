@@ -47,6 +47,11 @@ Run the complete release candidate gate:
 xvfb-run -a ./gradlew clean check javadoc publishToMavenLocal --warning-mode=fail
 ```
 
+This is the exact command CI/release run for checks (plus `centralBundle` for releases). It runs
+with strict dependency verification and STRICT dependency locking by default (see the next
+section) and never writes lock or verification state — a missing or altered lockfile, checksum,
+or signature fails the build before task execution.
+
 Confirm that Maven local contains only the three publishable modules:
 
 - `libgdx-ui-markup`
@@ -55,6 +60,97 @@ Confirm that Maven local contains only the three publishable modules:
 
 `libgdx-ui-markup-preview` and `libgdx-ui-markup-idea` must not be published (the preview is a
 runnable app distribution; the IDEA plugin has its own marketplace channel).
+
+## Dependency supply-chain enforcement
+
+Every Gradle invocation in this repository — local, CI, or release — runs with two fail-closed
+supply-chain controls that come from committed configuration, not from command-line flags:
+
+1. **Strict dependency locking.** The root `build.gradle.kts` configures
+   `dependencyLocking { lockAllConfigurations(); lockMode = LockMode.STRICT }` for every
+   project. All six modules plus the settings graph ship committed `gradle.lockfile` /
+   `settings-gradle.lockfile` files. A missing or altered lock entry fails resolution before
+   any task work; the lock state changes only through `--write-locks`.
+2. **Strict dependency verification.** `gradle.properties` sets
+   `org.gradle.dependency.verification=strict` (with the verbose console), so every resolved
+   artifact — project, plugin, settings, buildscript, and tooling graphs — must match
+   `gradle/verification-metadata.xml` and a reviewed PGP signature scoped to the exact
+   artifact file in `gradle/verification-keyring.keys`/`.gpg`, or the build fails before task
+   execution.
+
+CI and release enforce this explicitly. `.github/workflows/ci.yml` runs a `supply-chain` job and
+`.github/workflows/release.yml` runs the same steps before the release gate. Both assert the
+committed configuration above and fail if any workflow file uses a bypass flag
+(`--refresh-dependencies`, `--write-locks`, `--write-verification-metadata`, or
+`--dependency-verification lenient|off`), then run the non-writing
+`./gradlew resolveAndLockAll --warning-mode=fail`, which resolves every resolvable configuration
+in every project — proving the committed lock set is exhaustive and enforced and the
+verification metadata covers the currently resolved graph.
+
+### Recovery: deliberate dependency upgrades
+
+Upgrading a dependency is a deliberate act. Because strict verification and STRICT locking
+are default-on, a "locks first, then verification metadata" two-step sequence deadlocks: the
+`--write-locks` pass would be rejected by strict verification (the new artifact is not yet in
+`verification-metadata.xml`) before any lock state is written. Instead, bootstrap both in a
+single full-graph invocation that writes locks and verification metadata together, in a fresh
+`GRADLE_USER_HOME` so every artifact, plugin, and settings component is freshly downloaded —
+giving the step-3 provenance review an independent, cache-free basis. Note that the bootstrap
+runs in observation mode (see below): the fresh download is for independent review, not
+because write mode enforces the committed trust policy.
+
+1. Edit the version catalog (`gradle/libs.versions.toml`) or build files.
+2. Bootstrap in one pass (local write; these flags never run in CI/release):
+   ```bash
+   GRADLE_USER_HOME="$(mktemp -d)" ./gradlew --no-daemon \
+     --write-locks --write-verification-metadata pgp,sha256 --export-keys \
+     help resolveAndLockAll :libgdx-ui-markup-idea:buildPlugin :libgdx-ui-markup-idea:unitTest \
+     :libgdx-ui-markup-preview:installDist javadoc \
+     :libgdx-ui-markup:publishMavenJavaPublicationToCentralStagingRepository \
+     :libgdx-ui-markup-runtime:publishMavenJavaPublicationToCentralStagingRepository \
+     :libgdx-ui-markup-harness:publishMavenJavaPublicationToCentralStagingRepository
+   ```
+   The task set is the full CI/release resolution surface from Task 2: settings and project
+   plugin graphs (`help`), every resolvable configuration in every module (`resolveAndLockAll`),
+   the IDEA plugin build and its unit tests, the preview distribution, Javadocs, and the release
+   publication tooling.
+
+   `--write-verification-metadata` is an observation/bootstrap mode, not a certification: it
+   records whatever the resolution observes — checksums, trust scoping (possibly group-wide,
+   regex, or coordinate-wide), and signer keys (`--export-keys` imports newly observed keys
+   into the committed keyring). It does NOT preserve normal fail-closed trust and does NOT
+   validate provenance during the run; an artifact or key observed in this mode is recorded,
+   not certified. The generated output is therefore UNTRUSTED until the independent review in
+   step 3 completes — never commit based only on a successful generation. If the bootstrap
+   fails on keyserver access, import the new keys from a keyserver manually into
+   `gradle/verification-keyring.gpg` and re-run. If it fails during toolchain resolution
+   (the intellij-platform plugin reads `JvmVendorSpec.IBM_SEMERU`, which Gradle 9.6 removed),
+   point toolchain detection at existing JDK installations with the system property
+   `-Dorg.gradle.java.installations.paths=<jdk21-home>,<jdk25-home>` (use `-D`, not `-P` —
+   the project-property form is deprecated in Gradle 9.6).
+3. Review the generated diff. The bootstrap output is untrusted until this review passes; for
+   every new coordinate, checksum, and signer key, independently confirm: (a) provenance — the
+   artifact comes from the publisher-controlled repository or an attributable mirror (re-fetch
+   from an independent channel and compare the checksum); (b) signer identity — the key
+   belongs to the publisher, the fingerprint is correct, and it is scoped to exactly the
+   group/module/version/file entries it signs; (c) checksum coverage — every trusted file has a
+   recorded checksum, keeping `trusting` a strict subset of checksummed components (an
+   invariant CI-side audits assume); (d) no wildcard trust — narrow any group-wide, regex, or
+   coordinate-wide `<trusting>` entries the generator emitted to file-exact entries for exactly
+   the artifacts the bootstrap observed; and (e) no `trusted-artifacts` or `ignored-keys`
+   bypasses. **Never commit based only on a successful generation.** The bootstrap also
+   completes coverage for candidate metadata the locked resolution never materializes
+   (conflict-resolution losers such as `junit-jupiter-engine-5.10.1` in the IDEA
+   test-runtime configuration); include those file-exact entries so a later `--write-locks`
+   run works out of the box.
+4. Commit the lockfiles, `gradle/verification-metadata.xml`, and keyring changes together so the
+   committed state never mixes an old lock set with new verification metadata.
+5. Verify with the non-writing sweep `./gradlew resolveAndLockAll --warning-mode=fail` and the
+   full candidate gate above; CI/release then enforce the new state exactly as before.
+
+If a dependency is reverted instead, restore the previously reviewed lockfiles and metadata
+verbatim — do not regenerate, because the current graph would then be re-locked against the
+reverted build files.
 
 ## Create the release
 
@@ -91,13 +187,15 @@ Pushing the tag starts the `Release` workflow on the `maven-central` environment
 
 1. imports only the configured trusted public key into an isolated temporary GnuPG home;
 2. verifies the primary fingerprint, signed semantic-version tag, and tag-to-commit binding;
-3. runs the clean checks and Javadocs under JDK 25 (headless via Xvfb);
-4. builds and signs the deterministic three-module Central bundle;
-5. rejects missing artifacts, signatures, or unpublished-module leakage;
-6. uploads a user-managed Maven Central deployment;
-7. waits for Central state `VALIDATED`;
-8. publishes the validated deployment;
-9. waits for Central state `PUBLISHED`.
+3. asserts the supply-chain configuration and rejects bypass flags, then runs the non-writing
+   `resolveAndLockAll` sweep proving locked strict resolution and verification coverage;
+4. runs the clean checks and Javadocs under JDK 25 (headless via Xvfb);
+5. builds and signs the deterministic three-module Central bundle;
+6. rejects missing artifacts, signatures, or unpublished-module leakage;
+7. uploads a user-managed Maven Central deployment;
+8. waits for Central state `VALIDATED`;
+9. publishes the validated deployment;
+10. waits for Central state `PUBLISHED`.
 
 Publication credentials are scoped only to the steps that require them. Central authorization
 is written to a mode-0600 temporary curl configuration and deleted on every exit path.
