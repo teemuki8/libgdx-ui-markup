@@ -11,7 +11,7 @@ come from the markup, so libgdx-ui-harness locators stop depending on inference.
 |---|---|
 | `libgdx-ui-markup` | Core: hardened XML parser → immutable model, CSS-subset parser, tag registry, render-thread builder, programmatic default Skin, `SemanticSink` SPI |
 | `libgdx-ui-markup-harness` | Adapter: `HarnessSemanticSink` maps markup semantics into the harness `Semantics` facade; end-to-end test drives a markup UI through the harness MCP |
-| `libgdx-ui-markup-runtime` | Adapter: `MarkupRuntimeSource` registers `data-runtime-entity` actors as libgdx-agent-runtime value sources with live widget state and native UI bindings |
+| `libgdx-ui-markup-runtime` | Adapter: `MarkupRuntimeSource` registers `data-runtime-entity` actors with explicit value authority — authoritative (domain-supplied), bindings-only (app-owned entities), or widget-mirror (preview convenience, non-authoritative) — plus native UI bindings |
 | `libgdx-ui-markup-preview` | Standalone LWJGL3 app: hot-reloads `--ui`/`--css`, typed error overlay, CI flags, optional `--mcp` harness server |
 | `libgdx-ui-markup-idea` | Thin IntelliJ plugin: "Markup Preview" tool window that launches the preview and shows live build status |
 
@@ -103,15 +103,28 @@ a PNG — all against `samples/signin.xml`, no imperative wiring.
 
 ## Agent runtime values
 
-An element with `data-runtime-entity` becomes a live value source in
+An element with `data-runtime-entity` becomes a value source in
 [libgdx-agent-runtime](https://github.com/teemuki8/libgdx-agent-runtime) (published
-`io.github.teemuki8:agent-runtime-core:1.0.0`): the widget's current state is published under
-the property named by `data-runtime-property` (default `value`), typed by widget
-(`TextField` text, `CheckBox` checked, `Slider`/`ProgressBar` value, `SelectBox`/`List`
-selection, `Label` text), and a native `UiBinding` links the entity to the actor's control id
-in the preview session, so `uiToRuntime`/`runtimeToUi` resolve the correlation. The preview
-prints a bounded registration line (`markup-runtime: {"entities":N,"bindings":N}`) and records
-a `UiFrameCorrelation` for every rendered frame.
+`io.github.teemuki8:agent-runtime-core:1.0.0`) with an explicitly chosen value authority. The
+property is named by `data-runtime-property` (default `value`), and a native `UiBinding` links
+the entity to the actor's control id in the session, so `uiToRuntime`/`runtimeToUi` resolve the
+correlation. Three registration modes on `MarkupRuntimeSource` share one transactional
+preflight/commit pipeline:
+
+- `registerAuthoritative(runtime, document, ui, session, resolver)` — the resolver supplies
+  every property value from the domain model; a missing supplier fails preflight without
+  mutation, and a UI/domain divergence is observable as `MISMATCH`.
+- `registerBindings(runtime, document, ui, session)` — installs the UI correlations only, so
+  markup can bind an entity the application already registered, with no widget supplier.
+- `registerWidgetMirror(runtime, document, ui, session)` — reads the widget's live state back
+  (typed by widget: `TextField` text, `CheckBox` checked, `Slider`/`ProgressBar` value,
+  `SelectBox`/`List` selection, `Label` text). The preview selects this mode explicitly; it
+  validates transport/correlation only and **cannot detect a UI displaying the wrong model
+  value**. The 0.2.x `register(...)` delegates here for compatibility.
+
+The preview prints a bounded registration line naming the mode, e.g.
+`markup-runtime: {"mode":"widget-mirror","entities":N,"bindings":N}`, and records a
+`UiFrameCorrelation` for every rendered frame.
 
 ```xml
 <textfield id="username" label="Username" data-runtime-entity="user"/>

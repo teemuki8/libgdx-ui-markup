@@ -26,8 +26,8 @@ final class MarkupHarnessEndToEndTest {
         try (PreviewProcess preview = PreviewProcess.launch()) {
             preview.awaitOkStatus(Duration.ofSeconds(30));
             assertTrue(preview.capturedStderr().contains(
-                            "markup-runtime: {\"entities\":1,\"bindings\":1}"),
-                    "the markup-declared runtime entity is registered, got: "
+                            "markup-runtime: {\"mode\":\"widget-mirror\",\"entities\":1,\"bindings\":1}"),
+                    "the preview registers the markup-declared entity in explicit widget-mirror mode, got: "
                             + preview.capturedStderr());
             try (MarkupMcpClient client = MarkupMcpClient.connect(preview)) {
                 assertTrue(client.capabilities(SESSION_ID).containsAll(
