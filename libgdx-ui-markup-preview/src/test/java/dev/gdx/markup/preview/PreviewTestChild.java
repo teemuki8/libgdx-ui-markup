@@ -114,8 +114,11 @@ public final class PreviewTestChild {
         });
     }
 
-    /** Deliberately stuck: renders forever and never calls {@code Gdx.app.exit()}. */
+    /** Deliberately stuck: reports it started, then renders forever and never exits. */
     private static void runStuck() {
+        // Observable start for the parent's interruption test; printed before the endless loop.
+        System.out.println("preview-child: stuck started");
+        System.out.flush();
         launch(new ApplicationAdapter() {
         });
     }

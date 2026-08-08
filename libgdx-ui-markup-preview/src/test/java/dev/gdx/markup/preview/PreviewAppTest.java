@@ -24,6 +24,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.imageio.ImageIO;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -182,6 +183,54 @@ final class PreviewAppTest {
                     "bounded failure line captured, got stderr: " + child.stderr());
         }
         assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
+    }
+
+    /**
+     * Interrupting the parent while it waits on a stuck child must not skip cleanup: the
+     * termination ladder (terminate → bounded wait → force-kill → final wait) and the pump
+     * joins complete with real bounded waits, the interrupt status is preserved afterwards,
+     * and the child process is dead.
+     */
+    @Test
+    @Timeout(120)
+    void interruptedParentStillTerminatesStuckChildAndPreservesInterrupt() throws Exception {
+        PreviewTestProcess child = PreviewTestProcess.launch(
+                "stuck", null, null, null, Duration.ofSeconds(60));
+        AtomicReference<Throwable> awaitFailure = new AtomicReference<>();
+        Thread awaiting = new Thread(() -> {
+            try {
+                child.await();
+                awaitFailure.set(null);
+            } catch (Throwable thrown) {
+                awaitFailure.set(thrown);
+            }
+        }, "preview-test-awaiting");
+        awaiting.start();
+        try {
+            assertTrue(
+                    child.awaitStdoutContaining("preview-child: stuck started",
+                            Duration.ofSeconds(30)),
+                    "the stuck child reports it started (observable start)");
+            awaiting.interrupt();
+            awaiting.join(30_000);
+            assertFalse(awaiting.isAlive(), "the awaiting thread finished cleanup and returned");
+            assertTrue(awaitFailure.get() instanceof InterruptedException,
+                    "an interrupted wait reports InterruptedException, got: " + awaitFailure.get());
+            assertTrue(awaiting.isInterrupted(), "interrupt status preserved after cleanup");
+            assertFalse(child.isAlive(), "the stuck child was terminated by the ladder");
+            assertNoChildPumps();
+        } finally {
+            child.close();
+        }
+        assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
+    }
+
+    /** Proves every child pump thread was joined before the run returned. */
+    private static void assertNoChildPumps() {
+        for (Thread thread : Thread.getAllStackTraces().keySet()) {
+            assertFalse("preview-child-pump".equals(thread.getName()),
+                    "a child pump thread is still alive: " + thread.getName());
+        }
     }
 
     private Path fixture(String name) throws Exception {

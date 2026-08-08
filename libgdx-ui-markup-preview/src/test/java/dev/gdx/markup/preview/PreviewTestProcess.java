@@ -14,7 +14,14 @@ import java.util.concurrent.TimeUnit;
  * the current test classpath and display, drains bounded stdout/stderr on daemon pump threads,
  * waits on a monotonic/bounded deadline, and owns the termination ladder
  * (terminate → bounded wait → force-kill → final wait) so no child (and no GL/LWJGL thread)
- * ever outlives a test. All waits are bounded {@code waitFor}/{@code join} calls — no sleeps.
+ * ever outlives a test. All waits are bounded {@code waitFor}/{@code join}/{@code wait} calls
+ * — no sleeps.
+ *
+ * <p>Cleanup is interruption-resilient: whenever the parent must terminate a child or join its
+ * pumps, a pending thread interrupt is recorded and cleared first, every bounded wait then
+ * runs to its real deadline, and the interrupt status is reasserted after cleanup. An
+ * interrupted {@link #await()} therefore still kills the stuck child and joins the pumps, and
+ * reports {@link InterruptedException} — never a fake timeout.
  */
 final class PreviewTestProcess implements AutoCloseable {
     private static final int MAX_CAPTURE_CHARS = 64 * 1024;
@@ -67,7 +74,10 @@ final class PreviewTestProcess implements AutoCloseable {
 
     /**
      * Waits for the child to exit on its own within the launch deadline and returns its exit
-     * code; on timeout, applies the termination ladder and throws an actionable AssertionError.
+     * code. On timeout, applies the termination ladder and throws an actionable
+     * AssertionError. If this thread is interrupted while waiting, the ladder and pump joins
+     * still complete interruption-resiliently and {@link InterruptedException} is rethrown
+     * with the interrupt status preserved.
      */
     int await() throws InterruptedException {
         try {
@@ -76,15 +86,37 @@ final class PreviewTestProcess implements AutoCloseable {
                 return process.exitValue();
             }
         } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            terminateLadder();
-            joinPumps();
-            throw interrupted;
+            // The child may be stuck; complete the ladder and pump joins before reporting.
+            // waitFor already consumed the interrupt, so cleanup has no pending flag; reassert
+            // it after cleanup so the caller observes the interruption.
+            try {
+                cleanupInterruptionResilient(this::terminateAndJoin);
+            } finally {
+                Thread.currentThread().interrupt();
+            }
+            throw new InterruptedException("interrupted while awaiting preview child");
         }
-        terminateLadder();
-        joinPumps();
+        cleanupInterruptionResilient(this::terminateAndJoin);
         throw new AssertionError("preview child did not exit within " + deadline
                 + "; terminated (exit " + process.exitValue() + "); stderr: " + stderr);
+    }
+
+    /**
+     * Bounded wait until the child's captured stdout contains {@code fragment} (observable
+     * child start); the stdout pump signals this monitor as it appends.
+     */
+    boolean awaitStdoutContaining(String fragment, Duration timeout) throws InterruptedException {
+        synchronized (stdout) {
+            long deadlineNanos = System.nanoTime() + timeout.toNanos();
+            while (!stdout.toString().contains(fragment)) {
+                long remaining = deadlineNanos - System.nanoTime();
+                if (remaining <= 0) {
+                    return false;
+                }
+                TimeUnit.NANOSECONDS.timedWait(stdout, remaining);
+            }
+            return true;
+        }
     }
 
     /** Bounded stdout captured so far. */
@@ -103,14 +135,36 @@ final class PreviewTestProcess implements AutoCloseable {
     }
 
     @Override public void close() {
-        if (process.isAlive()) {
-            try {
+        // Interruption-resilient and never silent: a child that survives the ladder raises an
+        // AssertionError (added as suppressed when the test body already failed).
+        cleanupInterruptionResilient(() -> {
+            if (process.isAlive()) {
                 terminateLadder();
-            } catch (AssertionError survivor) {
-                // The test is already failing; the ladder made its best effort.
+            }
+            joinPumps();
+        });
+    }
+
+    private void terminateAndJoin() {
+        terminateLadder();
+        joinPumps();
+    }
+
+    /**
+     * Runs {@code cleanup} immune to a pending interrupt: records/clears the interrupt so
+     * every bounded wait inside runs to its real deadline, then reasserts the interrupt
+     * status after cleanup.
+     */
+    private static void cleanupInterruptionResilient(Runnable cleanup) {
+        boolean interrupted = Thread.interrupted();
+        try {
+            cleanup.run();
+        } finally {
+            interrupted |= Thread.interrupted();
+            if (interrupted) {
+                Thread.currentThread().interrupt();
             }
         }
-        joinPumps();
     }
 
     /** Terminate → bounded wait → force-kill → final wait; throws if the child survives. */
@@ -126,11 +180,16 @@ final class PreviewTestProcess implements AutoCloseable {
         }
     }
 
+    /**
+     * Bounded wait for child exit. On interrupt, clears the flag (the cleanup wrapper owns
+     * reassertion) and reports the live state: never dead-while-alive, so a stuck child still
+     * escalates to force-kill and the final wait still runs.
+     */
     private boolean awaitProcess(Duration wait) {
         try {
             return process.waitFor(wait.toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
+            Thread.interrupted(); // clear; cleanupInterruptionResilient reasserts
             return process.isAlive();
         }
     }
@@ -140,12 +199,16 @@ final class PreviewTestProcess implements AutoCloseable {
             try {
                 pump.join(PUMP_JOIN_WAIT.toMillis());
             } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
+                Thread.interrupted(); // clear; cleanupInterruptionResilient reasserts
             }
         }
     }
 
-    /** Daemon pump that drains the child stream, capping the captured text (bounded output). */
+    /**
+     * Daemon pump that drains the child stream, capping the captured text (bounded output)
+     * and notifying the capture monitor so {@link #awaitStdoutContaining} can observe child
+     * output.
+     */
     private static Thread startPump(InputStream in, StringBuilder capture) {
         Thread pump = new Thread(() -> {
             byte[] buffer = new byte[4096];
@@ -158,6 +221,7 @@ final class PreviewTestProcess implements AutoCloseable {
                             capture.append(new String(buffer, 0, Math.min(read, room),
                                     StandardCharsets.UTF_8));
                         }
+                        capture.notifyAll();
                     }
                 }
             } catch (IOException ignored) {
