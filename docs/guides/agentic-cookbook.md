@@ -239,12 +239,22 @@ and [`RuntimeValueResolver`](../../libgdx-ui-markup-runtime/src/main/java/dev/gd
 
 Start the preview in MCP mode when an agent needs protocol-level query, action, wait, screenshot,
 or runtime comparison. The server uses stdio, so launch it through an MCP client rather than an
-interactive terminal:
+interactive terminal. First build the self-contained distribution:
 
 ```bash
-./gradlew :libgdx-ui-markup-preview:run \
-  --args='--ui samples/signin.xml --css samples/signin.css --mcp'
+./gradlew :libgdx-ui-markup-preview:installDist
 ```
+
+Configure the MCP client to launch this executable and argument vector from the repository root:
+
+```text
+command: libgdx-ui-markup-preview/build/install/libgdx-ui-markup-preview/bin/libgdx-ui-markup-preview
+args: --ui samples/signin.xml --css samples/signin.css --mcp
+```
+
+Do not put `./gradlew ... run` between the client and server: Gradle writes its own progress to
+stdout, which is the MCP transport. The executable carries the required JVM/native-access options
+without adding build-tool output to the protocol stream.
 
 Use this bounded sequence:
 
