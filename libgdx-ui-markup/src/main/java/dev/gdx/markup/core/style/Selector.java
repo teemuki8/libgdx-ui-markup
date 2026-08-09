@@ -1,54 +1,53 @@
 package dev.gdx.markup.core.style;
 
-/**
- * One simple compound selector: {@code tag}, {@code .class}, {@code #id}, or
- * {@code tag.class}, optionally followed by one pseudo-state ({@code :hover}, {@code :pressed},
- * {@code :checked}, {@code :disabled}). Combinators and descendant selectors are not part of
- * the v1 subset; the cascade stays deterministic.
- */
-public record Selector(String tag, String id, String className, String pseudo) {
-    /** Validates the immutable shape. */
+import java.util.List;
+import java.util.Objects;
+
+/** Immutable bounded selector, stored right-to-left for ancestry matching. */
+public record Selector(List<SelectorPart> parts) {
+    /** Maximum compound parts in one selector. */
+    public static final int MAX_PARTS = 8;
+
+    /** Validates and snapshots the bounded selector AST. */
     public Selector {
-        if (id != null && (className != null || tag != null)) {
-            throw new IllegalArgumentException("an id selector cannot be combined with tag/class");
+        parts = List.copyOf(Objects.requireNonNull(parts, "parts"));
+        if (parts.isEmpty() || parts.size() > MAX_PARTS) {
+            throw new IllegalArgumentException("selector requires 1 through " + MAX_PARTS + " parts");
+        }
+        if (parts.getFirst().combinator() != SelectorPart.Combinator.SELF) {
+            throw new IllegalArgumentException("rightmost selector part must use SELF");
+        }
+        for (int index = 1; index < parts.size(); index++) {
+            if (parts.get(index).combinator() == SelectorPart.Combinator.SELF
+                    || parts.get(index).pseudo() != null) {
+                throw new IllegalArgumentException("invalid non-rightmost selector part");
+            }
         }
     }
 
-    /** Returns the cascade specificity: id=100, class=10, tag=1, tag.class=11. */
+    /** Source-compatible constructor for one legacy simple selector. */
+    public Selector(String tag, String id, String className, String pseudo) {
+        this(List.of(new SelectorPart(tag, id,
+                className == null ? List.of() : List.of(className), pseudo,
+                SelectorPart.Combinator.SELF)));
+    }
+
+    public String tag() { return parts.getFirst().tag(); }
+    public String id() { return parts.getFirst().id(); }
+    public String className() {
+        return parts.getFirst().classNames().isEmpty() ? null
+                : parts.getFirst().classNames().getFirst();
+    }
+    public String pseudo() { return parts.getFirst().pseudo(); }
+
+    /** Full CSS-shaped specificity across every part. */
     public int specificity() {
-        int score = 0;
-        if (id != null) {
-            score += 100;
-        }
-        if (className != null) {
-            score += 10;
-        }
-        if (tag != null) {
-            score += 1;
-        }
-        return score;
+        return parts.stream().mapToInt(SelectorPart::specificity).sum();
     }
 
-    /** Returns whether this selector matches the element's tag, id, classes, and pseudo-state. */
+    /** Legacy direct match against the rightmost compound only. */
     public boolean matches(String elementTag, String elementId, Iterable<String> classes,
             String elementPseudo) {
-        if (pseudo != null && !pseudo.equals(elementPseudo)) {
-            return false;
-        }
-        if (tag != null && !tag.equals(elementTag)) {
-            return false;
-        }
-        if (id != null && !id.equals(elementId)) {
-            return false;
-        }
-        if (className != null) {
-            for (String candidate : classes) {
-                if (className.equals(candidate)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-        return true;
+        return parts.getFirst().matches(elementTag, elementId, classes, elementPseudo);
     }
 }

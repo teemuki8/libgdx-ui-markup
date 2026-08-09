@@ -857,6 +857,113 @@ final class MarkupBuilderTest {
     }
 
     @Test
+    void structuralSelectorsUseTheBuiltElementAncestry() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            Color original = new Color(skin.get("textfield", TextField.TextFieldStyle.class)
+                    .fontColor);
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <table><group><textfield id="nested"/></group></table>
+                      <textfield id="outside"/>
+                    </ui>
+                    """), css.parse("""
+                    table > group textfield { font-color: accent; }
+                    ui > table { padding: 7px; }
+                    """),
+                    skin, new NoopSink());
+            Table topTable = (Table) built.root().getChildren().first();
+            TextField nested = built.root().findActor("nested");
+            TextField outside = built.root().findActor("outside");
+            assertEquals(skin.getColor("accent"), nested.getStyle().fontColor);
+            assertEquals(original, outside.getStyle().fontColor);
+            assertEquals(7f, topTable.getPadTop(), 0.0001f,
+                    "the non-Actor <ui> document root remains selector ancestry");
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void idAndMultiClassCompoundsRemainPerActorIsolated() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            TextButton.TextButtonStyle shared = skin.get("button",
+                    TextButton.TextButtonStyle.class);
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <button id="save"/>
+                      <button id="other"/>
+                      <button id="only-primary" class="primary"/>
+                      <button id="danger" class="primary danger"/>
+                    </ui>
+                    """), css.parse("""
+                    button#save { font-color: accent; }
+                    button.primary.danger { background: accent-down; }
+                    """), skin, new NoopSink());
+            TextButton save = built.root().findActor("save");
+            TextButton other = built.root().findActor("other");
+            TextButton onlyPrimary = built.root().findActor("only-primary");
+            TextButton danger = built.root().findActor("danger");
+            assertEquals(skin.getColor("accent"), save.getStyle().fontColor);
+            assertEquals(shared.fontColor, other.getStyle().fontColor);
+            assertSame(shared.up, onlyPrimary.getStyle().up);
+            assertSame(skin.getDrawable("accent-down"), danger.getStyle().up);
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void focusPseudoMapsOnlyToTextFieldFocusedStyleFields() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupBuilder.build(markup.parse("<ui><textfield id=\"name\"/></ui>"),
+                    css.parse("textfield:focus { background: field-focused; "
+                            + "font-color: accent; }"), skin, new NoopSink());
+            TextField.TextFieldStyle style = skin.get("textfield",
+                    TextField.TextFieldStyle.class);
+            assertSame(skin.getDrawable("field-focused"), style.focusedBackground);
+            assertEquals(skin.getColor("accent"), style.focusedFontColor);
+
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("<ui><button/></ui>"),
+                            css.parse("button:focus { background: accent; }"),
+                            skin, new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+            assertTrue(failure.getMessage().contains("focus"));
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void documentedGdxcssCookbookFixtureParsesAndBuilds() throws Exception {
+        String xml;
+        String styles;
+        try (java.io.InputStream xmlStream = getClass().getResourceAsStream(
+                "/gdxcss-cookbook.xml");
+                java.io.InputStream styleStream = getClass().getResourceAsStream(
+                        "/gdxcss-cookbook.gdxcss")) {
+            assertNotNull(xmlStream);
+            assertNotNull(styleStream);
+            xml = new String(xmlStream.readAllBytes(), StandardCharsets.UTF_8);
+            styles = new String(styleStream.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        CssDocument parsedStyles = css.parse(styles);
+        assertEquals("100%", parsedStyles.variables().get("--full"));
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            BuiltUi built = MarkupBuilder.build(markup.parse(xml), parsedStyles,
+                    skin, new NoopSink());
+            Table screen = built.root().findActor("screen");
+            Label title = built.root().findActor("title");
+            Image art = built.root().findActor("art");
+            assertNotNull(screen);
+            assertNotNull(title.getStyle().background);
+            assertEquals(0.9f, art.getColor().a, 0.0001f);
+            skin.dispose();
+        });
+    }
+
+    @Test
     void actorPaintInputAndTransformsApplyAfterKnownSize() throws Exception {
         GdxTestHost.run(() -> {
             Skin skin = DefaultSkin.create();

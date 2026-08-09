@@ -63,6 +63,12 @@ final class SkinStyleCompiler {
         if (selector.tag() == null) {
             return; // class-only and id-only selectors apply per-actor at build time
         }
+        if (selector.parts().size() > 1) {
+            return; // structural selectors require the builder's concrete element ancestry
+        }
+        if (selector.id() != null || selector.parts().getFirst().classNames().size() > 1) {
+            return; // ID and multi-class compounds are per-actor, never shared Skin styles
+        }
         Class<?> styleClass = styleClass(selector.tag());
         if (styleClass == null) {
             String unsupportedProperty = pseudoStateProperty(rule);
@@ -282,7 +288,7 @@ final class SkinStyleCompiler {
             case TextFieldStyle s -> {
                 switch (state) {
                     case BASE -> s.background = drawable;
-                    case "hover" -> s.focusedBackground = drawable;
+                    case "hover", "focus" -> s.focusedBackground = drawable;
                     case "disabled" -> s.disabledBackground = drawable;
                     default -> throw unsupported(tag, state, property, source);
                 }
@@ -425,7 +431,7 @@ final class SkinStyleCompiler {
             case TextFieldStyle s -> {
                 switch (state) {
                     case BASE -> s.fontColor = color;
-                    case "hover" -> s.focusedFontColor = color;
+                    case "hover", "focus" -> s.focusedFontColor = color;
                     case "disabled" -> s.disabledFontColor = color;
                     default -> throw unsupported(tag, state, property, source);
                 }

@@ -47,12 +47,11 @@ public final class CssParser {
     private static final Pattern FONT_SIZE = Pattern.compile("([0-9]+)(?:px)?");
     private static final Pattern NUMBER = Pattern.compile(
             "[+-]?(?:[0-9]+(?:\\.[0-9]+)?|\\.[0-9]+)");
-    private static final Pattern SIMPLE_SELECTOR = Pattern.compile(
-            "^([a-z][a-z0-9]*)(?:\\.([A-Za-z0-9_-]+))?$");
-    private static final Pattern CLASS_SELECTOR = Pattern.compile("^\\.([A-Za-z0-9_-]+)$");
-    private static final Pattern ID_SELECTOR = Pattern.compile("^#([A-Za-z0-9_-]+)$");
+    private static final Pattern ROOT_BLOCK = Pattern.compile(
+            "(?s)(?<![A-Za-z0-9_-]):root\\s*\\{([^{}]*)\\}");
+    private static final Pattern VARIABLE_NAME = Pattern.compile("--[A-Za-z][A-Za-z0-9_-]*");
     private static final Set<String> PSEUDO_STATES = Set.of("hover", "pressed", "checked",
-            "disabled");
+            "disabled", "active", "focus");
     private static final Set<String> TEXT_ALIGNS = Set.of("left", "center", "right");
     private static final Set<String> DISPLAYS = Set.of("initial", "none");
     private static final Set<String> VISIBILITIES = Set.of("visible", "hidden");
@@ -195,6 +194,9 @@ public final class CssParser {
 
     /** Shared parse body for in-bounds UTF-8 stylesheets, whether from a String or a file. */
     private CssDocument parseUtf8(int byteLength, String css) {
+        RootExtraction extraction = extractRoot(css);
+        css = extraction.stylesheet();
+        Map<String, String> variables = extraction.variables();
         Cursor cursor = new Cursor(css);
         ArrayList<CssRule> rules = new ArrayList<>();
         int ruleIndex = 0;
@@ -244,7 +246,7 @@ public final class CssParser {
                     throw styleError(ruleLine, ruleColumn, "unterminated rule block");
                 }
                 parseDeclaration(css.substring(nameStart, terminator), nameLine, nameColumn,
-                        selectors, properties);
+                        selectors, properties, variables);
                 if (cursor.peek() == ';') {
                     cursor.advance();
                 }
@@ -259,8 +261,74 @@ public final class CssParser {
                         + "-rule limit");
             }
         }
-        return new CssDocument(List.copyOf(rules), byteLength);
+        return new CssDocument(List.copyOf(rules), byteLength, variables);
     }
+
+    private static RootExtraction extractRoot(String css) {
+        Matcher matcher = ROOT_BLOCK.matcher(maskComments(css));
+        if (!matcher.find()) return new RootExtraction(css, Map.of());
+        int rootLine = lineAt(css, matcher.start());
+        int rootColumn = columnAt(css, matcher.start());
+        int start = matcher.start();
+        int bodyStart = matcher.start(1);
+        int end = matcher.end();
+        if (matcher.find()) {
+            throw styleError(lineAt(css, matcher.start()), columnAt(css, matcher.start()),
+                    "only one :root variable block is allowed");
+        }
+        LinkedHashMap<String, String> raw = new LinkedHashMap<>();
+        String body = css.substring(bodyStart, end - 1);
+        for (String declaration : removeComments(body).split(";", -1)) {
+            String statement = declaration.strip();
+            if (statement.isEmpty()) continue;
+            int colon = statement.indexOf(':');
+            if (colon <= 0) throw styleError(rootLine, rootColumn,
+                    "expected custom property declaration in :root");
+            String name = statement.substring(0, colon).strip();
+            String value = statement.substring(colon + 1).strip();
+            if (!VARIABLE_NAME.matcher(name).matches() || value.isEmpty()) {
+                throw styleError(rootLine, rootColumn, "invalid custom property \"" + name + "\"");
+            }
+            if (raw.containsKey(name)) throw styleError(rootLine, rootColumn,
+                    "duplicate custom property \"" + name + "\"");
+            if (raw.size() >= CssVariables.MAX_VARIABLES) {
+                throw new MarkupException(MarkupException.Kind.TOO_LARGE, "css", rootLine,
+                        rootColumn, "root variables exceed the " + CssVariables.MAX_VARIABLES
+                                + "-variable limit");
+            }
+            raw.put(name, value);
+        }
+        Map<String, String> resolved = CssVariables.resolve(raw, rootLine, rootColumn);
+        char[] sanitized = css.toCharArray();
+        for (int index = start; index < end; index++) {
+            if (sanitized[index] != '\n' && sanitized[index] != '\r') sanitized[index] = ' ';
+        }
+        return new RootExtraction(new String(sanitized), resolved);
+    }
+
+    private static String maskComments(String text) {
+        char[] masked = text.toCharArray();
+        Matcher comments = Pattern.compile("(?s)/\\*.*?\\*/").matcher(text);
+        while (comments.find()) {
+            for (int index = comments.start(); index < comments.end(); index++) {
+                if (masked[index] != '\n' && masked[index] != '\r') masked[index] = ' ';
+            }
+        }
+        return new String(masked);
+    }
+
+    private static int lineAt(String text, int offset) {
+        int line = 1;
+        for (int index = 0; index < offset; index++) if (text.charAt(index) == '\n') line++;
+        return line;
+    }
+
+    private static int columnAt(String text, int offset) {
+        int newline = text.lastIndexOf('\n', Math.max(0, offset - 1));
+        return offset - newline;
+    }
+
+    private record RootExtraction(String stylesheet, Map<String, String> variables) {}
 
     /**
      * Reads at most {@code maxBytes + 1} bytes from {@code in}, stopping as soon as the
@@ -313,7 +381,7 @@ public final class CssParser {
 
     private static List<Selector> parseSelectors(String text, int line, int column,
             int totalSelectors) {
-        String clean = removeComments(text).strip();
+        String clean = text.replaceAll("(?s)/\\*.*?\\*/", " ").strip();
         int partCount = validateSelectorParts(clean, line, column);
         if (partCount > MAX_SELECTORS_PER_GROUP) {
             throw tooLarge(line, column, "selector group exceeds the "
@@ -329,21 +397,7 @@ public final class CssParser {
             if (candidate.isEmpty()) {
                 throw styleError(line, column, "empty selector in \"" + clean + "\"");
             }
-            String pseudo = null;
-            int pseudoAt = candidate.indexOf(':');
-            if (pseudoAt >= 0) {
-                pseudo = candidate.substring(pseudoAt + 1).strip().toLowerCase(Locale.ROOT);
-                if (pseudo.isEmpty() || candidate.indexOf(':', pseudoAt + 1) >= 0) {
-                    throw styleError(line, column, "unparseable selector \"" + part.strip()
-                            + "\"");
-                }
-                if (!PSEUDO_STATES.contains(pseudo)) {
-                    throw styleError(line, column, "unknown pseudo-state \":" + pseudo
-                            + "\" in \"" + part.strip() + "\"");
-                }
-                candidate = candidate.substring(0, pseudoAt).strip();
-            }
-            selectors.add(parseSimple(candidate, pseudo, line, column));
+            selectors.add(parseStructural(candidate, line, column));
         }
         return List.copyOf(selectors);
     }
@@ -383,30 +437,116 @@ public final class CssParser {
         return partCount;
     }
 
-    private static Selector parseSimple(String candidate, String pseudo, int line, int column) {
-        Matcher tagClass = SIMPLE_SELECTOR.matcher(candidate);
-        if (tagClass.matches()) {
-            String tag = tagClass.group(1);
-            if (!TagSpec.VOCABULARY.containsKey(tag)) {
-                throw styleError(line, column, "selector \"" + candidate + "\" references unknown "
-                        + "tag <" + tag + ">");
+    private static Selector parseStructural(String candidate, int line, int column) {
+        ArrayList<SelectorPart> compounds = new ArrayList<>(Selector.MAX_PARTS);
+        ArrayList<SelectorPart.Combinator> relationships = new ArrayList<>(Selector.MAX_PARTS - 1);
+        int index = 0;
+        while (index < candidate.length()) {
+            while (index < candidate.length() && Character.isWhitespace(candidate.charAt(index))) index++;
+            if (index >= candidate.length() || candidate.charAt(index) == '>') {
+                throw selectorError(candidate, line, column);
             }
-            return new Selector(tag, null, tagClass.group(2), pseudo);
+            int start = index;
+            while (index < candidate.length() && !Character.isWhitespace(candidate.charAt(index))
+                    && candidate.charAt(index) != '>') index++;
+            if (compounds.size() >= Selector.MAX_PARTS) {
+                throw tooLarge(line, column, "selector exceeds the " + Selector.MAX_PARTS
+                        + "-part limit");
+            }
+            compounds.add(parseCompound(candidate.substring(start, index), line, column));
+            boolean spaced = false;
+            while (index < candidate.length() && Character.isWhitespace(candidate.charAt(index))) {
+                spaced = true;
+                index++;
+            }
+            if (index >= candidate.length()) break;
+            if (candidate.charAt(index) == '>') {
+                relationships.add(SelectorPart.Combinator.CHILD);
+                index++;
+                while (index < candidate.length() && Character.isWhitespace(candidate.charAt(index))) index++;
+                if (index >= candidate.length()) throw selectorError(candidate, line, column);
+            } else if (spaced) {
+                relationships.add(SelectorPart.Combinator.DESCENDANT);
+            } else {
+                throw selectorError(candidate, line, column);
+            }
         }
-        Matcher idMatch = ID_SELECTOR.matcher(candidate);
-        if (idMatch.matches()) {
-            return new Selector(null, idMatch.group(1), null, pseudo);
+        for (int part = 0; part < compounds.size() - 1; part++) {
+            if (compounds.get(part).pseudo() != null) throw selectorError(candidate, line, column);
         }
-        Matcher classMatch = CLASS_SELECTOR.matcher(candidate);
-        if (classMatch.matches()) {
-            return new Selector(null, null, classMatch.group(1), pseudo);
+        ArrayList<SelectorPart> reversed = new ArrayList<>(compounds.size());
+        for (int part = compounds.size() - 1; part >= 0; part--) {
+            SelectorPart value = compounds.get(part);
+            SelectorPart.Combinator combinator = part == compounds.size() - 1
+                    ? SelectorPart.Combinator.SELF : relationships.get(part);
+            reversed.add(new SelectorPart(value.tag(), value.id(), value.classNames(),
+                    value.pseudo(), combinator));
         }
-        throw styleError(line, column, "unparseable selector \"" + candidate
-                + "\" (supported: tag, .class, #id, tag.class, each with one pseudo-state)");
+        return new Selector(reversed);
+    }
+
+    private static SelectorPart parseCompound(String text, int line, int column) {
+        int index = 0;
+        String tag = null;
+        String id = null;
+        ArrayList<String> classes = new ArrayList<>();
+        String pseudo = null;
+        if (text.charAt(0) == '*') {
+            index++;
+        } else if (text.charAt(0) >= 'a' && text.charAt(0) <= 'z') {
+            int start = index++;
+            while (index < text.length() && Character.isLetterOrDigit(text.charAt(index))) index++;
+            tag = text.substring(start, index);
+            if (!TagSpec.VOCABULARY.containsKey(tag)) {
+                throw styleError(line, column, "selector \"" + text
+                        + "\" references unknown tag <" + tag + ">");
+            }
+        }
+        while (index < text.length()) {
+            char marker = text.charAt(index++);
+            if (marker != '.' && marker != '#' && marker != ':') {
+                throw selectorError(text, line, column);
+            }
+            int start = index;
+            while (index < text.length() && isSelectorIdentifier(text.charAt(index))) index++;
+            if (start == index) throw selectorError(text, line, column);
+            String value = text.substring(start, index);
+            if (marker == '.') {
+                classes.add(value);
+            } else if (marker == '#') {
+                if (id != null) throw selectorError(text, line, column);
+                id = value;
+            } else {
+                if (pseudo != null || index != text.length()) throw selectorError(text, line, column);
+                pseudo = value.toLowerCase(Locale.ROOT);
+                if (!PSEUDO_STATES.contains(pseudo)) {
+                    throw styleError(line, column, "unknown pseudo-state :" + pseudo
+                            + " in \"" + text + "\"");
+                }
+                if ("active".equals(pseudo)) pseudo = "pressed";
+            }
+        }
+        if (tag == null && id == null && classes.isEmpty() && text.charAt(0) != '*') {
+            throw selectorError(text, line, column);
+        }
+        try {
+            return new SelectorPart(tag, id, classes, pseudo, SelectorPart.Combinator.SELF);
+        } catch (IllegalArgumentException failure) {
+            throw selectorError(text, line, column);
+        }
+    }
+
+    private static boolean isSelectorIdentifier(char value) {
+        return Character.isLetterOrDigit(value) || value == '_' || value == '-';
+    }
+
+    private static MarkupException selectorError(String selector, int line, int column) {
+        return styleError(line, column, "unparseable selector \"" + selector + "\"");
     }
 
     private static void parseDeclaration(String raw, int line, int column,
-            List<Selector> selectors, LinkedHashMap<String, String> properties) {
+            List<Selector> selectors, LinkedHashMap<String, String> properties,
+            Map<String, String> variables) {
         String statement = removeComments(raw).strip();
         if (statement.isEmpty()) {
             return;
@@ -417,13 +557,25 @@ public final class CssParser {
                     + statement.substring(0, Math.min(statement.length(), 40)) + "\"");
         }
         String name = statement.substring(0, colon).strip().toLowerCase(Locale.ROOT);
-        String value = statement.substring(colon + 1).strip();
+        String value = CssVariables.substitute(statement.substring(colon + 1).strip(),
+                variables, line, column);
         PropertyKind kind = PROPERTIES.get(name);
         if (kind == null) {
             throw styleError(line, column, "unknown CSS property \"" + name + "\"");
         }
         if (value.isEmpty()) {
             throw styleError(line, column, "property \"" + name + "\" has no value");
+        }
+        for (Selector selector : selectors) {
+            if (!"focus".equals(selector.pseudo())) continue;
+            if (!Set.of("background", "color", "font-color").contains(name)) {
+                throw styleError(line, column, "property \"" + name
+                        + "\" is not supported in a :focus rule");
+            }
+            if (selector.tag() != null && !"textfield".equals(selector.tag())) {
+                throw styleError(line, column, ":focus style fields exist only on textfield; "
+                        + "got <" + selector.tag() + ">");
+            }
         }
         if ((BASE_STATE_ONLY.contains(name) || RESPONSIVE_DIMENSIONS.contains(name))
                 && selectors.stream().anyMatch(selector -> selector.pseudo() != null)) {

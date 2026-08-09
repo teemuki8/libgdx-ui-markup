@@ -48,6 +48,16 @@ XML dialect plus a bounded CSS subset:
 7. **Stylesheet identity.** The bounded language is named GDXCSS and uses `.gdxcss` for canonical
    files. `CssParser` remains extension-neutral and the preview/IDE continue accepting `.css`,
    so the name sets accurate authoring expectations without breaking existing applications.
+8. **Web-shaped syntax, Scene2D semantics.** GDXCSS supports bounded universal/compound,
+   descendant, and direct-child selectors; global `:root` design tokens; responsive dimensions;
+   and paint/text/image/Actor properties only where Scene2D has a deterministic conversion.
+   Selectors have at most eight parts, variables are capped at 256 with resolution depth 16,
+   and every match attempt consumes cascade work. There is still no inheritance, browser box
+   model, flex/grid, positioning, media query, script, URL, or general CSS transform engine.
+9. **Relative sizing remains Table-native.** Percent dimensions in a Cell become live Scene2D
+   `Value`s evaluated against the containing Table. The exact `width: 100%; height: 100%` pair
+   fills a top-level Table. Other percentages without a Cell fail typed; they are never frozen
+   to a build-time pixel value.
 
 ## Follow-up: agent-runtime value source
 
@@ -72,3 +82,7 @@ ADR 0002 for the wiring and its correlation contract.
   `Actor` has no min-size setters (min-* is a cell constraint only).
 - A root `<ui>` element produces a plain root `Group` that the host must size to the viewport
   (the preview does this) or harness actionability sees a zero-sized parent.
+- GDXCSS is deliberately not browser CSS. Unknown properties, unsupported selectors/units, and
+  incompatible actor targets are errors. Legacy `.css` paths remain accepted, and legacy
+  one/four-value comma spacing remains parseable; new sources use `.gdxcss` and CSS-order
+  whitespace shorthands. Table padding is internal and margin is external Cell space.

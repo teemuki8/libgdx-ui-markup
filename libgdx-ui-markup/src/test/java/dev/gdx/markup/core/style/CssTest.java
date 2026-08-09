@@ -224,6 +224,170 @@ final class CssTest {
     }
 
     @Test
+    void parsesBoundedCompoundAndStructuralSelectorAst() {
+        CssDocument document = parser.parse("""
+                * { color: text; }
+                table.shell > group.content.primary label#title.emphasis:hover { color: accent; }
+                button:active { color: pressed; }
+                textfield:focus { color: accent; }
+                table/* separator */>/* separator */button { opacity: 1; }
+                """);
+
+        Selector universal = document.rules().get(0).selectors().getFirst();
+        assertEquals(1, universal.parts().size());
+        assertNull(universal.tag());
+        assertEquals(0, universal.specificity());
+
+        Selector structural = document.rules().get(1).selectors().getFirst();
+        assertEquals(3, structural.parts().size());
+        assertEquals("label", structural.tag());
+        assertEquals("title", structural.id());
+        assertEquals("emphasis", structural.className());
+        assertEquals("hover", structural.pseudo());
+        assertEquals(153, structural.specificity());
+        assertEquals(SelectorPart.Combinator.SELF,
+                structural.parts().get(0).combinator());
+        assertEquals(List.of("emphasis"), structural.parts().get(0).classNames());
+        assertEquals(SelectorPart.Combinator.DESCENDANT,
+                structural.parts().get(1).combinator());
+        assertEquals(List.of("content", "primary"),
+                structural.parts().get(1).classNames());
+        assertEquals(SelectorPart.Combinator.CHILD,
+                structural.parts().get(2).combinator());
+
+        assertEquals("pressed", document.rules().get(2).selectors().getFirst().pseudo(),
+                ":active is the source-compatible spelling of the pressed state");
+        assertEquals("focus", document.rules().get(3).selectors().getFirst().pseudo());
+        assertEquals(2, document.rules().get(4).selectors().getFirst().parts().size(),
+                "comments are selector whitespace, including around child combinators");
+    }
+
+    @Test
+    void selectorStructureAndGrammarRemainClosedAndBounded() {
+        String eight = "ui table group table group table group button";
+        assertEquals(8, parser.parse(eight + " { color: text; }")
+                .rules().getFirst().selectors().getFirst().parts().size());
+
+        MarkupException tooDeep = assertThrows(MarkupException.class, () -> parser.parse(
+                "ui table group table group table group table button { color: text; }"));
+        assertEquals(MarkupException.Kind.TOO_LARGE, tooDeep.kind());
+
+        for (String selector : List.of(
+                "button + label", "button ~ label", "button[disabled]", "button::after",
+                "button:not(.primary)", "button:has(label)", "button >",
+                "> button", "table button:hover label", "button#one#two")) {
+            MarkupException failure = assertThrows(MarkupException.class,
+                    () -> parser.parse(selector + " { color: text; }"), selector);
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind(), selector);
+        }
+    }
+
+    @Test
+    void structuralResolutionUsesAncestryChildAndDescendantSemantics() {
+        CssDocument document = parser.parse("""
+                table button { color: descendant; }
+                table > button { background: direct; }
+                table > group button { font-color: backtracked; }
+                """);
+        Element table = element("table", null, List.of());
+        Element outerGroup = element("group", null, List.of());
+        Element innerGroup = element("group", null, List.of());
+        Element button = element("button", null, List.of());
+        CssStyleResolver resolver = new CssStyleResolver(document);
+
+        ResolvedStyle nested = resolver.resolve(button,
+                List.of(table, outerGroup, innerGroup), null, "ui/table/group/group/button");
+        assertEquals("descendant", nested.get("color"));
+        assertNull(nested.get("background"));
+        assertEquals("backtracked", nested.get("font-color"),
+                "descendant matching backtracks when a later child part requires it");
+        assertNull(new CssStyleResolver(document).resolve(button).get("color"),
+                "legacy overload has empty ancestry and cannot match structural selectors");
+
+        ResolvedStyle direct = new CssStyleResolver(document).resolve(button,
+                List.of(table), null, null);
+        assertEquals("direct", direct.get("background"));
+    }
+
+    @Test
+    void structuralMatchingCountsEveryAttemptAgainstWorkLimit() {
+        CssDocument document = parser.parse("table group button { color: text; }");
+        Element table = element("table", null, List.of());
+        Element group = element("group", null, List.of());
+        Element button = element("button", null, List.of());
+        assertThrows(MarkupException.class, () -> new CssStyleResolver(
+                document.rules(), 2, 100).resolve(button, List.of(table, group), null, "button"));
+        assertEquals("text", new CssStyleResolver(document.rules(), 3, 100)
+                .resolve(button, List.of(table, group), null, "button").get("color"));
+    }
+
+    @Test
+    void rootVariablesResolveForwardReferencesBeforePropertyValidation() {
+        CssDocument document = parser.parse("""
+                :root {
+                  --panel-width: var(--space-lg);
+                  --space-lg: 24px;
+                  --surface: #182026;
+                }
+                .panel { width: var(--panel-width); background-color: var(--surface); }
+                """);
+        assertEquals("24px", document.variables().get("--panel-width"));
+        assertEquals("24px", document.variables().get("--space-lg"));
+        assertEquals("#182026", document.variables().get("--surface"));
+        assertEquals("24px", document.rules().getFirst().properties().get("width"));
+        assertEquals("#182026",
+                document.rules().getFirst().properties().get("background-color"));
+    }
+
+    @Test
+    void rootVariablesRemainClosedBoundedAndLocated() {
+        for (String cssText : List.of(
+                ":root { --a: var(--missing); } button { width: var(--a); }",
+                ":root { --a: var(--b); --b: var(--a); } button { width: 1px; }",
+                ":root { --a: 1px; } :root { --b: 2px; } button { width: 1px; }",
+                ":root { --bad.name: 1px; } button { width: 1px; }",
+                ":root { --a: 1px; } button { width: calc(var(--a) + 1px); }",
+                ":root { --a: 1px; } button { width: var(--a, 2px); }")) {
+            assertThrows(MarkupException.class, () -> parser.parse(cssText), cssText);
+        }
+
+        StringBuilder variables = new StringBuilder(":root {");
+        for (int index = 0; index <= CssVariables.MAX_VARIABLES; index++) {
+            variables.append("--v").append(index).append(": 1px;");
+        }
+        variables.append("} button { width: 1px; }");
+        MarkupException tooMany = assertThrows(MarkupException.class,
+                () -> parser.parse(variables.toString()));
+        assertEquals(MarkupException.Kind.TOO_LARGE, tooMany.kind());
+
+        MarkupException postValidation = assertThrows(MarkupException.class, () -> parser.parse("""
+                :root { --bad-width: #fff; }
+                button {
+                  width: var(--bad-width);
+                }
+                """));
+        assertEquals(3, postValidation.line());
+        assertEquals(3, postValidation.column());
+
+        StringBuilder depth16 = new StringBuilder(":root {");
+        for (int index = 1; index < 16; index++) {
+            depth16.append("--v").append(index).append(": var(--v")
+                    .append(index + 1).append(");");
+        }
+        depth16.append("--v16: 8px; } button { width: var(--v1); }");
+        assertEquals("8px", parser.parse(depth16.toString()).rules().getFirst()
+                .properties().get("width"));
+
+        StringBuilder depth17 = new StringBuilder(":root {");
+        for (int index = 1; index < 17; index++) {
+            depth17.append("--v").append(index).append(": var(--v")
+                    .append(index + 1).append(");");
+        }
+        depth17.append("--v17: 8px; } button { width: var(--v1); }");
+        assertThrows(MarkupException.class, () -> parser.parse(depth17.toString()));
+    }
+
+    @Test
     void specificityOrdering() {
         CssDocument document = parser.parse("""
                 button { color: from-tag; }
@@ -313,7 +477,7 @@ final class CssTest {
     @Test
     void unparseableSelectorFails() {
         MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse(
-                "button > span { color: red; }"));
+                "button + label { color: red; }"));
         assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
         assertTrue(failure.getMessage().contains("selector"));
     }
@@ -321,9 +485,23 @@ final class CssTest {
     @Test
     void unknownPseudoStateFails() {
         MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse(
-                "button:focus { color: red; }"));
+                "button:visited { color: red; }"));
         assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
-        assertTrue(failure.getMessage().contains("focus"));
+        assertTrue(failure.getMessage().contains("visited"));
+    }
+
+    @Test
+    void focusPseudoIsClosedToTextFieldFocusedStyleFields() {
+        parser.parse("textfield:focus { background: field-focused; font-color: accent; }");
+        for (String invalid : List.of(
+                "label:focus { color: accent; }",
+                "textfield:focus { padding: 2px; }",
+                "textfield:focus { background-color: #fff; }")) {
+            MarkupException failure = assertThrows(MarkupException.class,
+                    () -> parser.parse(invalid), invalid);
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+            assertTrue(failure.getMessage().contains("focus"));
+        }
     }
 
     @Test

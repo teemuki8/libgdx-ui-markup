@@ -79,7 +79,10 @@ public final class MarkupBuilder {
         Set<String> states = new HashSet<>();
         for (CssRule rule : css.rules()) {
             for (Selector selector : rule.selectors()) {
-                if (selector.tag() == null && selector.pseudo() != null) {
+                if (selector.pseudo() != null
+                        && (selector.tag() == null || selector.id() != null
+                        || selector.parts().getFirst().classNames().size() > 1
+                        || selector.parts().size() > 1)) {
                     states.add(selector.pseudo());
                 }
             }
@@ -138,8 +141,13 @@ public final class MarkupBuilder {
         }
         Group root = new Group();
         walk.pushRootPath("ui");
-        walk.addChildren(root, null, document.root().children());
-        walk.popRootPath();
+        walk.ancestors.add(document.root());
+        try {
+            walk.addChildren(root, null, document.root().children());
+        } finally {
+            walk.ancestors.removeLast();
+            walk.popRootPath();
+        }
         return new BuiltUi(root, walk.actors());
     }
 
@@ -159,6 +167,7 @@ public final class MarkupBuilder {
         private final ElementPathTracker paths = new ElementPathTracker();
         private final IdentityHashMap<Element, Map<String, ResolvedStyle>> styleCache =
                 new IdentityHashMap<>();
+        private final List<Element> ancestors = new ArrayList<>();
         private int elements;
         private int depth;
 
@@ -179,7 +188,10 @@ public final class MarkupBuilder {
             if (style == null) {
                 // The element's path frame is entered for every caller, so the current tracked
                 // path is this element's own; limit failures then report the full path.
-                style = resolver.resolve(element, pseudo, paths.current());
+                int ancestorCount = !ancestors.isEmpty()
+                        && ancestors.getLast() == element ? ancestors.size() - 1 : ancestors.size();
+                style = resolver.resolve(element, List.copyOf(ancestors.subList(0,
+                        ancestorCount)), pseudo, paths.current());
                 byPseudo.put(pseudo, style);
             }
             return style;
@@ -246,10 +258,13 @@ public final class MarkupBuilder {
             int line = element.line();
             int column = element.column();
             enter(path, line, column);
+            boolean pushed = false;
             try {
                 if (displayNone(element)) {
                     return null;
                 }
+                ancestors.add(element);
+                pushed = true;
                 Actor actor = switch (element.tag()) {
                     case "ui" -> throw new MarkupException(MarkupException.Kind.INVALID_VALUE,
                             path, line, column, "<ui> must be the document root");
@@ -271,6 +286,9 @@ public final class MarkupBuilder {
                 }
                 return actor;
             } finally {
+                if (pushed) {
+                    ancestors.removeLast();
+                }
                 exit();
             }
         }

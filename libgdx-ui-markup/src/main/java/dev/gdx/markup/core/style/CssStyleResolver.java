@@ -90,28 +90,26 @@ public final class CssStyleResolver {
      * limits and can never wrap even when a limit is {@link Integer#MAX_VALUE}.
      */
     public ResolvedStyle resolve(Element element, String pseudo, String path) {
+        return resolve(element, List.of(), pseudo, path);
+    }
+
+    /** Resolves with immutable root-to-parent ancestry for structural selector matching. */
+    public ResolvedStyle resolve(Element element, List<Element> ancestors, String pseudo,
+            String path) {
         Objects.requireNonNull(element, "element");
+        List<Element> immutableAncestors = List.copyOf(Objects.requireNonNull(ancestors,
+                "ancestors"));
         String diagnosticPath = path != null ? path : element.tag();
-        int comparisons = 0;
+        int[] comparisons = {0};
         List<Candidate> matching = new ArrayList<>();
         for (CssRule rule : rules) {
             int bestSpecificity = -1;
             for (Selector selector : rule.selectors()) {
-                if (comparisons >= maxComparisonsPerResolve) {
-                    throw tooLarge(diagnosticPath, element, "style resolution for <"
-                            + element.tag() + "> exceeds the " + maxComparisonsPerResolve
-                            + "-comparison limit");
-                }
-                comparisons++;
-                if (comparisonsThisBuild >= maxComparisonsPerBuild) {
-                    throw tooLarge(diagnosticPath, element, "style resolution exceeds the "
-                            + maxComparisonsPerBuild + "-comparison build limit");
-                }
-                comparisonsThisBuild++;
                 // Every matching part of a comma group counts; the strongest part scores the
                 // whole rule, so `button, #save` beats a class rule even though `button` also
                 // matches.
-                if (selector.matches(element.tag(), element.id(), element.classes(), pseudo)
+                if (matches(selector, element, immutableAncestors, pseudo, comparisons,
+                        diagnosticPath)
                         && selector.specificity() > bestSpecificity) {
                     bestSpecificity = selector.specificity();
                 }
@@ -131,6 +129,51 @@ public final class CssStyleResolver {
                     builder.put(property, value, candidate.rule));
         }
         return builder.build();
+    }
+
+    private boolean matches(Selector selector, Element element, List<Element> ancestors,
+            String pseudo, int[] comparisons, String path) {
+        if (!matchesPart(selector.parts().getFirst(), element, pseudo, comparisons, path,
+                element)) {
+            return false;
+        }
+        return matchAncestors(selector, 1, ancestors, ancestors.size() - 1, comparisons, path,
+                element);
+    }
+
+    private boolean matchAncestors(Selector selector, int partIndex, List<Element> ancestors,
+            int ancestorIndex, int[] comparisons, String path, Element target) {
+        if (partIndex >= selector.parts().size()) return true;
+        SelectorPart part = selector.parts().get(partIndex);
+        if (part.combinator() == SelectorPart.Combinator.CHILD) {
+            return ancestorIndex >= 0 && matchesPart(part, ancestors.get(ancestorIndex), null,
+                    comparisons, path, target)
+                    && matchAncestors(selector, partIndex + 1, ancestors, ancestorIndex - 1,
+                            comparisons, path, target);
+        }
+        for (int candidate = ancestorIndex; candidate >= 0; candidate--) {
+            if (matchesPart(part, ancestors.get(candidate), null, comparisons, path, target)
+                    && matchAncestors(selector, partIndex + 1, ancestors, candidate - 1,
+                            comparisons, path, target)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean matchesPart(SelectorPart part, Element candidate, String pseudo,
+            int[] comparisons, String path, Element target) {
+        if (comparisons[0] >= maxComparisonsPerResolve) {
+            throw tooLarge(path, target, "style resolution for <" + target.tag()
+                    + "> exceeds the " + maxComparisonsPerResolve + "-comparison limit");
+        }
+        comparisons[0]++;
+        if (comparisonsThisBuild >= maxComparisonsPerBuild) {
+            throw tooLarge(path, target, "style resolution exceeds the "
+                    + maxComparisonsPerBuild + "-comparison build limit");
+        }
+        comparisonsThisBuild++;
+        return part.matches(candidate.tag(), candidate.id(), candidate.classes(), pseudo);
     }
 
     private static MarkupException tooLarge(String path, Element element, String message) {
