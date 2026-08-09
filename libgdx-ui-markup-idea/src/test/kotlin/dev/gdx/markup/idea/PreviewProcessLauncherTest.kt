@@ -75,9 +75,24 @@ class PreviewProcessLauncherTest {
         val dir = createTempDirectory("ui")
         val ui = dir.resolve("signin.xml")
         Files.writeString(ui, "<ui/>")
-        assertNull(PreviewProcessLauncher.siblingCss(ui), "no css yet")
+        assertNull(PreviewProcessLauncher.siblingCss(ui), "no stylesheet yet")
         Files.writeString(dir.resolve("signin.css"), "")
         assertEquals(dir.resolve("signin.css"), PreviewProcessLauncher.siblingCss(ui))
+    }
+
+    @Test
+    fun siblingCssPrefersCanonicalGdxCssAndFallsBackToLegacyCss() {
+        val dir = createTempDirectory("ui")
+        val ui = dir.resolve("signin.xml")
+        val legacy = dir.resolve("signin.css")
+        val canonical = dir.resolve("signin.gdxcss")
+        Files.writeString(ui, "<ui/>")
+        Files.writeString(legacy, "")
+        Files.writeString(canonical, "")
+
+        assertEquals(canonical, PreviewProcessLauncher.siblingCss(ui))
+        Files.delete(canonical)
+        assertEquals(legacy, PreviewProcessLauncher.siblingCss(ui))
     }
 
     @Test

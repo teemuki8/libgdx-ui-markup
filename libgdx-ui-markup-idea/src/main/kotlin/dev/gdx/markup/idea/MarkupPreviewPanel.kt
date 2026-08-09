@@ -92,7 +92,7 @@ class MarkupPreviewPanel(private val project: Project, private val toolWindow: T
             return
         }
         val css = PreviewProcessLauncher.siblingCss(ui) ?: run {
-            setStatus("no sibling .css file for ${ui.fileName}", false)
+            setStatus("no sibling .gdxcss or legacy .css file for ${ui.fileName}", false)
             return
         }
         setStatus("launching ${ui.fileName}…", false)
