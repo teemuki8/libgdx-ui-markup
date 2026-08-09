@@ -634,9 +634,7 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
                     }
                     for (WatchEvent<?> event : key.pollEvents()) {
                         Object context = event.context();
-                        if (context instanceof Path name
-                                && (name.toString().endsWith(".xml")
-                                || name.toString().endsWith(".css"))) {
+                        if (context instanceof Path name && isWatchedSource(name)) {
                             reloadPending = true;
                             reloadRequestedNanos = System.nanoTime();
                         }
@@ -647,6 +645,12 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
         } catch (IOException failure) {
             System.err.println("markup-watcher: hot reload unavailable: " + failure.getMessage());
         }
+    }
+
+    static boolean isWatchedSource(Path name) {
+        String value = name.toString();
+        return value.endsWith(".xml") || value.endsWith(".gdxcss")
+                || value.endsWith(".css");
     }
 
     @Override public void render() {
