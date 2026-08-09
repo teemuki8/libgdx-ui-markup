@@ -23,8 +23,11 @@ class EcosystemProfileContractTest(unittest.TestCase):
 
     def test_no_dynamic_teemuki8_versions_are_declared(self):
         catalog = (ROOT / "gradle/libs.versions.toml").read_text(encoding="utf-8")
+        verification = (ROOT / "gradle/verification-metadata.xml").read_text(
+            encoding="utf-8")
         for forbidden in ("latest.release", "latest.integration", "+\""):
             self.assertNotIn(forbidden, catalog)
+        self.assertNotIn('<trusting group="io.github.teemuki8"/>', verification)
 
     def test_ci_and_release_execute_both_profiles(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
