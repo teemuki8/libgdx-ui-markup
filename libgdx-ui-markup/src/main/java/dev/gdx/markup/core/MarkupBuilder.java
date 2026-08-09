@@ -5,6 +5,7 @@ import com.badlogic.gdx.scenes.scene2d.Group;
 import com.badlogic.gdx.scenes.scene2d.Touchable;
 import com.badlogic.gdx.scenes.scene2d.ui.Button;
 import com.badlogic.gdx.scenes.scene2d.ui.CheckBox;
+import com.badlogic.gdx.scenes.scene2d.ui.Image;
 import com.badlogic.gdx.scenes.scene2d.ui.Label;
 import com.badlogic.gdx.scenes.scene2d.ui.ProgressBar;
 import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane;
@@ -19,6 +20,7 @@ import com.badlogic.gdx.scenes.scene2d.ui.Value;
 import com.badlogic.gdx.scenes.scene2d.ui.Window;
 import com.badlogic.gdx.scenes.scene2d.utils.Drawable;
 import com.badlogic.gdx.utils.Align;
+import com.badlogic.gdx.utils.Scaling;
 import dev.gdx.markup.core.style.CssDocument;
 import dev.gdx.markup.core.style.CssLength;
 import dev.gdx.markup.core.style.CssRule;
@@ -859,6 +861,79 @@ public final class MarkupBuilder {
                 int horizontal = label.getLabelAlign() & (Align.left | Align.right);
                 label.setAlignment(horizontal | verticalAlignOf(base.get("vertical-align")));
             }
+            applyTextAndImageProperties(element, actor, base);
+        }
+
+        private void applyTextAndImageProperties(Element element, Actor actor,
+                ResolvedStyle style) {
+            if (style.has("white-space")) {
+                if (!(actor instanceof Label label)) {
+                    throw unsupportedTarget(element, style, "white-space",
+                            "property \"white-space\" requires a Label actor");
+                }
+                label.setWrap("normal".equals(style.get("white-space")));
+            }
+            if (style.has("text-overflow")) {
+                if (!(actor instanceof Label label)) {
+                    throw unsupportedTarget(element, style, "text-overflow",
+                            "property \"text-overflow\" requires a Label actor");
+                }
+                label.setEllipsis("ellipsis".equals(style.get("text-overflow")));
+            }
+            if (style.has("object-fit")) {
+                if (!(actor instanceof Image image)) {
+                    throw unsupportedTarget(element, style, "object-fit",
+                            "property \"object-fit\" requires an Image actor");
+                }
+                image.setScaling(scalingOf(style.get("object-fit")));
+            }
+            if (style.has("object-position")) {
+                if (!(actor instanceof Image image)) {
+                    throw unsupportedTarget(element, style, "object-position",
+                            "property \"object-position\" requires an Image actor");
+                }
+                image.setAlign(objectAlignOf(style.get("object-position")));
+            }
+        }
+
+        private Scaling scalingOf(String value) {
+            return switch (value) {
+                case "contain" -> Scaling.fit;
+                case "cover" -> Scaling.fill;
+                case "fill" -> Scaling.stretch;
+                case "none" -> Scaling.none;
+                default -> throw new AssertionError("validated object-fit " + value);
+            };
+        }
+
+        private int objectAlignOf(String value) {
+            String[] parts = value.split("\\s+");
+            String horizontal;
+            String vertical;
+            if (parts.length == 1) {
+                horizontal = switch (parts[0]) {
+                    case "left", "right" -> parts[0];
+                    default -> "center";
+                };
+                vertical = switch (parts[0]) {
+                    case "top", "bottom" -> parts[0];
+                    default -> "center";
+                };
+            } else {
+                horizontal = parts[0];
+                vertical = parts[1];
+            }
+            int alignment = switch (horizontal) {
+                case "left" -> Align.left;
+                case "right" -> Align.right;
+                default -> 0;
+            };
+            alignment |= switch (vertical) {
+                case "top" -> Align.top;
+                case "bottom" -> Align.bottom;
+                default -> 0;
+            };
+            return alignment == 0 ? Align.center : alignment;
         }
 
         /**

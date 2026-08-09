@@ -56,11 +56,15 @@ public final class CssParser {
     private static final Set<String> VISIBILITIES = Set.of("visible", "hidden");
     private static final Set<String> OVERFLOWS = Set.of("visible", "hidden");
     private static final Set<String> VERTICAL_ALIGNS = Set.of("top", "middle", "bottom");
+    private static final Set<String> WHITE_SPACES = Set.of("normal", "nowrap");
+    private static final Set<String> TEXT_OVERFLOWS = Set.of("clip", "ellipsis");
+    private static final Set<String> OBJECT_FITS = Set.of("contain", "cover", "fill", "none");
     private static final Set<String> RESPONSIVE_DIMENSIONS = Set.of(
             "width", "height", "min-width", "min-height", "max-width", "max-height");
     private static final Set<String> BASE_STATE_ONLY = Set.of(
             "font-size", "display", "gap", "row-gap", "column-gap", "visibility",
-            "overflow", "vertical-align");
+            "overflow", "vertical-align", "white-space", "text-overflow", "object-fit",
+            "object-position");
 
     private static final Map<String, PropertyKind> PROPERTIES = properties();
 
@@ -78,12 +82,17 @@ public final class CssParser {
         VISIBILITY,
         OVERFLOW,
         VERTICAL_ALIGN,
+        WHITE_SPACE,
+        TEXT_OVERFLOW,
+        OBJECT_FIT,
+        OBJECT_POSITION,
     }
 
     private static Map<String, PropertyKind> properties() {
         Map<String, PropertyKind> map = new LinkedHashMap<>();
         map.put("color", PropertyKind.COLOR);
         map.put("font", PropertyKind.FONT);
+        map.put("font-family", PropertyKind.FONT);
         map.put("font-size", PropertyKind.FONT_SIZE);
         map.put("font-color", PropertyKind.COLOR);
         map.put("background-color", PropertyKind.COLOR);
@@ -109,6 +118,10 @@ public final class CssParser {
         map.put("overflow", PropertyKind.OVERFLOW);
         map.put("vertical-align", PropertyKind.VERTICAL_ALIGN);
         map.put("text-align", PropertyKind.TEXT_ALIGN);
+        map.put("white-space", PropertyKind.WHITE_SPACE);
+        map.put("text-overflow", PropertyKind.TEXT_OVERFLOW);
+        map.put("object-fit", PropertyKind.OBJECT_FIT);
+        map.put("object-position", PropertyKind.OBJECT_POSITION);
         map.put("visible", PropertyKind.BOOLEAN);
         return Map.copyOf(map);
     }
@@ -412,7 +425,11 @@ public final class CssParser {
             throw styleError(line, column, "rule exceeds the " + MAX_DECLARATIONS
                     + "-declaration limit");
         }
-        properties.put(name, value);
+        properties.put(canonicalProperty(name), value);
+    }
+
+    private static String canonicalProperty(String name) {
+        return "font-family".equals(name) ? "font" : name;
     }
 
     private static String validate(PropertyKind kind, String name, String value) {
@@ -435,7 +452,25 @@ public final class CssParser {
             case OVERFLOW -> enumValue(value, OVERFLOWS, "visible or hidden");
             case VERTICAL_ALIGN -> enumValue(value, VERTICAL_ALIGNS,
                     "top, middle, or bottom");
+            case WHITE_SPACE -> enumValue(value, WHITE_SPACES, "normal or nowrap");
+            case TEXT_OVERFLOW -> enumValue(value, TEXT_OVERFLOWS, "clip or ellipsis");
+            case OBJECT_FIT -> enumValue(value, OBJECT_FITS, "contain, cover, fill, or none");
+            case OBJECT_POSITION -> validateObjectPosition(value);
         };
+    }
+
+    private static String validateObjectPosition(String value) {
+        String[] parts = value.split("\\s+");
+        if (parts.length == 1 && Set.of("left", "center", "right", "top", "bottom")
+                .contains(parts[0])) {
+            return null;
+        }
+        if (parts.length == 2 && Set.of("left", "center", "right").contains(parts[0])
+                && Set.of("top", "center", "bottom").contains(parts[1])) {
+            return null;
+        }
+        return "expected one alignment keyword or horizontal then vertical alignment; got \""
+                + value + "\"";
     }
 
     private static String validateColor(String value) {

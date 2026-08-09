@@ -18,6 +18,7 @@ import com.badlogic.gdx.graphics.g2d.BitmapFont;
 import com.badlogic.gdx.scenes.scene2d.Actor;
 import com.badlogic.gdx.scenes.scene2d.Group;
 import com.badlogic.gdx.scenes.scene2d.ui.CheckBox;
+import com.badlogic.gdx.scenes.scene2d.ui.Image;
 import com.badlogic.gdx.scenes.scene2d.ui.Label;
 import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane;
 import com.badlogic.gdx.scenes.scene2d.ui.SelectBox;
@@ -29,6 +30,8 @@ import com.badlogic.gdx.scenes.scene2d.ui.TextField;
 import com.badlogic.gdx.scenes.scene2d.ui.Window;
 import com.badlogic.gdx.scenes.scene2d.utils.Drawable;
 import com.badlogic.gdx.scenes.scene2d.utils.SpriteDrawable;
+import com.badlogic.gdx.utils.Align;
+import com.badlogic.gdx.utils.Scaling;
 import dev.gdx.markup.core.style.CssDocument;
 import dev.gdx.markup.core.style.CssParser;
 import java.nio.charset.StandardCharsets;
@@ -670,6 +673,104 @@ final class MarkupBuilderTest {
             assertEquals(MarkupException.Kind.UNRESOLVED_STYLE, failure.kind());
             assertEquals("ui/label", failure.elementPath());
             assertTrue(failure.getMessage().contains("white"));
+
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void whiteSpaceAndTextOverflowMapOnlyToLabels() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupRegistry registry = MarkupRegistry.defaultRegistry();
+            registry.register("label", (element, context) -> new RecordingLabel(
+                    element.text(), context.resolveStyle(Label.LabelStyle.class)));
+
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <label id="wrapped" class="wrapped">Long copy</label>
+                      <label id="clipped" class="clipped">Short copy</label>
+                    </ui>
+                    """), css.parse("""
+                    .wrapped { white-space: normal; text-overflow: ellipsis; }
+                    .clipped { white-space: nowrap; text-overflow: clip; }
+                    """), skin, new NoopSink(), registry);
+
+            RecordingLabel wrapped = built.root().findActor("wrapped");
+            RecordingLabel clipped = built.root().findActor("clipped");
+            assertTrue(wrapped.getWrap());
+            assertTrue(wrapped.ellipsis);
+            assertFalse(clipped.getWrap());
+            assertFalse(clipped.ellipsis);
+
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void objectFitAndPositionMapToImageScalingAndAlignment() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupRegistry registry = MarkupRegistry.defaultRegistry();
+            registry.register("image", (element, context) -> new RecordingImage(
+                    context.requireDrawable(element.attr("drawable"))));
+
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <image id="cover" class="cover" drawable="accent"/>
+                      <image id="contain" class="contain" drawable="accent"/>
+                      <image id="fill" class="fill" drawable="accent"/>
+                      <image id="none" class="none" drawable="accent"/>
+                    </ui>
+                    """), css.parse("""
+                    .cover { object-fit: cover; object-position: right bottom; }
+                    .contain { object-fit: contain; object-position: center top; }
+                    .fill { object-fit: fill; object-position: left; }
+                    .none { object-fit: none; object-position: center; }
+                    """), skin, new NoopSink(), registry);
+
+            RecordingImage cover = built.root().findActor("cover");
+            RecordingImage contain = built.root().findActor("contain");
+            RecordingImage fill = built.root().findActor("fill");
+            RecordingImage none = built.root().findActor("none");
+            assertSame(Scaling.fill, cover.scaling);
+            assertEquals(Align.right | Align.bottom, cover.getAlign());
+            assertSame(Scaling.fit, contain.scaling);
+            assertEquals(Align.top, contain.getAlign());
+            assertSame(Scaling.stretch, fill.scaling);
+            assertEquals(Align.left, fill.getAlign());
+            assertSame(Scaling.none, none.scaling);
+            assertEquals(Align.center, none.getAlign());
+
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void textAndImagePropertiesFailOnIncompatibleTargetsAtCssSource() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupException textFailure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse(
+                            "<ui><button class=\"bad\"/></ui>"), css.parse("""
+
+                            .bad { white-space: normal; }
+                            """), skin, new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, textFailure.kind());
+            assertEquals("css", textFailure.elementPath());
+            assertEquals(2, textFailure.line());
+            assertTrue(textFailure.getMessage().contains("Label"));
+
+            MarkupException imageFailure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse(
+                            "<ui><label class=\"bad\">X</label></ui>"), css.parse("""
+
+                            .bad { object-fit: contain; }
+                            """), skin, new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, imageFailure.kind());
+            assertEquals("css", imageFailure.elementPath());
+            assertEquals(2, imageFailure.line());
+            assertTrue(imageFailure.getMessage().contains("Image"));
 
             skin.dispose();
         });
@@ -1318,6 +1419,36 @@ final class MarkupBuilderTest {
             assertEquals(1, first.disposeCount, "repeated failure leaks no pixmap");
             assertEquals(1, second.disposeCount, "repeated failure leaks no pixmap");
         });
+    }
+
+    /** Label test double exposing the write-only Scene2D ellipsis setting. */
+    private static final class RecordingLabel extends Label {
+        private boolean ellipsis;
+
+        RecordingLabel(CharSequence text, LabelStyle style) {
+            super(text, style);
+        }
+
+        @Override
+        public void setEllipsis(boolean ellipsis) {
+            super.setEllipsis(ellipsis);
+            this.ellipsis = ellipsis;
+        }
+    }
+
+    /** Image test double exposing the write-only Scene2D scaling setting. */
+    private static final class RecordingImage extends Image {
+        private Scaling scaling;
+
+        RecordingImage(Drawable drawable) {
+            super(drawable);
+        }
+
+        @Override
+        public void setScaling(Scaling scaling) {
+            super.setScaling(scaling);
+            this.scaling = scaling;
+        }
     }
 
     /** Counts {@link Pixmap#dispose()} calls so ownership tests can assert exactly-once disposal. */

@@ -109,6 +109,46 @@ final class CssTest {
     }
 
     @Test
+    void normalizesFontFamilyAliasByDeclarationSourceOrder() {
+        CssDocument legacyLast = parser.parse("""
+                label { font-family: heading; font: inter; }
+                """);
+        assertEquals(Map.of("font", "inter"), legacyLast.rules().getFirst().properties());
+
+        CssDocument standardLast = parser.parse("""
+                label { font: inter; font-family: heading; }
+                """);
+        assertEquals(Map.of("font", "heading"), standardLast.rules().getFirst().properties());
+        assertFalse(standardLast.rules().getFirst().properties().containsKey("font-family"));
+    }
+
+    @Test
+    void parsesClosedTextAndImagePropertyValues() {
+        CssDocument document = parser.parse("""
+                label { white-space: normal; text-overflow: ellipsis; }
+                image { object-fit: cover; object-position: right bottom; }
+                """);
+        assertEquals("normal", document.rules().get(0).properties().get("white-space"));
+        assertEquals("ellipsis", document.rules().get(0).properties().get("text-overflow"));
+        assertEquals("cover", document.rules().get(1).properties().get("object-fit"));
+        assertEquals("right bottom",
+                document.rules().get(1).properties().get("object-position"));
+
+        for (String value : List.of("pre", "pre-wrap")) {
+            assertThrows(MarkupException.class,
+                    () -> parser.parse("label { white-space: " + value + "; }"));
+        }
+        assertThrows(MarkupException.class,
+                () -> parser.parse("label { text-overflow: fade; }"));
+        assertThrows(MarkupException.class,
+                () -> parser.parse("image { object-fit: scale-down; }"));
+        assertThrows(MarkupException.class,
+                () -> parser.parse("image { object-position: top left; }"));
+        assertThrows(MarkupException.class,
+                () -> parser.parse("image:hover { object-fit: contain; }"));
+    }
+
+    @Test
     void malformedColorReportsExactDeclarationCoordinates() {
         MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse("""
                 button {
