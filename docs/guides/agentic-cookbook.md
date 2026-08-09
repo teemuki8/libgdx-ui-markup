@@ -152,9 +152,10 @@ the semantic widget tag that matches the control. If an application-specific act
 emit it through that tag's factory/semantic integration rather than adding an unrecognized
 attribute.
 
-Prefer the narrowest stable locator, usually the declared test id. Use strict resolution for
-every action and comparison. Zero matches means the declared contract is absent; multiple matches
-means it is ambiguous. Do not convert either result into “pick the first actor.”
+Prefer the narrowest stable locator, usually the declared test id. Use the harness
+`StrictResolution` policy for every action and comparison. Zero matches means the declared
+contract is absent; multiple matches means it is ambiguous. Do not convert either result into
+“pick the first actor.”
 
 The executable proof queries `role=button, name=Save`, asserts exactly one `testId=save`, clicks,
 waits, fills a text field, compares runtime state, and captures a screenshot through the real MCP
