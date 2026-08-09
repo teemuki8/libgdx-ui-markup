@@ -224,6 +224,65 @@ final class CssTest {
     }
 
     @Test
+    void parsesBoundedCompoundAndStructuralSelectorAst() {
+        CssDocument document = parser.parse("""
+                * { color: text; }
+                table.shell > group.content.primary label#title.emphasis:hover { color: accent; }
+                button:active { color: pressed; }
+                textfield:focus { color: accent; }
+                table/* separator */>/* separator */button { opacity: 1; }
+                """);
+
+        Selector universal = document.rules().get(0).selectors().getFirst();
+        assertEquals(1, universal.parts().size());
+        assertNull(universal.tag());
+        assertEquals(0, universal.specificity());
+
+        Selector structural = document.rules().get(1).selectors().getFirst();
+        assertEquals(3, structural.parts().size());
+        assertEquals("label", structural.tag());
+        assertEquals("title", structural.id());
+        assertEquals("emphasis", structural.className());
+        assertEquals("hover", structural.pseudo());
+        assertEquals(153, structural.specificity());
+        assertEquals(SelectorPart.Combinator.SELF,
+                structural.parts().get(0).combinator());
+        assertEquals(List.of("emphasis"), structural.parts().get(0).classNames());
+        assertEquals(SelectorPart.Combinator.DESCENDANT,
+                structural.parts().get(1).combinator());
+        assertEquals(List.of("content", "primary"),
+                structural.parts().get(1).classNames());
+        assertEquals(SelectorPart.Combinator.CHILD,
+                structural.parts().get(2).combinator());
+
+        assertEquals("pressed", document.rules().get(2).selectors().getFirst().pseudo(),
+                ":active is the source-compatible spelling of the pressed state");
+        assertEquals("focus", document.rules().get(3).selectors().getFirst().pseudo());
+        assertEquals(2, document.rules().get(4).selectors().getFirst().parts().size(),
+                "comments are selector whitespace, including around child combinators");
+    }
+
+    @Test
+    void selectorStructureAndGrammarRemainClosedAndBounded() {
+        String eight = "ui table group table group table group button";
+        assertEquals(8, parser.parse(eight + " { color: text; }")
+                .rules().getFirst().selectors().getFirst().parts().size());
+
+        MarkupException tooDeep = assertThrows(MarkupException.class, () -> parser.parse(
+                "ui table group table group table group table button { color: text; }"));
+        assertEquals(MarkupException.Kind.TOO_LARGE, tooDeep.kind());
+
+        for (String selector : List.of(
+                "button + label", "button ~ label", "button[disabled]", "button::after",
+                "button:not(.primary)", "button:has(label)", "button >",
+                "> button", "table button:hover label", "button#one#two")) {
+            MarkupException failure = assertThrows(MarkupException.class,
+                    () -> parser.parse(selector + " { color: text; }"), selector);
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind(), selector);
+        }
+    }
+
+    @Test
     void specificityOrdering() {
         CssDocument document = parser.parse("""
                 button { color: from-tag; }
@@ -313,7 +372,7 @@ final class CssTest {
     @Test
     void unparseableSelectorFails() {
         MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse(
-                "button > span { color: red; }"));
+                "button + label { color: red; }"));
         assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
         assertTrue(failure.getMessage().contains("selector"));
     }
@@ -321,9 +380,9 @@ final class CssTest {
     @Test
     void unknownPseudoStateFails() {
         MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse(
-                "button:focus { color: red; }"));
+                "button:visited { color: red; }"));
         assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
-        assertTrue(failure.getMessage().contains("focus"));
+        assertTrue(failure.getMessage().contains("visited"));
     }
 
     @Test

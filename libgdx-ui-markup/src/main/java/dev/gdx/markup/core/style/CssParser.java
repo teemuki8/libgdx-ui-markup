@@ -47,12 +47,8 @@ public final class CssParser {
     private static final Pattern FONT_SIZE = Pattern.compile("([0-9]+)(?:px)?");
     private static final Pattern NUMBER = Pattern.compile(
             "[+-]?(?:[0-9]+(?:\\.[0-9]+)?|\\.[0-9]+)");
-    private static final Pattern SIMPLE_SELECTOR = Pattern.compile(
-            "^([a-z][a-z0-9]*)(?:\\.([A-Za-z0-9_-]+))?$");
-    private static final Pattern CLASS_SELECTOR = Pattern.compile("^\\.([A-Za-z0-9_-]+)$");
-    private static final Pattern ID_SELECTOR = Pattern.compile("^#([A-Za-z0-9_-]+)$");
     private static final Set<String> PSEUDO_STATES = Set.of("hover", "pressed", "checked",
-            "disabled");
+            "disabled", "active", "focus");
     private static final Set<String> TEXT_ALIGNS = Set.of("left", "center", "right");
     private static final Set<String> DISPLAYS = Set.of("initial", "none");
     private static final Set<String> VISIBILITIES = Set.of("visible", "hidden");
@@ -313,7 +309,7 @@ public final class CssParser {
 
     private static List<Selector> parseSelectors(String text, int line, int column,
             int totalSelectors) {
-        String clean = removeComments(text).strip();
+        String clean = text.replaceAll("(?s)/\\*.*?\\*/", " ").strip();
         int partCount = validateSelectorParts(clean, line, column);
         if (partCount > MAX_SELECTORS_PER_GROUP) {
             throw tooLarge(line, column, "selector group exceeds the "
@@ -329,21 +325,7 @@ public final class CssParser {
             if (candidate.isEmpty()) {
                 throw styleError(line, column, "empty selector in \"" + clean + "\"");
             }
-            String pseudo = null;
-            int pseudoAt = candidate.indexOf(':');
-            if (pseudoAt >= 0) {
-                pseudo = candidate.substring(pseudoAt + 1).strip().toLowerCase(Locale.ROOT);
-                if (pseudo.isEmpty() || candidate.indexOf(':', pseudoAt + 1) >= 0) {
-                    throw styleError(line, column, "unparseable selector \"" + part.strip()
-                            + "\"");
-                }
-                if (!PSEUDO_STATES.contains(pseudo)) {
-                    throw styleError(line, column, "unknown pseudo-state \":" + pseudo
-                            + "\" in \"" + part.strip() + "\"");
-                }
-                candidate = candidate.substring(0, pseudoAt).strip();
-            }
-            selectors.add(parseSimple(candidate, pseudo, line, column));
+            selectors.add(parseStructural(candidate, line, column));
         }
         return List.copyOf(selectors);
     }
@@ -383,26 +365,111 @@ public final class CssParser {
         return partCount;
     }
 
-    private static Selector parseSimple(String candidate, String pseudo, int line, int column) {
-        Matcher tagClass = SIMPLE_SELECTOR.matcher(candidate);
-        if (tagClass.matches()) {
-            String tag = tagClass.group(1);
-            if (!TagSpec.VOCABULARY.containsKey(tag)) {
-                throw styleError(line, column, "selector \"" + candidate + "\" references unknown "
-                        + "tag <" + tag + ">");
+    private static Selector parseStructural(String candidate, int line, int column) {
+        ArrayList<SelectorPart> compounds = new ArrayList<>(Selector.MAX_PARTS);
+        ArrayList<SelectorPart.Combinator> relationships = new ArrayList<>(Selector.MAX_PARTS - 1);
+        int index = 0;
+        while (index < candidate.length()) {
+            while (index < candidate.length() && Character.isWhitespace(candidate.charAt(index))) index++;
+            if (index >= candidate.length() || candidate.charAt(index) == '>') {
+                throw selectorError(candidate, line, column);
             }
-            return new Selector(tag, null, tagClass.group(2), pseudo);
+            int start = index;
+            while (index < candidate.length() && !Character.isWhitespace(candidate.charAt(index))
+                    && candidate.charAt(index) != '>') index++;
+            if (compounds.size() >= Selector.MAX_PARTS) {
+                throw tooLarge(line, column, "selector exceeds the " + Selector.MAX_PARTS
+                        + "-part limit");
+            }
+            compounds.add(parseCompound(candidate.substring(start, index), line, column));
+            boolean spaced = false;
+            while (index < candidate.length() && Character.isWhitespace(candidate.charAt(index))) {
+                spaced = true;
+                index++;
+            }
+            if (index >= candidate.length()) break;
+            if (candidate.charAt(index) == '>') {
+                relationships.add(SelectorPart.Combinator.CHILD);
+                index++;
+                while (index < candidate.length() && Character.isWhitespace(candidate.charAt(index))) index++;
+                if (index >= candidate.length()) throw selectorError(candidate, line, column);
+            } else if (spaced) {
+                relationships.add(SelectorPart.Combinator.DESCENDANT);
+            } else {
+                throw selectorError(candidate, line, column);
+            }
         }
-        Matcher idMatch = ID_SELECTOR.matcher(candidate);
-        if (idMatch.matches()) {
-            return new Selector(null, idMatch.group(1), null, pseudo);
+        for (int part = 0; part < compounds.size() - 1; part++) {
+            if (compounds.get(part).pseudo() != null) throw selectorError(candidate, line, column);
         }
-        Matcher classMatch = CLASS_SELECTOR.matcher(candidate);
-        if (classMatch.matches()) {
-            return new Selector(null, null, classMatch.group(1), pseudo);
+        ArrayList<SelectorPart> reversed = new ArrayList<>(compounds.size());
+        for (int part = compounds.size() - 1; part >= 0; part--) {
+            SelectorPart value = compounds.get(part);
+            SelectorPart.Combinator combinator = part == compounds.size() - 1
+                    ? SelectorPart.Combinator.SELF : relationships.get(part);
+            reversed.add(new SelectorPart(value.tag(), value.id(), value.classNames(),
+                    value.pseudo(), combinator));
         }
-        throw styleError(line, column, "unparseable selector \"" + candidate
-                + "\" (supported: tag, .class, #id, tag.class, each with one pseudo-state)");
+        return new Selector(reversed);
+    }
+
+    private static SelectorPart parseCompound(String text, int line, int column) {
+        int index = 0;
+        String tag = null;
+        String id = null;
+        ArrayList<String> classes = new ArrayList<>();
+        String pseudo = null;
+        if (text.charAt(0) == '*') {
+            index++;
+        } else if (text.charAt(0) >= 'a' && text.charAt(0) <= 'z') {
+            int start = index++;
+            while (index < text.length() && Character.isLetterOrDigit(text.charAt(index))) index++;
+            tag = text.substring(start, index);
+            if (!TagSpec.VOCABULARY.containsKey(tag)) {
+                throw styleError(line, column, "selector \"" + text
+                        + "\" references unknown tag <" + tag + ">");
+            }
+        }
+        while (index < text.length()) {
+            char marker = text.charAt(index++);
+            if (marker != '.' && marker != '#' && marker != ':') {
+                throw selectorError(text, line, column);
+            }
+            int start = index;
+            while (index < text.length() && isSelectorIdentifier(text.charAt(index))) index++;
+            if (start == index) throw selectorError(text, line, column);
+            String value = text.substring(start, index);
+            if (marker == '.') {
+                classes.add(value);
+            } else if (marker == '#') {
+                if (id != null) throw selectorError(text, line, column);
+                id = value;
+            } else {
+                if (pseudo != null || index != text.length()) throw selectorError(text, line, column);
+                pseudo = value.toLowerCase(Locale.ROOT);
+                if (!PSEUDO_STATES.contains(pseudo)) {
+                    throw styleError(line, column, "unknown pseudo-state :" + pseudo
+                            + " in \"" + text + "\"");
+                }
+                if ("active".equals(pseudo)) pseudo = "pressed";
+            }
+        }
+        if (tag == null && id == null && classes.isEmpty() && text.charAt(0) != '*') {
+            throw selectorError(text, line, column);
+        }
+        try {
+            return new SelectorPart(tag, id, classes, pseudo, SelectorPart.Combinator.SELF);
+        } catch (IllegalArgumentException failure) {
+            throw selectorError(text, line, column);
+        }
+    }
+
+    private static boolean isSelectorIdentifier(char value) {
+        return Character.isLetterOrDigit(value) || value == '_' || value == '-';
+    }
+
+    private static MarkupException selectorError(String selector, int line, int column) {
+        return styleError(line, column, "unparseable selector \"" + selector + "\"");
     }
 
     private static void parseDeclaration(String raw, int line, int column,
