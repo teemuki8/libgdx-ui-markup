@@ -113,6 +113,8 @@ jobs:
         run: ./gradlew resolveAndLockAll --warning-mode=fail
       - name: Install Linux virtual display
         run: sudo apt-get update && sudo apt-get install --yes xvfb
+      - name: Qualify minimum and current ecosystem profiles
+        run: xvfb-run -a ./gradlew minimumEcosystemTest currentEcosystemTest --warning-mode=fail
       - name: Run release gate and create signed Central bundle
         shell: bash
         env:

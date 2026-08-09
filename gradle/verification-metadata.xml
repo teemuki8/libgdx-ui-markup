@@ -51,6 +51,10 @@
             <trusting group="com.squareup.retrofit2" name="retrofit" version="3.0.0" file="retrofit-3.0.0.jar"/>
             <trusting group="com.squareup.retrofit2" name="retrofit" version="3.0.0" file="retrofit-3.0.0.module"/>
          </trusted-key>
+         <trusted-key id="1DE5E75F1040F8B0DC3A4320F2B5B2B1B9B1180A">
+            <trusting group="com.google.re2j" name="re2j" version="1.8" file="re2j-1.8.jar"/>
+            <trusting group="com.google.re2j" name="re2j" version="1.8" file="re2j-1.8.pom"/>
+         </trusted-key>
          <trusted-key id="20B0D1DA0F0643E3FB281C1A93496A66B36BCD66">
             <trusting group="org.jcraft" name="jorbis" version="0.0.17" file="jorbis-0.0.17.jar"/>
             <trusting group="org.jcraft" name="jorbis" version="0.0.17" file="jorbis-0.0.17.pom"/>
@@ -148,18 +152,32 @@
          <trusted-key id="2EB8F98C568F89038071930EF0484A483AB9CC7B">
             <trusting group="io.github.teemuki8" name="agent-runtime-core" version="1.0.0" file="agent-runtime-core-1.0.0.jar"/>
             <trusting group="io.github.teemuki8" name="agent-runtime-core" version="1.0.0" file="agent-runtime-core-1.0.0.module"/>
+            <trusting group="io.github.teemuki8" name="agent-runtime-core" version="2.0.0" file="agent-runtime-core-2.0.0.jar"/>
+            <trusting group="io.github.teemuki8" name="agent-runtime-core" version="2.0.0" file="agent-runtime-core-2.0.0.module"/>
             <trusting group="io.github.teemuki8" name="harness-agent-runtime" version="1.1.0" file="harness-agent-runtime-1.1.0.jar"/>
             <trusting group="io.github.teemuki8" name="harness-agent-runtime" version="1.1.0" file="harness-agent-runtime-1.1.0.module"/>
+            <trusting group="io.github.teemuki8" name="harness-agent-runtime" version="1.2.0" file="harness-agent-runtime-1.2.0.jar"/>
+            <trusting group="io.github.teemuki8" name="harness-agent-runtime" version="1.2.0" file="harness-agent-runtime-1.2.0.module"/>
             <trusting group="io.github.teemuki8" name="harness-core" version="1.1.0" file="harness-core-1.1.0.jar"/>
             <trusting group="io.github.teemuki8" name="harness-core" version="1.1.0" file="harness-core-1.1.0.module"/>
+            <trusting group="io.github.teemuki8" name="harness-core" version="1.2.0" file="harness-core-1.2.0.jar"/>
+            <trusting group="io.github.teemuki8" name="harness-core" version="1.2.0" file="harness-core-1.2.0.module"/>
             <trusting group="io.github.teemuki8" name="harness-lwjgl3" version="1.1.0" file="harness-lwjgl3-1.1.0.jar"/>
             <trusting group="io.github.teemuki8" name="harness-lwjgl3" version="1.1.0" file="harness-lwjgl3-1.1.0.module"/>
+            <trusting group="io.github.teemuki8" name="harness-lwjgl3" version="1.2.0" file="harness-lwjgl3-1.2.0.jar"/>
+            <trusting group="io.github.teemuki8" name="harness-lwjgl3" version="1.2.0" file="harness-lwjgl3-1.2.0.module"/>
             <trusting group="io.github.teemuki8" name="harness-mcp" version="1.1.0" file="harness-mcp-1.1.0.jar"/>
             <trusting group="io.github.teemuki8" name="harness-mcp" version="1.1.0" file="harness-mcp-1.1.0.module"/>
+            <trusting group="io.github.teemuki8" name="harness-mcp" version="1.2.0" file="harness-mcp-1.2.0.jar"/>
+            <trusting group="io.github.teemuki8" name="harness-mcp" version="1.2.0" file="harness-mcp-1.2.0.module"/>
             <trusting group="io.github.teemuki8" name="harness-protocol" version="1.1.0" file="harness-protocol-1.1.0.jar"/>
             <trusting group="io.github.teemuki8" name="harness-protocol" version="1.1.0" file="harness-protocol-1.1.0.module"/>
+            <trusting group="io.github.teemuki8" name="harness-protocol" version="1.2.0" file="harness-protocol-1.2.0.jar"/>
+            <trusting group="io.github.teemuki8" name="harness-protocol" version="1.2.0" file="harness-protocol-1.2.0.module"/>
             <trusting group="io.github.teemuki8" name="harness-scene2d" version="1.1.0" file="harness-scene2d-1.1.0.jar"/>
             <trusting group="io.github.teemuki8" name="harness-scene2d" version="1.1.0" file="harness-scene2d-1.1.0.module"/>
+            <trusting group="io.github.teemuki8" name="harness-scene2d" version="1.2.0" file="harness-scene2d-1.2.0.jar"/>
+            <trusting group="io.github.teemuki8" name="harness-scene2d" version="1.2.0" file="harness-scene2d-1.2.0.module"/>
          </trusted-key>
          <trusted-key id="2FC53E6B1F681184F4CCD637F5C81DE10A0B8ECC">
             <trusting group="org.snakeyaml" name="snakeyaml-engine" version="2.10" file="snakeyaml-engine-2.10.jar"/>
@@ -228,14 +246,14 @@
             <trusting group="com.badlogicgames.jlayer" name="jlayer" version="1.0.1-gdx" file="jlayer-1.0.1-gdx.pom"/>
          </trusted-key>
          <trusted-key id="60200AC4AE761F1614D6C46766D68DAA073BE985">
-            <trusting group="org.slf4j" name="slf4j-parent" version="2.0.16" file="slf4j-parent-2.0.16.pom"/>
-            <trusting group="org.slf4j" name="slf4j-bom" version="2.0.16" file="slf4j-bom-2.0.16.pom"/>
             <trusting group="org.slf4j" name="slf4j-api" version="2.0.16" file="slf4j-api-2.0.16.pom"/>
             <trusting group="org.slf4j" name="slf4j-api" version="2.0.17" file="slf4j-api-2.0.17.jar"/>
             <trusting group="org.slf4j" name="slf4j-api" version="2.0.17" file="slf4j-api-2.0.17.pom"/>
+            <trusting group="org.slf4j" name="slf4j-bom" version="2.0.16" file="slf4j-bom-2.0.16.pom"/>
             <trusting group="org.slf4j" name="slf4j-bom" version="2.0.17" file="slf4j-bom-2.0.17.pom"/>
             <trusting group="org.slf4j" name="slf4j-nop" version="2.0.17" file="slf4j-nop-2.0.17.jar"/>
             <trusting group="org.slf4j" name="slf4j-nop" version="2.0.17" file="slf4j-nop-2.0.17.pom"/>
+            <trusting group="org.slf4j" name="slf4j-parent" version="2.0.16" file="slf4j-parent-2.0.16.pom"/>
             <trusting group="org.slf4j" name="slf4j-parent" version="2.0.17" file="slf4j-parent-2.0.17.pom"/>
          </trusted-key>
          <trusted-key id="635EE627345F3C1DD422B2E207D3516820BCF6B1">
@@ -534,26 +552,26 @@
             <trusting group="software.amazon.awssdk" name="bom" version="2.11.9" file="bom-2.11.9.pom"/>
          </trusted-key>
          <trusted-key id="FF6E2C001948C5F2F38B0CC385911F425EC61B51">
-            <trusting group="org.junit" name="junit-bom" version="5.10.2" file="junit-bom-5.10.2.pom"/>
-            <trusting group="org.junit" name="junit-bom" version="5.14.3" file="junit-bom-5.14.3.pom"/>
-            <trusting group="org.junit" name="junit-bom" version="5.14.3" file="junit-bom-5.14.3.module"/>
-            <trusting group="org.junit" name="junit-bom" version="5.13.4" file="junit-bom-5.13.4.module"/>
-            <trusting group="org.junit" name="junit-bom" version="5.13.1" file="junit-bom-5.13.1.module"/>
-            <trusting group="org.junit" name="junit-bom" version="5.11.4" file="junit-bom-5.11.4.module"/>
-            <trusting group="org.junit" name="junit-bom" version="5.10.0" file="junit-bom-5.10.0.module"/>
-            <trusting group="org.junit.jupiter" name="junit-jupiter-api" version="5.10.1" file="junit-jupiter-api-5.10.1.module"/>
-            <trusting group="org.junit.jupiter" name="junit-jupiter-engine" version="5.10.1" file="junit-jupiter-engine-5.10.1.module"/>
             <trusting group="org.apiguardian" name="apiguardian-api" version="1.1.2" file="apiguardian-api-1.1.2.jar"/>
             <trusting group="org.apiguardian" name="apiguardian-api" version="1.1.2" file="apiguardian-api-1.1.2.module"/>
+            <trusting group="org.junit" name="junit-bom" version="5.10.0" file="junit-bom-5.10.0.module"/>
             <trusting group="org.junit" name="junit-bom" version="5.10.0" file="junit-bom-5.10.0.pom"/>
             <trusting group="org.junit" name="junit-bom" version="5.10.2" file="junit-bom-5.10.2.module"/>
+            <trusting group="org.junit" name="junit-bom" version="5.10.2" file="junit-bom-5.10.2.pom"/>
+            <trusting group="org.junit" name="junit-bom" version="5.11.4" file="junit-bom-5.11.4.module"/>
             <trusting group="org.junit" name="junit-bom" version="5.11.4" file="junit-bom-5.11.4.pom"/>
+            <trusting group="org.junit" name="junit-bom" version="5.13.1" file="junit-bom-5.13.1.module"/>
             <trusting group="org.junit" name="junit-bom" version="5.13.1" file="junit-bom-5.13.1.pom"/>
+            <trusting group="org.junit" name="junit-bom" version="5.13.4" file="junit-bom-5.13.4.module"/>
             <trusting group="org.junit" name="junit-bom" version="5.13.4" file="junit-bom-5.13.4.pom"/>
+            <trusting group="org.junit" name="junit-bom" version="5.14.3" file="junit-bom-5.14.3.module"/>
+            <trusting group="org.junit" name="junit-bom" version="5.14.3" file="junit-bom-5.14.3.pom"/>
             <trusting group="org.junit.jupiter" name="junit-jupiter" version="5.10.2" file="junit-jupiter-5.10.2.jar"/>
             <trusting group="org.junit.jupiter" name="junit-jupiter" version="5.10.2" file="junit-jupiter-5.10.2.module"/>
+            <trusting group="org.junit.jupiter" name="junit-jupiter-api" version="5.10.1" file="junit-jupiter-api-5.10.1.module"/>
             <trusting group="org.junit.jupiter" name="junit-jupiter-api" version="5.10.2" file="junit-jupiter-api-5.10.2.jar"/>
             <trusting group="org.junit.jupiter" name="junit-jupiter-api" version="5.10.2" file="junit-jupiter-api-5.10.2.module"/>
+            <trusting group="org.junit.jupiter" name="junit-jupiter-engine" version="5.10.1" file="junit-jupiter-engine-5.10.1.module"/>
             <trusting group="org.junit.jupiter" name="junit-jupiter-engine" version="5.10.2" file="junit-jupiter-engine-5.10.2.jar"/>
             <trusting group="org.junit.jupiter" name="junit-jupiter-engine" version="5.10.2" file="junit-jupiter-engine-5.10.2.module"/>
             <trusting group="org.junit.jupiter" name="junit-jupiter-params" version="5.10.2" file="junit-jupiter-params-5.10.2.jar"/>
@@ -1080,6 +1098,14 @@
             <sha256 value="accefdbb5416cef5fcd2ddc37db4f1fcb34a2193cc1a55dfe5970a131b3e7683" origin="Generated by Gradle" reason="A key couldn't be downloaded"/>
          </artifact>
       </component>
+      <component group="com.google.re2j" name="re2j" version="1.8">
+         <artifact name="re2j-1.8.jar">
+            <sha256 value="7b52c72156dd7f98b3237a5b35c1d34fba381b21048c89208913ad80a45dfbd7" origin="Generated by Gradle"/>
+         </artifact>
+         <artifact name="re2j-1.8.pom">
+            <sha256 value="df62699335cd46fc465f4c03b8c581d3d507792212d27b65adb923b4c27de4e7" origin="Generated by Gradle"/>
+         </artifact>
+      </component>
       <component group="com.jetbrains.intellij.java" name="java-compiler-ant-tasks" version="243.21565.193">
          <artifact name="java-compiler-ant-tasks-243.21565.193.jar">
             <sha256 value="6877ded0f195f1198b2ba8e6c22603615440558bb6924ef6d09c0a02ef46b954" origin="Generated by Gradle" reason="Artifact is not signed"/>
@@ -1302,7 +1328,6 @@
          <artifact name="ideaIC-2024.3-win.zip">
             <sha256 value="7044ef5d23b8769f6e5a6ccba1b7161b87f53f8f6e08a03f4b665e3d79214400" origin="Generated by Gradle" reason="Artifact is not signed"/>
          </artifact>
-
          <artifact name="ideaIC-2024.3.tar.gz">
             <sha256 value="16d4f411b62ddc7747fe11e8fff004bf8d144df4052b8111306fd4cbba8f748c" origin="Generated by Gradle" reason="Artifact is not signed"/>
          </artifact>
@@ -1354,12 +1379,28 @@
             <sha256 value="f1ee0e083bae8cf289df4c16d757bf6b1c90e12532b196f5d32dd710e2f98d9b" origin="Generated by Gradle"/>
          </artifact>
       </component>
+      <component group="io.github.teemuki8" name="agent-runtime-core" version="2.0.0">
+         <artifact name="agent-runtime-core-2.0.0.jar">
+            <sha256 value="db047012bde4363fa885f8fea8d2d9ae9dafa5a16d75989de637fab20d1ec0d7" origin="Generated by Gradle"/>
+         </artifact>
+         <artifact name="agent-runtime-core-2.0.0.module">
+            <sha256 value="d43f9cd85ef2ed256331c8e17280f9f911e5ecfd1e428faca314853cec44c23e" origin="Generated by Gradle"/>
+         </artifact>
+      </component>
       <component group="io.github.teemuki8" name="harness-agent-runtime" version="1.1.0">
          <artifact name="harness-agent-runtime-1.1.0.jar">
             <sha256 value="42c1cc8113eb0b4566875fa48211008375c9772685e10db38576ea5a52a6f540" origin="Generated by Gradle"/>
          </artifact>
          <artifact name="harness-agent-runtime-1.1.0.module">
             <sha256 value="4deb31b1ab743a8dff666fa21ea74d0648635eb4c107916aba34e035d7f32a13" origin="Generated by Gradle"/>
+         </artifact>
+      </component>
+      <component group="io.github.teemuki8" name="harness-agent-runtime" version="1.2.0">
+         <artifact name="harness-agent-runtime-1.2.0.jar">
+            <sha256 value="6bff3b238160685f45dd9b067aa103dccfb7a4a5b980c1d3b1cde3d66848a9cd" origin="Generated by Gradle"/>
+         </artifact>
+         <artifact name="harness-agent-runtime-1.2.0.module">
+            <sha256 value="4500dd747e6b0912e3c3d6e5f2896a14c0a7972b930fd243ad9c4ba4d1c774c3" origin="Generated by Gradle"/>
          </artifact>
       </component>
       <component group="io.github.teemuki8" name="harness-core" version="1.1.0">
@@ -1370,12 +1411,28 @@
             <sha256 value="c66c4005fa94f4b9227f023b808e5928f2a40077eee6c3d194edc7c0675a35c7" origin="Generated by Gradle"/>
          </artifact>
       </component>
+      <component group="io.github.teemuki8" name="harness-core" version="1.2.0">
+         <artifact name="harness-core-1.2.0.jar">
+            <sha256 value="4ff9b8ee4931cf1c50ac26bbd405d700be44fea0c50c36fad6933504a83cafeb" origin="Generated by Gradle"/>
+         </artifact>
+         <artifact name="harness-core-1.2.0.module">
+            <sha256 value="cc4efeada7964be0819b321c2a0b0f350f4eae6b2c31443a05d3e750ca2c08b8" origin="Generated by Gradle"/>
+         </artifact>
+      </component>
       <component group="io.github.teemuki8" name="harness-lwjgl3" version="1.1.0">
          <artifact name="harness-lwjgl3-1.1.0.jar">
             <sha256 value="3b4c09ab3a30510b5c74d5f4cc7d5ac841442d70bfcbf7dfdcd8327725dcc612" origin="Generated by Gradle"/>
          </artifact>
          <artifact name="harness-lwjgl3-1.1.0.module">
             <sha256 value="f0c1e92542a4975db0fd0bfd1fb1e44a805f9ea924fef9426a9cf26f6aa26e02" origin="Generated by Gradle"/>
+         </artifact>
+      </component>
+      <component group="io.github.teemuki8" name="harness-lwjgl3" version="1.2.0">
+         <artifact name="harness-lwjgl3-1.2.0.jar">
+            <sha256 value="ab1811f47e4627b39b9b0bd7ad3da24c25e4040ae35a413cd9cdefb3f1ed306e" origin="Generated by Gradle"/>
+         </artifact>
+         <artifact name="harness-lwjgl3-1.2.0.module">
+            <sha256 value="f96c773f6f523e3df1676aeff5b9e68f0e0e1575f02416c0b9cd7efc1924796b" origin="Generated by Gradle"/>
          </artifact>
       </component>
       <component group="io.github.teemuki8" name="harness-mcp" version="1.1.0">
@@ -1386,6 +1443,14 @@
             <sha256 value="71cbf55cc9e20610f63c85b20c6f0cdc0c480ffeb9ec1ef9202a28ff5536fac5" origin="Generated by Gradle"/>
          </artifact>
       </component>
+      <component group="io.github.teemuki8" name="harness-mcp" version="1.2.0">
+         <artifact name="harness-mcp-1.2.0.jar">
+            <sha256 value="8a74a06fa70403672ec77a688676deb2fd45b33964cf9131fd52879baa722c16" origin="Generated by Gradle"/>
+         </artifact>
+         <artifact name="harness-mcp-1.2.0.module">
+            <sha256 value="1254535a0b54230f5761e0bad2988cdf88eeca5fd34190b3711b1ca1204f1426" origin="Generated by Gradle"/>
+         </artifact>
+      </component>
       <component group="io.github.teemuki8" name="harness-protocol" version="1.1.0">
          <artifact name="harness-protocol-1.1.0.jar">
             <sha256 value="81482ee4d46dbb9a5885e6474f30539d7f3f6e424138ce092edfd66c1b999fa3" origin="Generated by Gradle"/>
@@ -1394,12 +1459,28 @@
             <sha256 value="d1660bec97d385a9d9964e0f353dd8d935f46302fcbf95000ad2a46a5451a3b1" origin="Generated by Gradle"/>
          </artifact>
       </component>
+      <component group="io.github.teemuki8" name="harness-protocol" version="1.2.0">
+         <artifact name="harness-protocol-1.2.0.jar">
+            <sha256 value="dc1ff752703ff411c8a1a491162d34f6f81abdddce5ae0030729bf9def5ba47e" origin="Generated by Gradle"/>
+         </artifact>
+         <artifact name="harness-protocol-1.2.0.module">
+            <sha256 value="c1cbd9a484e07ce21ccbaad6c8c37d6356d61dc49c1218358e005df2b4148b80" origin="Generated by Gradle"/>
+         </artifact>
+      </component>
       <component group="io.github.teemuki8" name="harness-scene2d" version="1.1.0">
          <artifact name="harness-scene2d-1.1.0.jar">
             <sha256 value="71491c2c385b0623df850c7e6115f75d32f2668c6dae994546cb35b9777d8318" origin="Generated by Gradle"/>
          </artifact>
          <artifact name="harness-scene2d-1.1.0.module">
             <sha256 value="68e10ee894c557b5646a2429ccc0588c2af6259d002e190c9dfe97f5253be58a" origin="Generated by Gradle"/>
+         </artifact>
+      </component>
+      <component group="io.github.teemuki8" name="harness-scene2d" version="1.2.0">
+         <artifact name="harness-scene2d-1.2.0.jar">
+            <sha256 value="2051bef0e84598f98c78f674e11e8a93a02b5979a74ae7932ac4e0a5f725fefb" origin="Generated by Gradle"/>
+         </artifact>
+         <artifact name="harness-scene2d-1.2.0.module">
+            <sha256 value="5c2068a669f68d75fbdc7c1b9b15622265773efa849850052749e3851acc1604" origin="Generated by Gradle"/>
          </artifact>
       </component>
       <component group="io.modelcontextprotocol.sdk" name="mcp" version="2.0.0">
@@ -2349,6 +2430,11 @@
             <sha256 value="4eb87defec3e7c2fece0e1a1ecdf22a70cdd61898262555b1d92e7c7b3f3b95d" origin="Generated by Gradle" reason="Artifact is not signed"/>
          </artifact>
       </component>
+      <component group="org.jetbrains.kotlinx" name="kotlinx-coroutines-bom" version="1.8.0">
+         <artifact name="kotlinx-coroutines-bom-1.8.0.pom">
+            <sha256 value="1239e9dbe1397cd5971342956b2511bc3ace7b641842e4372a088dcfa8b9ad55" origin="Generated by Gradle"/>
+         </artifact>
+      </component>
       <component group="org.jetbrains.kotlinx" name="kotlinx-coroutines-core-jvm" version="1.8.0">
          <artifact name="kotlinx-coroutines-core-jvm-1.8.0.jar">
             <sha256 value="9860906a1937490bf5f3b06d2f0e10ef451e65b95b269f22daf68a3d1f5065c5" origin="Generated by Gradle"/>
@@ -2423,11 +2509,11 @@
          </artifact>
       </component>
       <component group="org.junit" name="junit-bom" version="5.10.2">
-         <artifact name="junit-bom-5.10.2.pom">
-            <sha256 value="169dd904a4b0f6520cffe658cc62292bfe9f3c14a989fa92120724cde43a9968" origin="Generated by Gradle"/>
-         </artifact>
          <artifact name="junit-bom-5.10.2.module">
             <sha256 value="de23b114b3e4119a8fe6eb17bed5a3852816698bace67071579d6d927ebb080a" origin="Generated by Gradle"/>
+         </artifact>
+         <artifact name="junit-bom-5.10.2.pom">
+            <sha256 value="169dd904a4b0f6520cffe658cc62292bfe9f3c14a989fa92120724cde43a9968" origin="Generated by Gradle"/>
          </artifact>
       </component>
       <component group="org.junit" name="junit-bom" version="5.11.4">
@@ -2454,6 +2540,14 @@
             <sha256 value="d7a08a99b2502f0bb68cd4e1f984f0bf69324aaa208bd0f73366c03fc3548a42" origin="Generated by Gradle"/>
          </artifact>
       </component>
+      <component group="org.junit" name="junit-bom" version="5.14.3">
+         <artifact name="junit-bom-5.14.3.module">
+            <sha256 value="f25c40bfa52c8b7b425d576a88f310f6432616d62ba5893203fa27dfbc9f025e" origin="Generated by Gradle"/>
+         </artifact>
+         <artifact name="junit-bom-5.14.3.pom">
+            <sha256 value="08a02856e487c9357f9b29e38745f8ae805848111e72d15aad0352338f1632e1" origin="Generated by Gradle"/>
+         </artifact>
+      </component>
       <component group="org.junit.jupiter" name="junit-jupiter" version="5.10.2">
          <artifact name="junit-jupiter-5.10.2.jar">
             <sha256 value="263e43447f4b40f126ad6b1dcbd7df379448413bdedb8e0d240c5bcbba7c7a4f" origin="Generated by Gradle"/>
@@ -2462,12 +2556,22 @@
             <sha256 value="7231766cf1b2b892c67a142c963914e6b73fbb5061a6c72144eb7f8e72770ec1" origin="Generated by Gradle"/>
          </artifact>
       </component>
+      <component group="org.junit.jupiter" name="junit-jupiter-api" version="5.10.1">
+         <artifact name="junit-jupiter-api-5.10.1.module">
+            <sha256 value="f87f7311549f49fe24e6282a1165e907e017a91e979cadabfdf9bf54c3f7106f" origin="Generated by Gradle"/>
+         </artifact>
+      </component>
       <component group="org.junit.jupiter" name="junit-jupiter-api" version="5.10.2">
          <artifact name="junit-jupiter-api-5.10.2.jar">
             <sha256 value="afff77c186cd317275803872fa5133aa801fd6ac40bd91c78a6cf8009b4b17cc" origin="Generated by Gradle"/>
          </artifact>
          <artifact name="junit-jupiter-api-5.10.2.module">
             <sha256 value="411b4a96c2a6db0998d6e58e899367f0d1254163f3041c9d98e7aedfca374419" origin="Generated by Gradle"/>
+         </artifact>
+      </component>
+      <component group="org.junit.jupiter" name="junit-jupiter-engine" version="5.10.1">
+         <artifact name="junit-jupiter-engine-5.10.1.module">
+            <sha256 value="54121e582ccb2d4625ec9fa54679436c903fa053c74097bbe45fdfb9ddb67fb8" origin="Generated by Gradle"/>
          </artifact>
       </component>
       <component group="org.junit.jupiter" name="junit-jupiter-engine" version="5.10.2">
@@ -2700,12 +2804,22 @@
             <sha256 value="54ba23d87a2d438540c99ef8794a0856fc573a256b498678283c3c67ef18ada8" origin="Generated by Gradle" reason="A key couldn't be downloaded"/>
          </artifact>
       </component>
+      <component group="org.slf4j" name="slf4j-api" version="2.0.16">
+         <artifact name="slf4j-api-2.0.16.pom">
+            <sha256 value="b1a00f5b1c4dbe62b805d65d23911a6f77063889d7cb1e86fe8389d6190473f7" origin="Generated by Gradle"/>
+         </artifact>
+      </component>
       <component group="org.slf4j" name="slf4j-api" version="2.0.17">
          <artifact name="slf4j-api-2.0.17.jar">
             <sha256 value="7b751d952061954d5abfed7181c1f645d336091b679891591d63329c622eb832" origin="Generated by Gradle"/>
          </artifact>
          <artifact name="slf4j-api-2.0.17.pom">
             <sha256 value="150c40287f7cecdc21b9380caac98e928c4f33c023db6b348df1c5ac977026bf" origin="Generated by Gradle"/>
+         </artifact>
+      </component>
+      <component group="org.slf4j" name="slf4j-bom" version="2.0.16">
+         <artifact name="slf4j-bom-2.0.16.pom">
+            <sha256 value="0566048ec825cdf28758620af64d9e14ae38a9cd8748dd6fafa6df4a4194c279" origin="Generated by Gradle"/>
          </artifact>
       </component>
       <component group="org.slf4j" name="slf4j-bom" version="2.0.17">
@@ -2719,6 +2833,11 @@
          </artifact>
          <artifact name="slf4j-nop-2.0.17.pom">
             <sha256 value="e5e548dce8c1c979138a7e96ca354510fa0ce103f0a6df53a1f5b25e9298b9b2" origin="Generated by Gradle"/>
+         </artifact>
+      </component>
+      <component group="org.slf4j" name="slf4j-parent" version="2.0.16">
+         <artifact name="slf4j-parent-2.0.16.pom">
+            <sha256 value="09a0b4cc814d7274616c9b16d4c0fd9aaf1ecc813334de5131e547271b1982e5" origin="Generated by Gradle"/>
          </artifact>
       </component>
       <component group="org.slf4j" name="slf4j-parent" version="2.0.17">
@@ -2815,44 +2934,6 @@
       <component group="tools.jackson.dataformat" name="jackson-dataformats-text" version="3.0.3">
          <artifact name="jackson-dataformats-text-3.0.3.pom">
             <sha256 value="40a5b8043f7bf8be9794b2e2a9e8188d1d7fedc3ebba8b8bbcfcdd8c96909b89" origin="Generated by Gradle" reason="A key couldn't be downloaded"/>
-         </artifact>
-      </component>
-      <component group="org.junit.jupiter" name="junit-jupiter-api" version="5.10.1">
-         <artifact name="junit-jupiter-api-5.10.1.module">
-            <sha256 value="f87f7311549f49fe24e6282a1165e907e017a91e979cadabfdf9bf54c3f7106f" origin="Generated by Gradle"/>
-         </artifact>
-      </component>
-      <component group="org.junit.jupiter" name="junit-jupiter-engine" version="5.10.1">
-         <artifact name="junit-jupiter-engine-5.10.1.module">
-            <sha256 value="54121e582ccb2d4625ec9fa54679436c903fa053c74097bbe45fdfb9ddb67fb8" origin="Generated by Gradle"/>
-         </artifact>
-      </component>
-      <component group="org.slf4j" name="slf4j-api" version="2.0.16">
-         <artifact name="slf4j-api-2.0.16.pom">
-            <sha256 value="b1a00f5b1c4dbe62b805d65d23911a6f77063889d7cb1e86fe8389d6190473f7" origin="Generated by Gradle"/>
-         </artifact>
-      </component>
-      <component group="org.slf4j" name="slf4j-bom" version="2.0.16">
-         <artifact name="slf4j-bom-2.0.16.pom">
-            <sha256 value="0566048ec825cdf28758620af64d9e14ae38a9cd8748dd6fafa6df4a4194c279" origin="Generated by Gradle"/>
-         </artifact>
-      </component>
-      <component group="org.slf4j" name="slf4j-parent" version="2.0.16">
-         <artifact name="slf4j-parent-2.0.16.pom">
-            <sha256 value="09a0b4cc814d7274616c9b16d4c0fd9aaf1ecc813334de5131e547271b1982e5" origin="Generated by Gradle"/>
-         </artifact>
-      </component>
-      <component group="org.jetbrains.kotlinx" name="kotlinx-coroutines-bom" version="1.8.0">
-         <artifact name="kotlinx-coroutines-bom-1.8.0.pom">
-            <sha256 value="1239e9dbe1397cd5971342956b2511bc3ace7b641842e4372a088dcfa8b9ad55" origin="Generated by Gradle"/>
-         </artifact>
-      </component>
-      <component group="org.junit" name="junit-bom" version="5.14.3">
-         <artifact name="junit-bom-5.14.3.module">
-            <sha256 value="f25c40bfa52c8b7b425d576a88f310f6432616d62ba5893203fa27dfbc9f025e" origin="Generated by Gradle"/>
-         </artifact>
-         <artifact name="junit-bom-5.14.3.pom">
-            <sha256 value="08a02856e487c9357f9b29e38745f8ae805848111e72d15aad0352338f1632e1" origin="Generated by Gradle"/>
          </artifact>
       </component>
    </components>
