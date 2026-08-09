@@ -131,6 +131,267 @@ final class MarkupBuilderTest {
     }
 
     @Test
+    void percentCellWidthTracksContainingTableResizeWithoutRebuild() throws Exception {
+        GdxTestHost.run(() -> {
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui><table id="layout"><label id="wide" text="Wide"/></table></ui>
+                    """), css.parse("#wide { width: 100%; }"), DefaultSkin.create(),
+                    new NoopSink());
+            Table table = (Table) built.root().getChildren().first();
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cell = table.getCells().first();
+
+            table.setSize(320f, 100f);
+            table.validate();
+            assertEquals(320f, cell.getPrefWidth(), 0.001f);
+            assertEquals(320f, table.findActor("wide").getWidth(), 0.001f);
+
+            table.setSize(640f, 100f);
+            table.invalidate();
+            table.validate();
+            assertEquals(640f, cell.getPrefWidth(), 0.001f);
+            assertEquals(640f, table.findActor("wide").getWidth(), 0.001f);
+        });
+    }
+
+    @Test
+    void percentCellMinAndMaxTrackContainingTable() throws Exception {
+        GdxTestHost.run(() -> {
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui><table id="layout"><label id="bounded" text="B"/></table></ui>
+                    """), css.parse("#bounded { min-width: 25%; max-width: 75%; }"),
+                    DefaultSkin.create(), new NoopSink());
+            Table table = (Table) built.root().getChildren().first();
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cell = table.getCells().first();
+
+            table.setSize(400f, 100f);
+            table.validate();
+            assertEquals(100f, cell.getMinWidth(), 0.001f);
+            assertEquals(300f, cell.getMaxWidth(), 0.001f);
+
+            table.setSize(800f, 100f);
+            table.invalidate();
+            table.validate();
+            assertEquals(200f, cell.getMinWidth(), 0.001f);
+            assertEquals(600f, cell.getMaxWidth(), 0.001f);
+        });
+    }
+
+    @Test
+    void autoRestoresNativeCellSizingAndXmlWidthOverridesCssPercent() throws Exception {
+        GdxTestHost.run(() -> {
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui><table id="layout">
+                      <label id="native" text="Native"/>
+                      <label id="xml" text="XML" width="80"/>
+                    </table></ui>
+                    """), css.parse("""
+                    #native { width: auto; max-width: auto; }
+                    #xml { width: 100%; }
+                    """), DefaultSkin.create(), new NoopSink());
+            Table table = (Table) built.root().getChildren().first();
+            table.setSize(400f, 100f);
+            table.validate();
+
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> nativeCell = table.getCells().get(0);
+            assertTrue(nativeCell.getPrefWidth() > 0f, "auto retains the Label preferred width");
+            assertEquals(0f, nativeCell.getMaxWidth(), 0.001f,
+                    "auto max keeps Scene2D's native unbounded sentinel");
+            assertEquals(80f, table.getCells().get(1).getPrefWidth(), 0.001f,
+                    "the numeric XML constraint wins over CSS on the same property");
+        });
+    }
+
+    @Test
+    void explicitZeroMaximumIsNotMistakenForScene2dUnboundedSentinel() throws Exception {
+        GdxTestHost.run(() -> {
+            BuiltUi built = MarkupBuilder.build(markup.parse(
+                    "<ui><table><label id=\"zero\" text=\"Zero\"/></table></ui>"),
+                    css.parse("#zero { max-width: 0; }"), DefaultSkin.create(),
+                    new NoopSink());
+            Table table = (Table) built.root().getChildren().first();
+            float max = table.getCells().first().getMaxWidth();
+            assertTrue(max > 0f, "zero must not use Scene2D's max=0 unbounded sentinel");
+            assertTrue(max < 0.001f, "zero is represented by the smallest effective bound");
+        });
+    }
+
+    @Test
+    void topLevelTableWithFullPercentDimensionsFillsParentResponsively() throws Exception {
+        GdxTestHost.run(() -> {
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui><table id="screen"><label text="Full"/></table></ui>
+                    """), css.parse("#screen { width: 100%; height: 100%; }"),
+                    DefaultSkin.create(), new NoopSink());
+            Group parent = built.root();
+            Table table = (Table) parent.getChildren().first();
+
+            parent.setSize(320f, 240f);
+            table.validate();
+            assertEquals(320f, table.getWidth(), 0.001f);
+            assertEquals(240f, table.getHeight(), 0.001f);
+
+            parent.setSize(640f, 360f);
+            table.invalidate();
+            table.validate();
+            assertEquals(640f, table.getWidth(), 0.001f);
+            assertEquals(360f, table.getHeight(), 0.001f);
+        });
+    }
+
+    @Test
+    void percentDimensionOutsideSupportedContextFailsAtCssRule() throws Exception {
+        GdxTestHost.run(() -> {
+            MarkupException labelFailure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("<ui><label text=\"No parent\"/></ui>"),
+                            css.parse("\nlabel { width: 100%; }"), DefaultSkin.create(),
+                            new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, labelFailure.kind());
+            assertEquals("css", labelFailure.elementPath());
+            assertEquals(2, labelFailure.line());
+            assertEquals(1, labelFailure.column());
+            assertTrue(labelFailure.getMessage().contains("Table cell"));
+
+            MarkupException tableFailure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("<ui><table id=\"partial\"/></ui>"),
+                            css.parse("#partial { width: 50%; height: 100%; }"),
+                            DefaultSkin.create(), new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, tableFailure.kind());
+            assertTrue(tableFailure.getMessage().contains("100%"));
+
+            MarkupException maxFailure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("<ui><label text=\"No cell\"/></ui>"),
+                            css.parse("label { max-width: 320px; }"), DefaultSkin.create(),
+                            new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, maxFailure.kind());
+            assertTrue(maxFailure.getMessage().contains("max-width"));
+            assertTrue(maxFailure.getMessage().contains("Table cell"));
+        });
+    }
+
+    @Test
+    void nestedTablePaddingIsInternalAndMarginRemainsExternal() throws Exception {
+        GdxTestHost.run(() -> {
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui><table id="outer"><table id="inner"/></table></ui>
+                    """), css.parse("#inner { padding: 10px; margin: 3px; }"),
+                    DefaultSkin.create(), new NoopSink());
+            Table outer = (Table) built.root().getChildren().first();
+            Table inner = (Table) outer.findActor("inner");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cell = outer.getCells().first();
+
+            assertEquals(10f, inner.getPadTop(), 0.001f);
+            assertEquals(0f, cell.getPadTop(), 0.001f,
+                    "container padding must not be duplicated on its parent Cell");
+            assertEquals(3f, cell.getSpaceTop(), 0.001f,
+                    "margin remains external spacing on the parent Cell");
+        });
+    }
+
+    @Test
+    void tableGapShorthandAndAxisOverridesBecomeChildCellDefaults() throws Exception {
+        GdxTestHost.run(() -> {
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <table id="all"><label text="A"/></table>
+                      <table id="rows"><label text="B"/></table>
+                      <table id="columns"><label text="C"/></table>
+                    </ui>
+                    """), css.parse("""
+                    #all { gap: 1px 2px 3px 4px; }
+                    #rows { gap: 1px; row-gap: 5px; }
+                    #columns { gap: 1px; column-gap: 6px; }
+                    """), DefaultSkin.create(), new NoopSink());
+            Table all = (Table) built.root().findActor("all");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> allCell = all.getCells().first();
+            assertEquals(1f, allCell.getSpaceTop(), 0.001f);
+            assertEquals(2f, allCell.getSpaceRight(), 0.001f);
+            assertEquals(3f, allCell.getSpaceBottom(), 0.001f);
+            assertEquals(4f, allCell.getSpaceLeft(), 0.001f);
+
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> rowCell =
+                    ((Table) built.root().findActor("rows")).getCells().first();
+            assertEquals(5f, rowCell.getSpaceTop(), 0.001f);
+            assertEquals(5f, rowCell.getSpaceBottom(), 0.001f);
+            assertEquals(1f, rowCell.getSpaceLeft(), 0.001f);
+
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> columnCell =
+                    ((Table) built.root().findActor("columns")).getCells().first();
+            assertEquals(6f, columnCell.getSpaceLeft(), 0.001f);
+            assertEquals(6f, columnCell.getSpaceRight(), 0.001f);
+            assertEquals(1f, columnCell.getSpaceTop(), 0.001f);
+        });
+    }
+
+    @Test
+    void displayNoneOmitsActorAndSemanticsWhileVisibilityRetainsLayout() throws Exception {
+        GdxTestHost.run(() -> {
+            FakeSink sink = new FakeSink();
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui><table id="layout">
+                      <button id="gone" text="Gone"/>
+                      <button id="hidden" text="Hidden"/>
+                      <button id="visible-alias" text="Visible"/>
+                    </table></ui>
+                    """), css.parse("""
+                    #gone { display: none; }
+                    #hidden { visibility: hidden; }
+                    #visible-alias { visible: false; visibility: visible; }
+                    """), DefaultSkin.create(), sink);
+            Table table = (Table) built.root().getChildren().first();
+
+            assertEquals(2, table.getCells().size,
+                    "display:none contributes neither actor nor layout Cell");
+            assertNull(table.findActor("gone"));
+            assertFalse(built.actors().stream().anyMatch(actor -> "gone".equals(actor.getName())));
+            assertNull(sink.roles.get("gone"), "an omitted actor emits no harness semantics");
+
+            Actor hidden = table.findActor("hidden");
+            assertNotNull(hidden);
+            assertFalse(hidden.isVisible(), "visibility:hidden retains the Actor and its Cell");
+            assertTrue(table.findActor("visible-alias").isVisible(),
+                    "visibility takes precedence over the compatibility visible property");
+        });
+    }
+
+    @Test
+    void overflowHiddenClipsTablesAndRejectsUnsupportedActorsAtCssRule() throws Exception {
+        GdxTestHost.run(() -> {
+            BuiltUi built = MarkupBuilder.build(markup.parse(
+                    "<ui><table id=\"clip\"><label text=\"Child\"/></table></ui>"),
+                    css.parse("#clip { overflow: hidden; }"), DefaultSkin.create(),
+                    new NoopSink());
+            assertTrue(((Table) built.root().getChildren().first()).getClip());
+
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("<ui><label text=\"No\"/></ui>"),
+                            css.parse("\nlabel { overflow: hidden; }"), DefaultSkin.create(),
+                            new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+            assertEquals("css", failure.elementPath());
+            assertEquals(2, failure.line());
+            assertEquals(1, failure.column());
+            assertTrue(failure.getMessage().contains("Table"));
+        });
+    }
+
+    @Test
+    void verticalAlignAppliesToLabelAndContainingCell() throws Exception {
+        GdxTestHost.run(() -> {
+            BuiltUi built = MarkupBuilder.build(markup.parse(
+                    "<ui><table><label id=\"aligned\" text=\"Text\"/></table></ui>"),
+                    css.parse("#aligned { text-align: right; vertical-align: bottom; }"),
+                    DefaultSkin.create(), new NoopSink());
+            Table table = (Table) built.root().getChildren().first();
+            Label label = (Label) table.findActor("aligned");
+            int labelAlign = label.getLabelAlign();
+            assertTrue((labelAlign & com.badlogic.gdx.utils.Align.right) != 0);
+            assertTrue((labelAlign & com.badlogic.gdx.utils.Align.bottom) != 0);
+            assertTrue((table.getCells().first().getAlign()
+                    & com.badlogic.gdx.utils.Align.bottom) != 0);
+        });
+    }
+
+    @Test
     void checkboxCheckedAttributeApplies() throws Exception {
         GdxTestHost.run(() -> {
             BuiltUi built = MarkupBuilder.build(markup.parse(

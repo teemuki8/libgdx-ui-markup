@@ -45,8 +45,6 @@ public final class CssParser {
 
     private static final Pattern HEX_COLOR = Pattern.compile("#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?");
     private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z][A-Za-z0-9_-]*");
-    private static final Pattern LENGTH = Pattern.compile(
-            "[0-9]+(?:\\.[0-9]+)?(?:px)?");
     private static final Pattern FONT_SIZE = Pattern.compile("([0-9]+)(?:px)?");
     private static final Pattern SIMPLE_SELECTOR = Pattern.compile(
             "^([a-z][a-z0-9]*)(?:\\.([A-Za-z0-9_-]+))?$");
@@ -55,19 +53,32 @@ public final class CssParser {
     private static final Set<String> PSEUDO_STATES = Set.of("hover", "pressed", "checked",
             "disabled");
     private static final Set<String> TEXT_ALIGNS = Set.of("left", "center", "right");
+    private static final Set<String> DISPLAYS = Set.of("initial", "none");
+    private static final Set<String> VISIBILITIES = Set.of("visible", "hidden");
+    private static final Set<String> OVERFLOWS = Set.of("visible", "hidden");
+    private static final Set<String> VERTICAL_ALIGNS = Set.of("top", "middle", "bottom");
+    private static final Set<String> RESPONSIVE_DIMENSIONS = Set.of(
+            "width", "height", "min-width", "min-height", "max-width", "max-height");
+    private static final Set<String> BASE_STATE_ONLY = Set.of(
+            "font-size", "display", "gap", "row-gap", "column-gap", "visibility",
+            "overflow", "vertical-align");
 
     private static final Map<String, PropertyKind> PROPERTIES = properties();
 
     private enum PropertyKind {
         LENGTH,
-        PADDING,
-        MARGIN,
+        RESPONSIVE_LENGTH,
+        SPACING,
         COLOR,
         DRAWABLE,
         FONT,
         FONT_SIZE,
         TEXT_ALIGN,
         BOOLEAN,
+        DISPLAY,
+        VISIBILITY,
+        OVERFLOW,
+        VERTICAL_ALIGN,
     }
 
     private static Map<String, PropertyKind> properties() {
@@ -81,16 +92,22 @@ public final class CssParser {
         map.put("background-down", PropertyKind.DRAWABLE);
         map.put("background-checked", PropertyKind.DRAWABLE);
         map.put("background-disabled", PropertyKind.DRAWABLE);
-        map.put("padding", PropertyKind.PADDING);
+        map.put("padding", PropertyKind.SPACING);
         for (String edge : List.of("top", "right", "bottom", "left")) {
             map.put("padding-" + edge, PropertyKind.LENGTH);
             map.put("margin-" + edge, PropertyKind.LENGTH);
         }
-        map.put("margin", PropertyKind.MARGIN);
-        map.put("width", PropertyKind.LENGTH);
-        map.put("height", PropertyKind.LENGTH);
-        map.put("min-width", PropertyKind.LENGTH);
-        map.put("min-height", PropertyKind.LENGTH);
+        map.put("margin", PropertyKind.SPACING);
+        for (String dimension : RESPONSIVE_DIMENSIONS) {
+            map.put(dimension, PropertyKind.RESPONSIVE_LENGTH);
+        }
+        map.put("gap", PropertyKind.SPACING);
+        map.put("row-gap", PropertyKind.LENGTH);
+        map.put("column-gap", PropertyKind.LENGTH);
+        map.put("display", PropertyKind.DISPLAY);
+        map.put("visibility", PropertyKind.VISIBILITY);
+        map.put("overflow", PropertyKind.OVERFLOW);
+        map.put("vertical-align", PropertyKind.VERTICAL_ALIGN);
         map.put("text-align", PropertyKind.TEXT_ALIGN);
         map.put("visible", PropertyKind.BOOLEAN);
         return Map.copyOf(map);
@@ -382,10 +399,10 @@ public final class CssParser {
         if (value.isEmpty()) {
             throw styleError(line, column, "property \"" + name + "\" has no value");
         }
-        if ("font-size".equals(name)
+        if ((BASE_STATE_ONLY.contains(name) || RESPONSIVE_DIMENSIONS.contains(name))
                 && selectors.stream().anyMatch(selector -> selector.pseudo() != null)) {
             throw styleError(line, column,
-                    "property \"font-size\" is not allowed in a pseudo-state rule");
+                    "property \"" + name + "\" is not allowed in a pseudo-state rule");
         }
         String failure = validate(kind, name, value);
         if (failure != null) {
@@ -400,7 +417,9 @@ public final class CssParser {
 
     private static String validate(PropertyKind kind, String name, String value) {
         return switch (kind) {
-            case LENGTH, PADDING, MARGIN -> validateLengths(value, name);
+            case LENGTH -> validatePixelLength(value);
+            case RESPONSIVE_LENGTH -> validateResponsiveLength(value);
+            case SPACING -> validateSpacing(value);
             case COLOR -> HEX_COLOR.matcher(value).matches() || IDENTIFIER.matcher(value).matches()
                     ? null : "expected #rrggbb, #rrggbbaa, or a color name; got \"" + value + "\"";
             case DRAWABLE -> IDENTIFIER.matcher(value).matches() ? null
@@ -412,20 +431,44 @@ public final class CssParser {
                     : "expected left, center, or right; got \"" + value + "\"";
             case BOOLEAN -> ("true".equals(value) || "false".equals(value)) ? null
                     : "expected true or false; got \"" + value + "\"";
+            case DISPLAY -> enumValue(value, DISPLAYS, "initial or none");
+            case VISIBILITY -> enumValue(value, VISIBILITIES, "visible or hidden");
+            case OVERFLOW -> enumValue(value, OVERFLOWS, "visible or hidden");
+            case VERTICAL_ALIGN -> enumValue(value, VERTICAL_ALIGNS,
+                    "top, middle, or bottom");
         };
     }
 
-    private static String validateLengths(String value, String property) {
-        String[] parts = value.split(",");
-        if (parts.length != 1 && parts.length != 4) {
-            return "expected one or four comma-separated lengths; got \"" + value + "\"";
+    private static String validatePixelLength(String value) {
+        try {
+            return CssLength.parse(value, false) instanceof CssLength.Pixels ? null
+                    : "expected a non-negative pixel length; got \"" + value + "\"";
+        } catch (MarkupException failure) {
+            return "expected a non-negative pixel length; got \"" + value + "\"";
         }
-        for (String part : parts) {
-            if (!LENGTH.matcher(part.strip()).matches()) {
-                return "expected a non-negative length (optional px); got \"" + part + "\"";
-            }
+    }
+
+    private static String validateResponsiveLength(String value) {
+        try {
+            CssLength.parse(value, true);
+            return null;
+        } catch (MarkupException failure) {
+            return "expected non-negative pixels, percent, or auto; got \"" + value + "\"";
         }
-        return null;
+    }
+
+    private static String validateSpacing(String value) {
+        try {
+            CssSpacing.parse(value);
+            return null;
+        } catch (MarkupException failure) {
+            return "expected one to four non-negative pixel lengths; got \"" + value + "\"";
+        }
+    }
+
+    private static String enumValue(String value, Set<String> accepted, String expected) {
+        return accepted.contains(value) ? null
+                : "expected " + expected + "; got \"" + value + "\"";
     }
 
     private static String validateFontSize(String value) {

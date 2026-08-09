@@ -16,9 +16,10 @@ come from the markup, so libgdx-ui-harness locators stop depending on inference.
 | `libgdx-ui-markup-idea` | Thin IntelliJ plugin: "Markup Preview" tool window that launches the preview and shows live build status |
 
 Layout is Scene2D-native via XML attributes (`expand`, `fill`, `align`, `colspan`, `pad`,
-`space`, `grow`); CSS is a bounded styling subset compiled into a libGDX Skin. No CSS layout
-engine, no full HTML. New stylesheets use the `.gdxcss` extension so tools and agents do not
-mistake the bounded language for browser CSS; legacy `.css` paths remain accepted.
+`space`, `grow`) and bounded GDXCSS properties converted to Table/Cell constraints. There is no
+browser layout engine and no full HTML dialect. New stylesheets use the `.gdxcss` extension so
+tools and agents do not mistake the language for browser CSS; legacy `.css` paths remain
+accepted.
 
 ## Quick start
 
@@ -100,6 +101,49 @@ BuiltUi ui = MarkupBuilder.build(
         new NoopSink());            // HarnessSemanticSink for harness metadata
 stage.addActor(ui.root());
 ```
+
+## Responsive GDXCSS layout
+
+Dimensions accept non-negative unitless pixels, `px`, percentages, and `auto`. A percentage on
+an actor in a Table is a live Scene2D `Value` evaluated against the containing Table, so
+`width: 100%` follows later Table and viewport resizes without rebuilding. A Table outside a
+Cell may use the exact `width: 100%; height: 100%` pair to fill its parent. Other percentage
+dimensions outside a Cell are located `STYLE_ERROR`s; they are never frozen to a build-time
+pixel value.
+
+```xml
+<ui>
+  <table id="screen">
+    <table id="panel">
+      <label id="title" text="Settings"/>
+      <row/>
+      <button id="save" text="Save"/>
+    </table>
+  </table>
+</ui>
+```
+
+```css
+#screen { width: 100%; height: 100%; }
+#panel { width: 100%; max-width: 960px; padding: 16px 24px; gap: 12px; }
+#save { width: 100%; min-width: 160px; }
+```
+
+`min-width`, `min-height`, `max-width`, and `max-height` use the same values in Cells; `auto`
+restores Scene2D's native constraint. `padding` is internal for Table/Window actors and Cell
+padding for other actors, while `margin` maps to containing-Cell space. Shorthands use CSS
+top/right/bottom/left ordering with one to four whitespace-separated pixel values; legacy
+one/four comma forms remain accepted. Table `gap`, `row-gap`, and `column-gap` become child-Cell
+spacing defaults.
+
+The same bounded conversion supports `display: none`, `visibility: hidden`,
+`overflow: hidden` on Tables, and `vertical-align: top | middle | bottom`. The legacy
+`visible: true | false` property remains available, but `visibility` wins when both CSS
+properties are declared. Numeric XML dimensions continue to override the corresponding CSS
+property.
+
+Unsupported browser units and functions—including `em`, `rem`, `vw`, `vh`, `calc()`, `min()`,
+`max()`, and `clamp()`—fail during the GL-free CSS parse with the property location.
 
 ## Exact-size fonts
 

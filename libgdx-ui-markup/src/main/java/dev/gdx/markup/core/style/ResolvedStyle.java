@@ -67,13 +67,25 @@ public final class ResolvedStyle {
         return parseLength(property, value);
     }
 
-    /** Returns one or four declared lengths (padding/margin), or the fallback list. */
+    /** Returns a typed responsive dimension, or {@code null} when unmatched. */
+    public CssLength lengthValue(String property) {
+        String value = properties.get(property);
+        return value == null ? null : CssLength.parse(value, true);
+    }
+
+    /** Returns expanded top/right/bottom/left spacing, or {@code null} when unmatched. */
+    public CssSpacing spacing(String property) {
+        String value = properties.get(property);
+        return value == null ? null : CssSpacing.parse(value);
+    }
+
+    /** Returns the declared shorthand lengths in source arity, or the fallback list. */
     public List<Float> lengths(String property, List<Float> fallback) {
         String value = properties.get(property);
         if (value == null) {
             return fallback;
         }
-        String[] parts = value.split(",");
+        String[] parts = value.indexOf(',') >= 0 ? value.split(",", -1) : value.split("\\s+");
         ArrayList<Float> parsed = new ArrayList<>(parts.length);
         for (String part : parts) {
             parsed.add(parseLength(property, part));

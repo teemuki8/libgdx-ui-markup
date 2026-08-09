@@ -105,8 +105,8 @@ final class SkinStyleCompiler {
                 // Base fonts are resolved per actor after XML-over-CSS precedence is known.
             }
             default -> {
-                // padding/margin/width/height/min-*/text-align/visible are actor and cell
-                // properties handled by the builder, not the skin.
+                // Layout, visibility, typography alignment, and sizing are actor/cell
+                // properties handled by the builder rather than compiled into the Skin.
             }
         }
     }
