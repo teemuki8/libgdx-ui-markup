@@ -141,8 +141,13 @@ public final class MarkupBuilder {
         }
         Group root = new Group();
         walk.pushRootPath("ui");
-        walk.addChildren(root, null, document.root().children());
-        walk.popRootPath();
+        walk.ancestors.add(document.root());
+        try {
+            walk.addChildren(root, null, document.root().children());
+        } finally {
+            walk.ancestors.removeLast();
+            walk.popRootPath();
+        }
         return new BuiltUi(root, walk.actors());
     }
 

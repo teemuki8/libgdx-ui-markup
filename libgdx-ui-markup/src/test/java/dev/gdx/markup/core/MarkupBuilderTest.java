@@ -867,12 +867,18 @@ final class MarkupBuilderTest {
                       <table><group><textfield id="nested"/></group></table>
                       <textfield id="outside"/>
                     </ui>
-                    """), css.parse("table > group textfield { font-color: accent; }"),
+                    """), css.parse("""
+                    table > group textfield { font-color: accent; }
+                    ui > table { padding: 7px; }
+                    """),
                     skin, new NoopSink());
+            Table topTable = (Table) built.root().getChildren().first();
             TextField nested = built.root().findActor("nested");
             TextField outside = built.root().findActor("outside");
             assertEquals(skin.getColor("accent"), nested.getStyle().fontColor);
             assertEquals(original, outside.getStyle().fontColor);
+            assertEquals(7f, topTable.getPadTop(), 0.0001f,
+                    "the non-Actor <ui> document root remains selector ancestry");
             skin.dispose();
         });
     }
