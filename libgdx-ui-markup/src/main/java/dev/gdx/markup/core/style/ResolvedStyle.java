@@ -1,6 +1,7 @@
 package dev.gdx.markup.core.style;
 
 import dev.gdx.markup.core.MarkupException;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -78,13 +79,18 @@ public final class ResolvedStyle {
         return value == null ? null : CssSpacing.parse(value);
     }
 
-    /** Returns one or four declared lengths (padding/margin), or the fallback list. */
+    /** Returns the declared shorthand lengths in source arity, or the fallback list. */
     public List<Float> lengths(String property, List<Float> fallback) {
         String value = properties.get(property);
         if (value == null) {
             return fallback;
         }
-        return CssSpacing.parse(value).values();
+        String[] parts = value.indexOf(',') >= 0 ? value.split(",", -1) : value.split("\\s+");
+        ArrayList<Float> parsed = new ArrayList<>(parts.length);
+        for (String part : parts) {
+            parsed.add(parseLength(property, part));
+        }
+        return List.copyOf(parsed);
     }
 
     private static float parseLength(String property, String raw) {

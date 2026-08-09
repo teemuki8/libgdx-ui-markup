@@ -292,6 +292,8 @@ final class CssTest {
         CssStyleResolver resolver = new CssStyleResolver(document);
         ResolvedStyle style = resolver.resolve(element("button", null, List.of()));
         assertEquals(28f, style.length("padding", -1));
+        assertEquals(List.of(28f), style.lengths("padding", List.of()),
+                "the compatibility accessor preserves declared shorthand arity");
         assertEquals(List.of(1f, 2f, 3f, 4f), style.lengths("margin", List.of()));
         assertEquals(100f, style.length("width", -1));
     }
