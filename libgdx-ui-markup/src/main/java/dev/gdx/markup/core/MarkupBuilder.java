@@ -338,6 +338,7 @@ public final class MarkupBuilder {
             actors.add(pane);
             applyCommon(element, pane, cellTable);
             assignPseudoStyle(element, pane);
+            applyCssOverrides(element, pane, cellTable);
             Actor child = buildActor(element.children().get(0), null);
             if (child != null) {
                 pane.setActor(child);
@@ -612,6 +613,7 @@ public final class MarkupBuilder {
                 }
             }
             rejectTableOnlyProperties(element, actor, cellTable, style);
+            rejectBackgroundColorTarget(element, actor, style);
             applyOverflow(element, actor, style);
             String visible = element.attr("visible");
             if (visible != null) {
@@ -629,6 +631,17 @@ public final class MarkupBuilder {
                 actor.setTouchable(Touchable.disabled);
             }
             applyActorProperties(element, actor, style);
+            applyTextAndImageProperties(element, actor, style);
+        }
+
+        private void rejectBackgroundColorTarget(Element element, Actor actor,
+                ResolvedStyle style) {
+            if (style.has("background-color") && !(actor instanceof Table)
+                    && widgetStyle(actor) == null) {
+                throw unsupportedTarget(element, style, "background-color",
+                        "property \"background-color\" requires a Table or an actor with "
+                                + "a widget background field");
+            }
         }
 
         private void applySize(Element element, Actor actor, String attribute,
@@ -862,7 +875,6 @@ public final class MarkupBuilder {
                 int horizontal = label.getLabelAlign() & (Align.left | Align.right);
                 label.setAlignment(horizontal | verticalAlignOf(base.get("vertical-align")));
             }
-            applyTextAndImageProperties(element, actor, base);
         }
 
         private void applyActorProperties(Element element, Actor actor, ResolvedStyle style) {

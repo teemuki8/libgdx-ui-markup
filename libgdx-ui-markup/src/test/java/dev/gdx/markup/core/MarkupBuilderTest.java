@@ -791,6 +791,67 @@ final class MarkupBuilderTest {
             assertEquals(2, imageFailure.line());
             assertTrue(imageFailure.getMessage().contains("Image"));
 
+            MarkupException containerFailure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse(
+                            "<ui><group class=\"bad\"/></ui>"), css.parse("""
+
+                            .bad { text-overflow: ellipsis; }
+                            """), skin, new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, containerFailure.kind());
+            assertEquals("css", containerFailure.elementPath());
+            assertTrue(containerFailure.getMessage().contains("Label"));
+
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void backgroundColorFailsOnActorsWithoutABackgroundField() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse(
+                            "<ui><group class=\"bad\"/></ui>"),
+                            css.parse(".bad { background-color: #123; }"),
+                            skin, new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+            assertEquals("css", failure.elementPath());
+            assertTrue(failure.getMessage().contains("background"));
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void backgroundColorAppliesToStyledContainerActors() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            ScrollPane.ScrollPaneStyle shared = skin.get("scrollpane",
+                    ScrollPane.ScrollPaneStyle.class);
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <scrollpane id="pane" class="tinted"><label text="Content"/></scrollpane>
+                    </ui>
+                    """), css.parse("""
+                    .tinted { background: scroll-bg; background-color: #123; }
+                    """), skin, new NoopSink());
+            ScrollPane pane = built.root().findActor("pane");
+            assertNotSame(shared, pane.getStyle());
+            assertNotSame(skin.getDrawable("scroll-bg"), pane.getStyle().background);
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void pseudoBackgroundFailsForTagWithoutStateStyle() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("<ui><table/></ui>"),
+                            css.parse("table:hover { background-color: #123; }"),
+                            skin, new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+            assertEquals("css", failure.elementPath());
+            assertTrue(failure.getMessage().contains("hover"));
             skin.dispose();
         });
     }

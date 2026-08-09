@@ -65,6 +65,10 @@ final class SkinStyleCompiler {
         }
         Class<?> styleClass = styleClass(selector.tag());
         if (styleClass == null) {
+            String unsupportedProperty = pseudoStateProperty(rule);
+            if (selector.pseudo() != null && unsupportedProperty != null) {
+                throw unsupported(selector.tag(), selector.pseudo(), unsupportedProperty, rule);
+            }
             return; // ui/table/row/stack/group/image carry no skin style
         }
         String styleName = selector.className() == null
@@ -76,6 +80,20 @@ final class SkinStyleCompiler {
                     selector.pseudo(), selector.tag(), rule);
         }
         skin.add(styleName, copy);
+    }
+
+    private static String pseudoStateProperty(CssRule rule) {
+        for (String property : rule.properties().keySet()) {
+            if (switch (property) {
+                case "background", "background-over", "background-down", "background-checked",
+                        "background-disabled", "background-color", "color", "font-color",
+                        "font" -> true;
+                default -> false;
+            }) {
+                return property;
+            }
+        }
+        return null;
     }
 
     private Object style(String styleName, Class<?> styleClass, CssRule rule) {
