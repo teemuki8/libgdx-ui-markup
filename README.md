@@ -23,6 +23,9 @@ engine, no full HTML.
 
 `settings.gradle.kts` includes all four modules; `./gradlew` (Gradle 9.6.1) builds with JDK 25.
 
+For task-oriented agent recipes—preview, parse/build, semantics, runtime values, harness MCP,
+custom tags, and diagnosis—see [the agentic cookbook](docs/guides/agentic-cookbook.md).
+
 ### Ecosystem versions
 
 **Current tested stack:** markup 0.4.1, harness 1.2.0, agent-runtime 2.0.0, and libGDX

@@ -76,3 +76,6 @@ exact command and result.
 - Specifications and plans must contain measurable acceptance criteria and exact
   verification commands.
 - Keep public API examples compilable.
+- Any change to a public API, markup or CSS dialect, preview CLI, semantic mapping, or integration
+  contract MUST update every affected recipe in `docs/guides/agentic-cookbook.md` in the same
+  change. Keep cookbook examples compilable or backed by an existing executable test/reference.
