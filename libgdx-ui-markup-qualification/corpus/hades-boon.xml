@@ -46,7 +46,8 @@
         </table>
         <row/>
         <row/>
-        <table id="obelisk-left" width="170" height="190" class="panel" align="left center">
+        <table id="obelisk-left" width="170" height="190" class="panel" pad="18"
+               align="left center">
           <row/>
           <label id="obelisk-left-mark" class="title" text="#" width="130" height="72" align="center"/>
           <row/>
@@ -60,7 +61,8 @@
           <row/>
           <label id="battle-detail" class="section" text="ROOM 12   •   INFERNAL GATE" width="480" height="30" align="center"/>
         </table>
-        <table id="obelisk-right" width="170" height="190" class="panel" align="right center">
+        <table id="obelisk-right" width="170" height="190" class="panel" pad="18"
+               align="right center">
           <row/>
           <label id="obelisk-right-mark" class="title" text="#" width="130" height="72" align="center"/>
           <row/>
@@ -95,7 +97,8 @@
       </table>
     </table>
     <row/>
-    <table id="bottom-hud" height="80" expand="true" class="panel" align="center center">
+    <table id="bottom-hud" height="80" expand="true" class="panel" pad="18"
+           align="center center">
       <table id="health-block" width="370" height="78" align="left center">
         <row/>
         <label id="health-label" class="title" text="HP   ZAGREUS" width="330" height="24"/>
