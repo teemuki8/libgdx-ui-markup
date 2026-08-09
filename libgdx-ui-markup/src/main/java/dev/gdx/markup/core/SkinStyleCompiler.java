@@ -14,9 +14,11 @@ import com.badlogic.gdx.scenes.scene2d.ui.TextButton.TextButtonStyle;
 import com.badlogic.gdx.scenes.scene2d.ui.TextField.TextFieldStyle;
 import com.badlogic.gdx.scenes.scene2d.ui.Window.WindowStyle;
 import com.badlogic.gdx.scenes.scene2d.utils.Drawable;
+import com.badlogic.gdx.utils.GdxRuntimeException;
 import dev.gdx.markup.core.style.CssDocument;
 import dev.gdx.markup.core.style.CssRule;
 import dev.gdx.markup.core.style.Selector;
+import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -39,6 +41,7 @@ final class SkinStyleCompiler {
     private static final String BASE = "base";
 
     private final Skin skin;
+    private final Map<String, Color> backgroundTints = new HashMap<>();
 
     private SkinStyleCompiler(Skin skin) {
         this.skin = Objects.requireNonNull(skin, "skin");
@@ -69,8 +72,8 @@ final class SkinStyleCompiler {
         Object base = style(styleName, styleClass, rule);
         Object copy = copyOf(base);
         for (Map.Entry<String, String> property : rule.properties().entrySet()) {
-            applyProperty(copy, property.getKey(), property.getValue(), selector.pseudo(),
-                    selector.tag(), rule);
+            applyProperty(copy, styleName, property.getKey(), property.getValue(),
+                    selector.pseudo(), selector.tag(), rule);
         }
         skin.add(styleName, copy);
     }
@@ -88,13 +91,23 @@ final class SkinStyleCompiler {
         return fallback;
     }
 
-    private void applyProperty(Object style, String property, String value, String pseudo,
-            String tag, CssRule rule) {
+    private void applyProperty(Object style, String styleName, String property, String value,
+            String pseudo, String tag, CssRule rule) {
         switch (property) {
             case "background", "background-over", "background-down", "background-checked",
                     "background-disabled" -> {
                 String state = propertyState(property, pseudo);
                 setStateDrawable(style, state, drawable(value, rule), tag, property, rule);
+                Color tint = backgroundTints.get(tintKey(styleName, state));
+                if (tint != null) {
+                    tintStateDrawable(style, state, tint, tag, "background-color", rule);
+                }
+            }
+            case "background-color" -> {
+                String state = propertyState(property, pseudo);
+                Color tint = color(value, rule);
+                backgroundTints.put(tintKey(styleName, state), tint);
+                tintStateDrawable(style, state, tint, tag, property, rule);
             }
             case "color", "font-color" -> setStateColor(style, propertyState(property, pseudo),
                     color(value, rule), tag, property, rule);
@@ -108,6 +121,27 @@ final class SkinStyleCompiler {
                 // Layout, visibility, typography alignment, and sizing are actor/cell
                 // properties handled by the builder rather than compiled into the Skin.
             }
+        }
+    }
+
+    private static String tintKey(String styleName, String state) {
+        return styleName + '\u0000' + state;
+    }
+
+    private void tintStateDrawable(Object style, String state, Color tint, String tag,
+            String property, CssRule source) {
+        Drawable base = stateDrawable(style, state, tag, property, source);
+        if (base == null) {
+            base = skin.optional("white", Drawable.class);
+            if (base == null) {
+                throw unresolved(source,
+                        "skin has no drawable named \"white\" for background-color");
+            }
+        }
+        try {
+            setStateDrawable(style, state, skin.newDrawable(base, tint), tag, property, source);
+        } catch (GdxRuntimeException failure) {
+            throw unresolved(source, "background drawable is not tintable");
         }
     }
 
@@ -287,6 +321,78 @@ final class SkinStyleCompiler {
             }
             default -> throw unsupported(tag, state, property, source);
         }
+    }
+
+    /** Returns one state's current drawable, validating the widget/state combination. */
+    static Drawable stateDrawable(Object style, String state, String tag, String property,
+            CssRule source) {
+        return switch (style) {
+            case CheckBoxStyle s -> switch (state) {
+                case BASE -> s.checkboxOff;
+                case "hover" -> s.checkboxOver;
+                case "pressed" -> s.checkboxOnOver;
+                case "checked" -> s.checkboxOn;
+                case "disabled" -> s.checkboxOffDisabled;
+                default -> throw unsupported(tag, state, property, source);
+            };
+            case TextButtonStyle s -> switch (state) {
+                case BASE -> s.up;
+                case "hover" -> s.over;
+                case "pressed" -> s.down;
+                case "checked" -> s.checked;
+                case "disabled" -> s.disabled;
+                default -> throw unsupported(tag, state, property, source);
+            };
+            case TextFieldStyle s -> switch (state) {
+                case BASE -> s.background;
+                case "hover" -> s.focusedBackground;
+                case "disabled" -> s.disabledBackground;
+                default -> throw unsupported(tag, state, property, source);
+            };
+            case SelectBoxStyle s -> switch (state) {
+                case BASE -> s.background;
+                case "hover" -> s.backgroundOver;
+                case "disabled" -> s.backgroundDisabled;
+                default -> throw unsupported(tag, state, property, source);
+            };
+            case LabelStyle s -> {
+                if (!BASE.equals(state)) {
+                    throw unsupported(tag, state, property, source);
+                }
+                yield s.background;
+            }
+            case WindowStyle s -> {
+                if (!BASE.equals(state)) {
+                    throw unsupported(tag, state, property, source);
+                }
+                yield s.background;
+            }
+            case ScrollPaneStyle s -> {
+                if (!BASE.equals(state)) {
+                    throw unsupported(tag, state, property, source);
+                }
+                yield s.background;
+            }
+            case ListStyle s -> {
+                if (!BASE.equals(state)) {
+                    throw unsupported(tag, state, property, source);
+                }
+                yield s.background;
+            }
+            case SliderStyle s -> {
+                if (!BASE.equals(state)) {
+                    throw unsupported(tag, state, property, source);
+                }
+                yield s.background;
+            }
+            case ProgressBarStyle s -> {
+                if (!BASE.equals(state)) {
+                    throw unsupported(tag, state, property, source);
+                }
+                yield s.background;
+            }
+            default -> throw unsupported(tag, state, property, source);
+        };
     }
 
     /**

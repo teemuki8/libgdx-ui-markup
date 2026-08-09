@@ -94,6 +94,35 @@ final class CssTest {
     }
 
     @Test
+    void parsesExpandedColorValuesAndBackgroundTint() {
+        CssDocument document = parser.parse("""
+                label { color: #abc; font-color: rgb(1, 2, 3); }
+                button { background-color: rgba(4, 5, 6, 0.5); }
+                .hidden { color: transparent; }
+                """);
+        assertEquals("#abc", document.rules().get(0).properties().get("color"));
+        assertEquals("rgb(1, 2, 3)",
+                document.rules().get(0).properties().get("font-color"));
+        assertEquals("rgba(4, 5, 6, 0.5)",
+                document.rules().get(1).properties().get("background-color"));
+        assertEquals("transparent", document.rules().get(2).properties().get("color"));
+    }
+
+    @Test
+    void malformedColorReportsExactDeclarationCoordinates() {
+        MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse("""
+                button {
+                  width: 10px;
+                  background-color: rgb(256, 0, 0);
+                }
+                """));
+        assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+        assertEquals(3, failure.line());
+        assertEquals(3, failure.column());
+        assertTrue(failure.getMessage().contains("background-color"));
+    }
+
+    @Test
     void selectorMatchingMatrix() {
         CssDocument document = parser.parse("""
                 button { width: 1px; }

@@ -27,6 +27,8 @@ import com.badlogic.gdx.scenes.scene2d.ui.Table;
 import com.badlogic.gdx.scenes.scene2d.ui.TextButton;
 import com.badlogic.gdx.scenes.scene2d.ui.TextField;
 import com.badlogic.gdx.scenes.scene2d.ui.Window;
+import com.badlogic.gdx.scenes.scene2d.utils.Drawable;
+import com.badlogic.gdx.scenes.scene2d.utils.SpriteDrawable;
 import dev.gdx.markup.core.style.CssDocument;
 import dev.gdx.markup.core.style.CssParser;
 import java.nio.charset.StandardCharsets;
@@ -594,6 +596,82 @@ final class MarkupBuilderTest {
             assertEquals(expected, label.getStyle().fontColor);
             assertFalse(label.getStyle() == skin.get("label", Label.LabelStyle.class),
                     "per-actor overrides clone the shared style");
+        });
+    }
+
+    @Test
+    void backgroundColorTintsPerActorCloneWithoutMutatingSharedStyle() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            TextButton.TextButtonStyle shared = skin.get("button",
+                    TextButton.TextButtonStyle.class);
+            Drawable sharedUp = shared.up;
+            Color sharedColor = new Color(((SpriteDrawable) sharedUp).getSprite().getColor());
+
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <button id="plain"/>
+                      <button id="tinted" class="tinted"/>
+                    </ui>
+                    """), css.parse("""
+                    .tinted { background-color: rgba(12, 34, 56, 0.5); background: accent; }
+                    """), skin, new NoopSink());
+
+            TextButton plain = built.root().findActor("plain");
+            TextButton tinted = built.root().findActor("tinted");
+            assertSame(shared, plain.getStyle());
+            assertNotSame(shared, tinted.getStyle());
+            assertSame(sharedUp, shared.up, "shared drawable reference remains unchanged");
+            assertEquals(sharedColor, ((SpriteDrawable) shared.up).getSprite().getColor(),
+                    "tinting must not mutate the shared drawable");
+            assertNotSame(sharedUp, tinted.getStyle().up);
+            Color tint = ((SpriteDrawable) tinted.getStyle().up).getSprite().getColor();
+            assertEquals(12f / 255f, tint.r, 0.0001f);
+            assertEquals(34f / 255f, tint.g, 0.0001f);
+            assertEquals(56f / 255f, tint.b, 0.0001f);
+            assertEquals(0.5f, tint.a, 0.0001f);
+
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void backgroundColorPreservesPseudoStateDrawableSelection() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupBuilder.build(markup.parse(
+                    "<ui><button id=\"b\" class=\"primary\"/></ui>"), css.parse("""
+                    button.primary:hover {
+                      background-color: #336699cc;
+                      background: accent-over;
+                    }
+                    """), skin, new NoopSink());
+
+            TextButton.TextButtonStyle style = skin.get("button.primary",
+                    TextButton.TextButtonStyle.class);
+            assertNotSame(skin.getDrawable("accent-over"), style.over);
+            Color tint = ((SpriteDrawable) style.over).getSprite().getColor();
+            assertEquals(new Color(0x336699cc), tint);
+
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void backgroundColorWithoutTintableBaseFailsAtElementLocation() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            skin.remove("white", Drawable.class);
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("""
+                            <ui><label id="message" class="tinted">Message</label></ui>
+                            """), css.parse(".tinted { background-color: #123; }"),
+                            skin, new NoopSink()));
+            assertEquals(MarkupException.Kind.UNRESOLVED_STYLE, failure.kind());
+            assertEquals("ui/label", failure.elementPath());
+            assertTrue(failure.getMessage().contains("white"));
+
+            skin.dispose();
         });
     }
 

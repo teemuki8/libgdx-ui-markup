@@ -43,7 +43,6 @@ public final class CssParser {
     /** Maximum total selectors across one stylesheet. */
     public static final int MAX_TOTAL_SELECTORS = 4_096;
 
-    private static final Pattern HEX_COLOR = Pattern.compile("#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?");
     private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z][A-Za-z0-9_-]*");
     private static final Pattern FONT_SIZE = Pattern.compile("([0-9]+)(?:px)?");
     private static final Pattern SIMPLE_SELECTOR = Pattern.compile(
@@ -87,6 +86,7 @@ public final class CssParser {
         map.put("font", PropertyKind.FONT);
         map.put("font-size", PropertyKind.FONT_SIZE);
         map.put("font-color", PropertyKind.COLOR);
+        map.put("background-color", PropertyKind.COLOR);
         map.put("background", PropertyKind.DRAWABLE);
         map.put("background-over", PropertyKind.DRAWABLE);
         map.put("background-down", PropertyKind.DRAWABLE);
@@ -420,8 +420,7 @@ public final class CssParser {
             case LENGTH -> validatePixelLength(value);
             case RESPONSIVE_LENGTH -> validateResponsiveLength(value);
             case SPACING -> validateSpacing(value);
-            case COLOR -> HEX_COLOR.matcher(value).matches() || IDENTIFIER.matcher(value).matches()
-                    ? null : "expected #rrggbb, #rrggbbaa, or a color name; got \"" + value + "\"";
+            case COLOR -> validateColor(value);
             case DRAWABLE -> IDENTIFIER.matcher(value).matches() ? null
                     : "expected a drawable name; got \"" + value + "\"";
             case FONT -> IDENTIFIER.matcher(value).matches() ? null
@@ -437,6 +436,15 @@ public final class CssParser {
             case VERTICAL_ALIGN -> enumValue(value, VERTICAL_ALIGNS,
                     "top, middle, or bottom");
         };
+    }
+
+    private static String validateColor(String value) {
+        try {
+            CssColor.parse(value);
+            return null;
+        } catch (MarkupException failure) {
+            return failure.getMessage();
+        }
     }
 
     private static String validatePixelLength(String value) {

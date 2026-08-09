@@ -835,6 +835,10 @@ public final class MarkupBuilder {
             if (actor instanceof Table table && base.has("background")) {
                 table.setBackground(requireDrawable(element, base.get("background")));
             }
+            if (actor instanceof Table table && base.has("background-color")) {
+                table.setBackground(tintedDrawable(element, table.getBackground(),
+                        base.get("background-color")));
+            }
             Object copied = null;
             if (hasStateStyle(base) || hasXmlFontOverride(element)) {
                 copied = applyStateStyle(element, actor, base, null, copied);
@@ -895,7 +899,8 @@ public final class MarkupBuilder {
         /** Style-field properties applied per actor for tagless selectors. */
         private static final List<String> STATE_STYLE_PROPERTIES = List.of(
                 "background", "background-over", "background-down", "background-checked",
-                "background-disabled", "font-color", "color", "font", "font-size");
+                "background-disabled", "background-color", "font-color", "color", "font",
+                "font-size");
 
         private static boolean hasXmlFontOverride(Element element) {
             return element.attr("font") != null || element.attr("font-size") != null;
@@ -943,6 +948,13 @@ public final class MarkupBuilder {
                             "background-disabled" -> SkinStyleCompiler.setStateDrawable(copied,
                                     state, requireDrawable(element, style.get(property)),
                                     element.tag(), property, source);
+                    case "background-color" -> {
+                        Drawable current = SkinStyleCompiler.stateDrawable(copied, state,
+                                element.tag(), property, source);
+                        SkinStyleCompiler.setStateDrawable(copied, state,
+                                tintedDrawable(element, current, style.get(property)),
+                                element.tag(), property, source);
+                    }
                     case "color", "font-color" -> SkinStyleCompiler.setStateColor(copied, state,
                             color(element, style), element.tag(), property, source);
                     case "font" -> {
@@ -1065,8 +1077,32 @@ public final class MarkupBuilder {
             return drawable;
         }
 
+        private Drawable tintedDrawable(Element element, Drawable base, String colorValue) {
+            Drawable selected = base;
+            if (selected == null) {
+                selected = skin.optional("white", Drawable.class);
+                if (selected == null) {
+                    throw new MarkupException(MarkupException.Kind.UNRESOLVED_STYLE,
+                            paths.current(), element.line(), element.column(),
+                            "skin has no drawable named \"white\" for background-color");
+                }
+            }
+            com.badlogic.gdx.graphics.Color tint = color(element, colorValue);
+            try {
+                return skin.newDrawable(selected, tint);
+            } catch (com.badlogic.gdx.utils.GdxRuntimeException failure) {
+                throw new MarkupException(MarkupException.Kind.UNRESOLVED_STYLE,
+                        paths.current(), element.line(), element.column(),
+                        "background drawable is not tintable");
+            }
+        }
+
         private com.badlogic.gdx.graphics.Color color(Element element, ResolvedStyle style) {
             String name = style.has("font-color") ? style.get("font-color") : style.get("color");
+            return color(element, name);
+        }
+
+        private com.badlogic.gdx.graphics.Color color(Element element, String name) {
             com.badlogic.gdx.graphics.Color color = BuildContext.parseColor(skin, name);
             if (color == null) {
                 throw new MarkupException(MarkupException.Kind.UNRESOLVED_STYLE,
