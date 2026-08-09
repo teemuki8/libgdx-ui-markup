@@ -15,11 +15,14 @@ import com.badlogic.gdx.scenes.scene2d.ui.Stack;
 import com.badlogic.gdx.scenes.scene2d.ui.Table;
 import com.badlogic.gdx.scenes.scene2d.ui.TextButton;
 import com.badlogic.gdx.scenes.scene2d.ui.TextField;
+import com.badlogic.gdx.scenes.scene2d.ui.Value;
 import com.badlogic.gdx.scenes.scene2d.ui.Window;
 import com.badlogic.gdx.scenes.scene2d.utils.Drawable;
 import com.badlogic.gdx.utils.Align;
 import dev.gdx.markup.core.style.CssDocument;
+import dev.gdx.markup.core.style.CssLength;
 import dev.gdx.markup.core.style.CssRule;
+import dev.gdx.markup.core.style.CssSpacing;
 import dev.gdx.markup.core.style.CssStyleResolver;
 import dev.gdx.markup.core.style.ResolvedStyle;
 import dev.gdx.markup.core.style.Selector;
@@ -274,14 +277,7 @@ public final class MarkupBuilder {
             assignPseudoStyle(element, table);
             applyCssOverrides(element, table, cellTable);
             ResolvedStyle style = resolveStyle(element, null);
-            if (style.has("padding")) {
-                List<Float> values = style.lengths("padding", List.of());
-                if (values.size() == 1) {
-                    table.pad(values.get(0));
-                } else {
-                    table.pad(values.get(0), values.get(1), values.get(2), values.get(3));
-                }
-            }
+            applyTablePadding(table, style);
             buildCellChildren(table, element);
             applySemantics(table, element, path);
             return table;
@@ -295,7 +291,7 @@ public final class MarkupBuilder {
                 }
                 buildActor(child, table, actor -> {
                     if (actor != null) {
-                        applyCell(table.add(actor), child);
+                        applyCell(table, table.add(actor), child);
                     }
                 });
             }
@@ -357,10 +353,11 @@ public final class MarkupBuilder {
             return new BuildContext(element, skin, resolveStyle(element, null), sink, path);
         }
 
-        private void applyCell(com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cell, Element element) {
+        private void applyCell(Table table, com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cell,
+                Element element) {
             ResolvedStyle style = resolveStyle(element, null);
             applyCellAttrs(cell, element);
-            applyCellCss(cell, element, style);
+            applyCellCss(table, cell, element, style);
         }
 
         private void applyCellAttrs(com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cell,
@@ -486,32 +483,83 @@ public final class MarkupBuilder {
             return value;
         }
 
-        private void applyCellCss(com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cell,
+        private void applyCellCss(Table table, com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cell,
                 Element element, ResolvedStyle style) {
-            applyLengthCss(element, cell, "width", style, cell::width);
-            applyLengthCss(element, cell, "height", style, cell::height);
-            applyLengthCss(element, cell, "min-width", style, cell::minWidth);
-            applyLengthCss(element, cell, "min-height", style, cell::minHeight);
-            applyPadCss(element, cell, style);
+            applyLengthCss(table, element, cell, "width", style, Axis.X, Constraint.SIZE);
+            applyLengthCss(table, element, cell, "height", style, Axis.Y, Constraint.SIZE);
+            applyLengthCss(table, element, cell, "min-width", style, Axis.X, Constraint.MIN);
+            applyLengthCss(table, element, cell, "min-height", style, Axis.Y, Constraint.MIN);
+            applyLengthCss(table, element, cell, "max-width", style, Axis.X, Constraint.MAX);
+            applyLengthCss(table, element, cell, "max-height", style, Axis.Y, Constraint.MAX);
+            if (!isTableContainer(element)) {
+                applyPadCss(element, cell, style);
+            }
             applySpaceCss(element, cell, style);
         }
 
-        private void applyLengthCss(Element element, com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cell,
-                String property, ResolvedStyle style, java.util.function.Consumer<Float> setter) {
-            if (element.attr(property) == null && style.has(property)) {
-                setter.accept(style.length(property, 0f));
+        private void applyLengthCss(Table table, Element element,
+                com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cell, String property,
+                ResolvedStyle style, Axis axis, Constraint constraint) {
+            if (element.attr(property) != null || !style.has(property)) {
+                return;
             }
+            CssLength length = style.lengthValue(property);
+            if (length instanceof CssLength.Auto) {
+                return;
+            }
+            Value value = value(length, table, axis);
+            if (constraint == Constraint.MAX) {
+                value = nonZeroMaximum(value);
+            }
+            switch (constraint) {
+                case SIZE -> {
+                    if (axis == Axis.X) {
+                        cell.width(value);
+                    } else {
+                        cell.height(value);
+                    }
+                }
+                case MIN -> {
+                    if (axis == Axis.X) {
+                        cell.minWidth(value);
+                    } else {
+                        cell.minHeight(value);
+                    }
+                }
+                case MAX -> {
+                    if (axis == Axis.X) {
+                        cell.maxWidth(value);
+                    } else {
+                        cell.maxHeight(value);
+                    }
+                }
+            }
+        }
+
+        private Value value(CssLength length, Table containingTable, Axis axis) {
+            if (length instanceof CssLength.Pixels pixels) {
+                return Value.Fixed.valueOf(pixels.value());
+            }
+            CssLength.Percent percent = (CssLength.Percent) length;
+            return axis == Axis.X
+                    ? Value.percentWidth(percent.ratio(), containingTable)
+                    : Value.percentHeight(percent.ratio(), containingTable);
+        }
+
+        private Value nonZeroMaximum(Value value) {
+            return new Value() {
+                @Override public float get(Actor context) {
+                    float evaluated = value.get(context);
+                    return evaluated == 0f ? Float.MIN_NORMAL : evaluated;
+                }
+            };
         }
 
         private void applyPadCss(Element element, com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cell,
                 ResolvedStyle style) {
             if (element.attr("pad") == null && style.has("padding")) {
-                List<Float> values = style.lengths("padding", List.of());
-                if (values.size() == 1) {
-                    cell.pad(values.get(0));
-                } else {
-                    cell.pad(values.get(0), values.get(1), values.get(2), values.get(3));
-                }
+                CssSpacing value = style.spacing("padding");
+                cell.pad(value.top(), value.right(), value.bottom(), value.left());
             }
             applyEdgeCss(element, cell, "pad-top", "padding-top", style, cell::padTop);
             applyEdgeCss(element, cell, "pad-right", "padding-right", style, cell::padRight);
@@ -522,12 +570,8 @@ public final class MarkupBuilder {
         private void applySpaceCss(Element element, com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cell,
                 ResolvedStyle style) {
             if (element.attr("space") == null && style.has("margin")) {
-                List<Float> values = style.lengths("margin", List.of());
-                if (values.size() == 1) {
-                    cell.space(values.get(0));
-                } else {
-                    cell.space(values.get(0), values.get(1), values.get(2), values.get(3));
-                }
+                CssSpacing value = style.spacing("margin");
+                cell.space(value.top(), value.right(), value.bottom(), value.left());
             }
             applyEdgeCss(element, cell, null, "margin-top", style, cell::spaceTop);
             applyEdgeCss(element, cell, null, "margin-right", style, cell::spaceRight);
@@ -548,9 +592,15 @@ public final class MarkupBuilder {
             if (cellTable == null) {
                 applySize(element, actor, "width", actor::setWidth);
                 applySize(element, actor, "height", actor::setHeight);
-                // Actor has no min-size setters; min-width/min-height are cell constraints.
-                applySize(element, actor, "width", style, actor::setWidth);
-                applySize(element, actor, "height", style, actor::setHeight);
+                if (actor instanceof Table table && hasFullParentDimensions(element, style)) {
+                    rejectOtherTopLevelPercentages(element, style, Set.of("width", "height"));
+                    table.setFillParent(true);
+                } else {
+                    rejectOtherTopLevelPercentages(element, style, Set.of());
+                    // Actor has no min/max-size setters; those remain cell constraints.
+                    applyFixedActorSize(element, "width", style, actor::setWidth);
+                    applyFixedActorSize(element, "height", style, actor::setHeight);
+                }
             }
             String visible = element.attr("visible");
             if (visible != null) {
@@ -575,11 +625,81 @@ public final class MarkupBuilder {
             }
         }
 
-        private void applySize(Element element, Actor actor, String property, ResolvedStyle style,
+        private void applyFixedActorSize(Element element, String property, ResolvedStyle style,
                 java.util.function.Consumer<Float> setter) {
             if (element.attr(property) == null && style.has(property)) {
-                setter.accept(style.length(property, 0f));
+                CssLength length = style.lengthValue(property);
+                if (length instanceof CssLength.Pixels pixels) {
+                    setter.accept(pixels.value());
+                }
             }
+        }
+
+        private boolean hasFullParentDimensions(Element element, ResolvedStyle style) {
+            if (element.attr("width") != null || element.attr("height") != null) {
+                return false;
+            }
+            return isExactFullPercent(style.lengthValue("width"))
+                    && isExactFullPercent(style.lengthValue("height"));
+        }
+
+        private boolean isExactFullPercent(CssLength length) {
+            return length instanceof CssLength.Percent percent && percent.ratio() == 1f;
+        }
+
+        private void rejectOtherTopLevelPercentages(Element element, ResolvedStyle style,
+                Set<String> allowed) {
+            for (String property : List.of("width", "height", "min-width", "min-height",
+                    "max-width", "max-height")) {
+                if (element.attr(property) == null && style.has(property)
+                        && style.lengthValue(property) instanceof CssLength.Percent
+                        && !allowed.contains(property)) {
+                    throw unsupportedPercent(element, style, property);
+                }
+            }
+        }
+
+        private MarkupException unsupportedPercent(Element element, ResolvedStyle style,
+                String property) {
+            CssRule source = style.sourceRule(property);
+            return new MarkupException(MarkupException.Kind.STYLE_ERROR, "css",
+                    source.line(), source.column(), "percentage property \"" + property
+                    + "\" requires a Table cell; a top-level Table supports only the exact "
+                    + "width: 100% and height: 100% pair");
+        }
+
+        private void applyTablePadding(Table table, ResolvedStyle style) {
+            if (style.has("padding")) {
+                CssSpacing value = style.spacing("padding");
+                table.pad(value.top(), value.right(), value.bottom(), value.left());
+            }
+            if (style.has("padding-top")) {
+                table.padTop(style.length("padding-top", 0f));
+            }
+            if (style.has("padding-right")) {
+                table.padRight(style.length("padding-right", 0f));
+            }
+            if (style.has("padding-bottom")) {
+                table.padBottom(style.length("padding-bottom", 0f));
+            }
+            if (style.has("padding-left")) {
+                table.padLeft(style.length("padding-left", 0f));
+            }
+        }
+
+        private boolean isTableContainer(Element element) {
+            return "table".equals(element.tag()) || "window".equals(element.tag());
+        }
+
+        private enum Axis {
+            X,
+            Y,
+        }
+
+        private enum Constraint {
+            SIZE,
+            MIN,
+            MAX,
         }
 
         private void setDisabled(Actor actor, boolean disabled) {
