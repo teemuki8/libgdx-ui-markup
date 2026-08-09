@@ -43,9 +43,10 @@ public final class CssParser {
     /** Maximum total selectors across one stylesheet. */
     public static final int MAX_TOTAL_SELECTORS = 4_096;
 
-    private static final Pattern HEX_COLOR = Pattern.compile("#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?");
     private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z][A-Za-z0-9_-]*");
     private static final Pattern FONT_SIZE = Pattern.compile("([0-9]+)(?:px)?");
+    private static final Pattern NUMBER = Pattern.compile(
+            "[+-]?(?:[0-9]+(?:\\.[0-9]+)?|\\.[0-9]+)");
     private static final Pattern SIMPLE_SELECTOR = Pattern.compile(
             "^([a-z][a-z0-9]*)(?:\\.([A-Za-z0-9_-]+))?$");
     private static final Pattern CLASS_SELECTOR = Pattern.compile("^\\.([A-Za-z0-9_-]+)$");
@@ -57,11 +58,16 @@ public final class CssParser {
     private static final Set<String> VISIBILITIES = Set.of("visible", "hidden");
     private static final Set<String> OVERFLOWS = Set.of("visible", "hidden");
     private static final Set<String> VERTICAL_ALIGNS = Set.of("top", "middle", "bottom");
+    private static final Set<String> WHITE_SPACES = Set.of("normal", "nowrap");
+    private static final Set<String> TEXT_OVERFLOWS = Set.of("clip", "ellipsis");
+    private static final Set<String> OBJECT_FITS = Set.of("contain", "cover", "fill", "none");
     private static final Set<String> RESPONSIVE_DIMENSIONS = Set.of(
             "width", "height", "min-width", "min-height", "max-width", "max-height");
     private static final Set<String> BASE_STATE_ONLY = Set.of(
             "font-size", "display", "gap", "row-gap", "column-gap", "visibility",
-            "overflow", "vertical-align");
+            "overflow", "vertical-align", "white-space", "text-overflow", "object-fit",
+            "object-position", "opacity", "pointer-events", "scale", "rotate",
+            "transform-origin");
 
     private static final Map<String, PropertyKind> PROPERTIES = properties();
 
@@ -79,14 +85,25 @@ public final class CssParser {
         VISIBILITY,
         OVERFLOW,
         VERTICAL_ALIGN,
+        WHITE_SPACE,
+        TEXT_OVERFLOW,
+        OBJECT_FIT,
+        OBJECT_POSITION,
+        OPACITY,
+        POINTER_EVENTS,
+        SCALE,
+        ROTATE,
+        TRANSFORM_ORIGIN,
     }
 
     private static Map<String, PropertyKind> properties() {
         Map<String, PropertyKind> map = new LinkedHashMap<>();
         map.put("color", PropertyKind.COLOR);
         map.put("font", PropertyKind.FONT);
+        map.put("font-family", PropertyKind.FONT);
         map.put("font-size", PropertyKind.FONT_SIZE);
         map.put("font-color", PropertyKind.COLOR);
+        map.put("background-color", PropertyKind.COLOR);
         map.put("background", PropertyKind.DRAWABLE);
         map.put("background-over", PropertyKind.DRAWABLE);
         map.put("background-down", PropertyKind.DRAWABLE);
@@ -109,6 +126,15 @@ public final class CssParser {
         map.put("overflow", PropertyKind.OVERFLOW);
         map.put("vertical-align", PropertyKind.VERTICAL_ALIGN);
         map.put("text-align", PropertyKind.TEXT_ALIGN);
+        map.put("white-space", PropertyKind.WHITE_SPACE);
+        map.put("text-overflow", PropertyKind.TEXT_OVERFLOW);
+        map.put("object-fit", PropertyKind.OBJECT_FIT);
+        map.put("object-position", PropertyKind.OBJECT_POSITION);
+        map.put("opacity", PropertyKind.OPACITY);
+        map.put("pointer-events", PropertyKind.POINTER_EVENTS);
+        map.put("scale", PropertyKind.SCALE);
+        map.put("rotate", PropertyKind.ROTATE);
+        map.put("transform-origin", PropertyKind.TRANSFORM_ORIGIN);
         map.put("visible", PropertyKind.BOOLEAN);
         return Map.copyOf(map);
     }
@@ -412,7 +438,11 @@ public final class CssParser {
             throw styleError(line, column, "rule exceeds the " + MAX_DECLARATIONS
                     + "-declaration limit");
         }
-        properties.put(name, value);
+        properties.put(canonicalProperty(name), value);
+    }
+
+    private static String canonicalProperty(String name) {
+        return "font-family".equals(name) ? "font" : name;
     }
 
     private static String validate(PropertyKind kind, String name, String value) {
@@ -420,8 +450,7 @@ public final class CssParser {
             case LENGTH -> validatePixelLength(value);
             case RESPONSIVE_LENGTH -> validateResponsiveLength(value);
             case SPACING -> validateSpacing(value);
-            case COLOR -> HEX_COLOR.matcher(value).matches() || IDENTIFIER.matcher(value).matches()
-                    ? null : "expected #rrggbb, #rrggbbaa, or a color name; got \"" + value + "\"";
+            case COLOR -> validateColor(value);
             case DRAWABLE -> IDENTIFIER.matcher(value).matches() ? null
                     : "expected a drawable name; got \"" + value + "\"";
             case FONT -> IDENTIFIER.matcher(value).matches() ? null
@@ -436,7 +465,93 @@ public final class CssParser {
             case OVERFLOW -> enumValue(value, OVERFLOWS, "visible or hidden");
             case VERTICAL_ALIGN -> enumValue(value, VERTICAL_ALIGNS,
                     "top, middle, or bottom");
+            case WHITE_SPACE -> enumValue(value, WHITE_SPACES, "normal or nowrap");
+            case TEXT_OVERFLOW -> enumValue(value, TEXT_OVERFLOWS, "clip or ellipsis");
+            case OBJECT_FIT -> enumValue(value, OBJECT_FITS, "contain, cover, fill, or none");
+            case OBJECT_POSITION -> validateObjectPosition(value);
+            case OPACITY -> validateRange(value, 0f, 1f,
+                    "a finite number from 0 through 1");
+            case POINTER_EVENTS -> Set.of("auto", "none").contains(value) ? null
+                    : "expected auto or none; got \"" + value + "\"";
+            case SCALE -> validateScale(value);
+            case ROTATE -> validateRotation(value);
+            case TRANSFORM_ORIGIN -> validateObjectPosition(value);
         };
+    }
+
+    private static String validateRange(String value, float minimum, float maximum,
+            String expected) {
+        if (!NUMBER.matcher(value).matches()) {
+            return "expected " + expected + "; got \"" + value + "\"";
+        }
+        try {
+            float parsed = Float.parseFloat(value);
+            return Float.isFinite(parsed) && parsed >= minimum && parsed <= maximum
+                    ? null : "expected " + expected + "; got \"" + value + "\"";
+        } catch (NumberFormatException failure) {
+            return "expected " + expected + "; got \"" + value + "\"";
+        }
+    }
+
+    private static String validateScale(String value) {
+        String[] parts = value.split("\\s+");
+        if (parts.length < 1 || parts.length > 2) {
+            return "expected one or two positive finite numbers; got \"" + value + "\"";
+        }
+        for (String part : parts) {
+            if (!NUMBER.matcher(part).matches()) {
+                return "expected one or two positive finite numbers; got \"" + value + "\"";
+            }
+            try {
+                float parsed = Float.parseFloat(part);
+                if (!Float.isFinite(parsed) || parsed <= 0f) {
+                    return "expected one or two positive finite numbers; got \""
+                            + value + "\"";
+                }
+            } catch (NumberFormatException failure) {
+                return "expected one or two positive finite numbers; got \"" + value + "\"";
+            }
+        }
+        return null;
+    }
+
+    private static String validateRotation(String value) {
+        if (!value.endsWith("deg")) {
+            return "expected a finite number with a deg suffix; got \"" + value + "\"";
+        }
+        String number = value.substring(0, value.length() - 3);
+        if (!NUMBER.matcher(number).matches()) {
+            return "expected a finite number with a deg suffix; got \"" + value + "\"";
+        }
+        try {
+            return Float.isFinite(Float.parseFloat(number)) ? null
+                    : "expected a finite number with a deg suffix; got \"" + value + "\"";
+        } catch (NumberFormatException failure) {
+            return "expected a finite number with a deg suffix; got \"" + value + "\"";
+        }
+    }
+
+    private static String validateObjectPosition(String value) {
+        String[] parts = value.split("\\s+");
+        if (parts.length == 1 && Set.of("left", "center", "right", "top", "bottom")
+                .contains(parts[0])) {
+            return null;
+        }
+        if (parts.length == 2 && Set.of("left", "center", "right").contains(parts[0])
+                && Set.of("top", "center", "bottom").contains(parts[1])) {
+            return null;
+        }
+        return "expected one alignment keyword or horizontal then vertical alignment; got \""
+                + value + "\"";
+    }
+
+    private static String validateColor(String value) {
+        try {
+            CssColor.parse(value);
+            return null;
+        } catch (MarkupException failure) {
+            return failure.getMessage();
+        }
     }
 
     private static String validatePixelLength(String value) {

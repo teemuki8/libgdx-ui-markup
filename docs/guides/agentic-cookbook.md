@@ -16,6 +16,7 @@ libgdx-ui-harness 1.2.0, and libgdx-agent-runtime 2.0.0 on Java 25.
 | Validate untrusted markup without a GL context | [Parse without GL](#2-parse-without-gl) |
 | Add the UI to an application-owned Stage | [Build on the render thread](#3-build-on-the-render-thread) |
 | Make a Table UI follow its parent or viewport | [Use responsive GDXCSS layout](#3a-use-responsive-gdxcss-layout) |
+| Style paint, text, images, input, or Actor transforms | [Use bounded Scene2D styling](#3b-use-bounded-scene2d-styling) |
 | Give automation stable locators | [Declare semantics](#4-declare-semantics-for-strict-locators) |
 | Compare displayed state with domain state | [Choose runtime value authority](#5-choose-runtime-value-authority) |
 | Drive the preview through query/action/wait/screenshot | [Exercise the harness MCP path](#6-exercise-the-harness-mcp-path) |
@@ -211,6 +212,74 @@ xvfb-run -a ./gradlew :libgdx-ui-markup:test \
 
 Reference: [`CssLength`](../../libgdx-ui-markup/src/main/java/dev/gdx/markup/core/style/CssLength.java),
 [`CssSpacing`](../../libgdx-ui-markup/src/main/java/dev/gdx/markup/core/style/CssSpacing.java), and
+[`MarkupBuilder`](../../libgdx-ui-markup/src/main/java/dev/gdx/markup/core/MarkupBuilder.java).
+
+## 3b. Use bounded Scene2D styling
+
+Emit only properties with a direct Scene2D conversion. This example is accepted as written:
+
+```css
+.panel {
+  background: panel;
+  background-color: rgba(24, 32, 38, 0.92);
+  opacity: 0.98;
+}
+
+.title {
+  font-family: inter;
+  color: #f4f7ff;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.portrait {
+  object-fit: cover;
+  object-position: center top;
+  pointer-events: none;
+  scale: 1.05;
+  rotate: -2deg;
+  transform-origin: center bottom;
+}
+```
+
+| Property | Accepted values | Conversion or restriction |
+|---|---|---|
+| `color`, `font-color` | short/long hex, `rgb`, `rgba`, `transparent`, Skin name | supported widget font-color field |
+| `background-color` | same color grammar | cloned/tinted selected background, else Skin `white` |
+| `font-family` | registered identifier | alias for `font`; later alias declaration wins |
+| `white-space` | `normal`, `nowrap` | Label wrap on/off |
+| `text-overflow` | `clip`, `ellipsis` | Label ellipsis off/on |
+| `object-fit` | `contain`, `cover`, `fill`, `none` | Image `fit`, `fill`, `stretch`, `none` scaling |
+| `object-position` | one keyword or horizontal then vertical | Image alignment |
+| `opacity` | finite number from 0 through 1 | Actor alpha; RGB is retained |
+| `pointer-events` | `auto`, `none` | `Touchable.enabled` / `disabled`; XML `focusable` wins |
+| `scale` | one/two positive finite numbers | Actor X/Y scale; one value applies to both axes |
+| `rotate` | finite number with `deg` | Actor rotation |
+| `transform-origin` | one keyword or horizontal then vertical | Actor origin after its size is known |
+
+Hex supports `#rgb`, `#rgba`, `#rrggbb`, and `#rrggbbaa`. RGB function channels are integers
+from 0 through 255; `rgba` alpha is 0 through 1. Names are resolved only from the caller-owned
+Skin on the render thread. `background-color` does not allocate a Texture: it clones/tints the
+selected drawable or the Skin's `white` drawable. A missing/non-tintable base is a located
+`UNRESOLVED_STYLE`, and shared Skin styles/drawables remain unchanged.
+
+Text properties on non-Labels and object properties on non-Images are located `STYLE_ERROR`s.
+Paint/input/transform properties are base-state only; do not put them in pseudo-state rules.
+Actor scale/rotation never changes a Table Cell constraint. General transforms, translation,
+skew, matrices, gradients, borders/radius, shadows, filters, blend modes, URLs, and web fonts
+are intentionally unsupported.
+
+Narrow verification:
+
+```bash
+xvfb-run -a ./gradlew :libgdx-ui-markup:test \
+  --tests '*MarkupBuilderTest.backgroundColorTintsPerActorCloneWithoutMutatingSharedStyle' \
+  --tests '*MarkupBuilderTest.objectFitAndPositionMapToImageScalingAndAlignment' \
+  --tests '*MarkupBuilderTest.actorPaintInputAndTransformsApplyAfterKnownSize'
+```
+
+Reference: [`CssColor`](../../libgdx-ui-markup/src/main/java/dev/gdx/markup/core/style/CssColor.java),
+[`CssParser`](../../libgdx-ui-markup/src/main/java/dev/gdx/markup/core/style/CssParser.java), and
 [`MarkupBuilder`](../../libgdx-ui-markup/src/main/java/dev/gdx/markup/core/MarkupBuilder.java).
 
 ## 4. Declare semantics for strict locators

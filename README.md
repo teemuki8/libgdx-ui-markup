@@ -145,6 +145,38 @@ property.
 Unsupported browser units and functions—including `em`, `rem`, `vw`, `vh`, `calc()`, `min()`,
 `max()`, and `clamp()`—fail during the GL-free CSS parse with the property location.
 
+## Common GDXCSS styling
+
+Colors accept `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, integer-channel `rgb(...)`,
+integer-channel `rgba(..., alpha)` with alpha from 0 through 1, `transparent`, or a color name
+registered in the caller-owned Skin. `background-color` tints a cloned `background` drawable;
+without one it clones the Skin's `white` drawable. The source drawable and shared widget style
+are never mutated. A missing or non-tintable base is a located `UNRESOLVED_STYLE`.
+
+```css
+.card {
+  background: panel;
+  background-color: rgba(24, 32, 38, 0.9);
+  opacity: 0.95;
+}
+.copy { font-family: inter; white-space: normal; text-overflow: ellipsis; }
+.art { object-fit: cover; object-position: right bottom; }
+```
+
+`font-family` is the standard alias for `font`; if both occur, the later declaration wins.
+`white-space: normal | nowrap` and `text-overflow: clip | ellipsis` apply only to Labels.
+`object-fit: contain | cover | fill | none` and `object-position` apply only to Images;
+positions use one keyword or horizontal-then-vertical keywords.
+
+Every Actor supports `opacity: 0..1`, `pointer-events: auto | none`, one/two-number `scale`,
+finite `rotate` values with a required `deg` suffix, and keyword `transform-origin`. These are
+base-state properties; transforms alter Actor painting/input state and never Table/Cell layout
+constraints. Explicit markup `focusable` remains authoritative over `pointer-events`.
+
+There is deliberately no support for gradients, borders/radius, shadows, filters, blend modes,
+general `transform` functions, translation, skew, matrices, URLs, or web fonts. Unknown and
+incompatible properties fail typed instead of being approximated.
+
 ## Exact-size fonts
 
 The default skin bundles Inter and rasterizes each requested logical size with `gdx-freetype`.

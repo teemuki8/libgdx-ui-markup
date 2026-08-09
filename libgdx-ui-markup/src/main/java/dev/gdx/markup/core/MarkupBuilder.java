@@ -5,6 +5,7 @@ import com.badlogic.gdx.scenes.scene2d.Group;
 import com.badlogic.gdx.scenes.scene2d.Touchable;
 import com.badlogic.gdx.scenes.scene2d.ui.Button;
 import com.badlogic.gdx.scenes.scene2d.ui.CheckBox;
+import com.badlogic.gdx.scenes.scene2d.ui.Image;
 import com.badlogic.gdx.scenes.scene2d.ui.Label;
 import com.badlogic.gdx.scenes.scene2d.ui.ProgressBar;
 import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane;
@@ -19,6 +20,7 @@ import com.badlogic.gdx.scenes.scene2d.ui.Value;
 import com.badlogic.gdx.scenes.scene2d.ui.Window;
 import com.badlogic.gdx.scenes.scene2d.utils.Drawable;
 import com.badlogic.gdx.utils.Align;
+import com.badlogic.gdx.utils.Scaling;
 import dev.gdx.markup.core.style.CssDocument;
 import dev.gdx.markup.core.style.CssLength;
 import dev.gdx.markup.core.style.CssRule;
@@ -336,6 +338,7 @@ public final class MarkupBuilder {
             actors.add(pane);
             applyCommon(element, pane, cellTable);
             assignPseudoStyle(element, pane);
+            applyCssOverrides(element, pane, cellTable);
             Actor child = buildActor(element.children().get(0), null);
             if (child != null) {
                 pane.setActor(child);
@@ -610,6 +613,7 @@ public final class MarkupBuilder {
                 }
             }
             rejectTableOnlyProperties(element, actor, cellTable, style);
+            rejectBackgroundColorTarget(element, actor, style);
             applyOverflow(element, actor, style);
             String visible = element.attr("visible");
             if (visible != null) {
@@ -625,6 +629,18 @@ public final class MarkupBuilder {
             if (element.attr("focusable") != null && !Boolean.parseBoolean(
                     element.attr("focusable"))) {
                 actor.setTouchable(Touchable.disabled);
+            }
+            applyActorProperties(element, actor, style);
+            applyTextAndImageProperties(element, actor, style);
+        }
+
+        private void rejectBackgroundColorTarget(Element element, Actor actor,
+                ResolvedStyle style) {
+            if (style.has("background-color") && !(actor instanceof Table)
+                    && widgetStyle(actor) == null) {
+                throw unsupportedTarget(element, style, "background-color",
+                        "property \"background-color\" requires a Table or an actor with "
+                                + "a widget background field");
             }
         }
 
@@ -835,6 +851,10 @@ public final class MarkupBuilder {
             if (actor instanceof Table table && base.has("background")) {
                 table.setBackground(requireDrawable(element, base.get("background")));
             }
+            if (actor instanceof Table table && base.has("background-color")) {
+                table.setBackground(tintedDrawable(element, table.getBackground(),
+                        base.get("background-color")));
+            }
             Object copied = null;
             if (hasStateStyle(base) || hasXmlFontOverride(element)) {
                 copied = applyStateStyle(element, actor, base, null, copied);
@@ -855,6 +875,101 @@ public final class MarkupBuilder {
                 int horizontal = label.getLabelAlign() & (Align.left | Align.right);
                 label.setAlignment(horizontal | verticalAlignOf(base.get("vertical-align")));
             }
+        }
+
+        private void applyActorProperties(Element element, Actor actor, ResolvedStyle style) {
+            if (style.has("opacity")) {
+                actor.getColor().a = Float.parseFloat(style.get("opacity"));
+            }
+            if (style.has("pointer-events") && element.attr("focusable") == null) {
+                actor.setTouchable("none".equals(style.get("pointer-events"))
+                        ? Touchable.disabled : Touchable.enabled);
+            }
+            if (style.has("scale")) {
+                String[] values = style.get("scale").split("\\s+");
+                float x = Float.parseFloat(values[0]);
+                float y = values.length == 2 ? Float.parseFloat(values[1]) : x;
+                actor.setScale(x, y);
+            }
+            if (style.has("rotate")) {
+                String value = style.get("rotate");
+                actor.setRotation(Float.parseFloat(value.substring(0, value.length() - 3)));
+            }
+            if (style.has("transform-origin")) {
+                actor.setOrigin(objectAlignOf(style.get("transform-origin")));
+            }
+        }
+
+        private void applyTextAndImageProperties(Element element, Actor actor,
+                ResolvedStyle style) {
+            if (style.has("white-space")) {
+                if (!(actor instanceof Label label)) {
+                    throw unsupportedTarget(element, style, "white-space",
+                            "property \"white-space\" requires a Label actor");
+                }
+                label.setWrap("normal".equals(style.get("white-space")));
+            }
+            if (style.has("text-overflow")) {
+                if (!(actor instanceof Label label)) {
+                    throw unsupportedTarget(element, style, "text-overflow",
+                            "property \"text-overflow\" requires a Label actor");
+                }
+                label.setEllipsis("ellipsis".equals(style.get("text-overflow")));
+            }
+            if (style.has("object-fit")) {
+                if (!(actor instanceof Image image)) {
+                    throw unsupportedTarget(element, style, "object-fit",
+                            "property \"object-fit\" requires an Image actor");
+                }
+                image.setScaling(scalingOf(style.get("object-fit")));
+            }
+            if (style.has("object-position")) {
+                if (!(actor instanceof Image image)) {
+                    throw unsupportedTarget(element, style, "object-position",
+                            "property \"object-position\" requires an Image actor");
+                }
+                image.setAlign(objectAlignOf(style.get("object-position")));
+            }
+        }
+
+        private Scaling scalingOf(String value) {
+            return switch (value) {
+                case "contain" -> Scaling.fit;
+                case "cover" -> Scaling.fill;
+                case "fill" -> Scaling.stretch;
+                case "none" -> Scaling.none;
+                default -> throw new AssertionError("validated object-fit " + value);
+            };
+        }
+
+        private int objectAlignOf(String value) {
+            String[] parts = value.split("\\s+");
+            String horizontal;
+            String vertical;
+            if (parts.length == 1) {
+                horizontal = switch (parts[0]) {
+                    case "left", "right" -> parts[0];
+                    default -> "center";
+                };
+                vertical = switch (parts[0]) {
+                    case "top", "bottom" -> parts[0];
+                    default -> "center";
+                };
+            } else {
+                horizontal = parts[0];
+                vertical = parts[1];
+            }
+            int alignment = switch (horizontal) {
+                case "left" -> Align.left;
+                case "right" -> Align.right;
+                default -> 0;
+            };
+            alignment |= switch (vertical) {
+                case "top" -> Align.top;
+                case "bottom" -> Align.bottom;
+                default -> 0;
+            };
+            return alignment == 0 ? Align.center : alignment;
         }
 
         /**
@@ -895,7 +1010,8 @@ public final class MarkupBuilder {
         /** Style-field properties applied per actor for tagless selectors. */
         private static final List<String> STATE_STYLE_PROPERTIES = List.of(
                 "background", "background-over", "background-down", "background-checked",
-                "background-disabled", "font-color", "color", "font", "font-size");
+                "background-disabled", "background-color", "font-color", "color", "font",
+                "font-size");
 
         private static boolean hasXmlFontOverride(Element element) {
             return element.attr("font") != null || element.attr("font-size") != null;
@@ -943,6 +1059,13 @@ public final class MarkupBuilder {
                             "background-disabled" -> SkinStyleCompiler.setStateDrawable(copied,
                                     state, requireDrawable(element, style.get(property)),
                                     element.tag(), property, source);
+                    case "background-color" -> {
+                        Drawable current = SkinStyleCompiler.stateDrawable(copied, state,
+                                element.tag(), property, source);
+                        SkinStyleCompiler.setStateDrawable(copied, state,
+                                tintedDrawable(element, current, style.get(property)),
+                                element.tag(), property, source);
+                    }
                     case "color", "font-color" -> SkinStyleCompiler.setStateColor(copied, state,
                             color(element, style), element.tag(), property, source);
                     case "font" -> {
@@ -1065,8 +1188,32 @@ public final class MarkupBuilder {
             return drawable;
         }
 
+        private Drawable tintedDrawable(Element element, Drawable base, String colorValue) {
+            Drawable selected = base;
+            if (selected == null) {
+                selected = skin.optional("white", Drawable.class);
+                if (selected == null) {
+                    throw new MarkupException(MarkupException.Kind.UNRESOLVED_STYLE,
+                            paths.current(), element.line(), element.column(),
+                            "skin has no drawable named \"white\" for background-color");
+                }
+            }
+            com.badlogic.gdx.graphics.Color tint = color(element, colorValue);
+            try {
+                return skin.newDrawable(selected, tint);
+            } catch (com.badlogic.gdx.utils.GdxRuntimeException failure) {
+                throw new MarkupException(MarkupException.Kind.UNRESOLVED_STYLE,
+                        paths.current(), element.line(), element.column(),
+                        "background drawable is not tintable");
+            }
+        }
+
         private com.badlogic.gdx.graphics.Color color(Element element, ResolvedStyle style) {
             String name = style.has("font-color") ? style.get("font-color") : style.get("color");
+            return color(element, name);
+        }
+
+        private com.badlogic.gdx.graphics.Color color(Element element, String name) {
             com.badlogic.gdx.graphics.Color color = BuildContext.parseColor(skin, name);
             if (color == null) {
                 throw new MarkupException(MarkupException.Kind.UNRESOLVED_STYLE,

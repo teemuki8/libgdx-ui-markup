@@ -4,6 +4,7 @@ import com.badlogic.gdx.graphics.Color;
 import com.badlogic.gdx.graphics.g2d.BitmapFont;
 import com.badlogic.gdx.scenes.scene2d.ui.Skin;
 import com.badlogic.gdx.scenes.scene2d.utils.Drawable;
+import dev.gdx.markup.core.style.CssColor;
 import dev.gdx.markup.core.style.ResolvedStyle;
 import java.util.ArrayList;
 import java.util.List;
@@ -120,7 +121,7 @@ public final class BuildContext {
         return drawable;
     }
 
-    /** Looks up a named color or parses {@code #rrggbb[aa]}, failing when unknown. */
+    /** Resolves one bounded GDXCSS color, failing when its Skin name is unknown. */
     public Color requireColor(String name) {
         Objects.requireNonNull(name, "name");
         Color color = parseColor(skin, name);
@@ -163,16 +164,19 @@ public final class BuildContext {
                 column, message);
     }
 
-    /** Parses {@code #rrggbb[aa]} or looks up a named skin color; {@code null} when unknown. */
+    /** Resolves a GL-free GDXCSS color through the Skin; {@code null} when invalid or unknown. */
     static Color parseColor(Skin skin, String value) {
         Objects.requireNonNull(value, "value");
-        if (value.startsWith("#")) {
-            try {
-                return Color.valueOf(value);
-            } catch (IllegalArgumentException failure) {
-                return null;
-            }
+        CssColor parsed;
+        try {
+            parsed = CssColor.parse(value);
+        } catch (MarkupException failure) {
+            return null;
         }
-        return skin.optional(value, Color.class);
+        return switch (parsed) {
+            case CssColor.Rgba rgba -> new Color(rgba.red() / 255f, rgba.green() / 255f,
+                    rgba.blue() / 255f, rgba.alpha());
+            case CssColor.Named named -> skin.optional(named.name(), Color.class);
+        };
     }
 }

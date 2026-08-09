@@ -17,7 +17,9 @@ import com.badlogic.gdx.graphics.Texture;
 import com.badlogic.gdx.graphics.g2d.BitmapFont;
 import com.badlogic.gdx.scenes.scene2d.Actor;
 import com.badlogic.gdx.scenes.scene2d.Group;
+import com.badlogic.gdx.scenes.scene2d.Touchable;
 import com.badlogic.gdx.scenes.scene2d.ui.CheckBox;
+import com.badlogic.gdx.scenes.scene2d.ui.Image;
 import com.badlogic.gdx.scenes.scene2d.ui.Label;
 import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane;
 import com.badlogic.gdx.scenes.scene2d.ui.SelectBox;
@@ -27,6 +29,10 @@ import com.badlogic.gdx.scenes.scene2d.ui.Table;
 import com.badlogic.gdx.scenes.scene2d.ui.TextButton;
 import com.badlogic.gdx.scenes.scene2d.ui.TextField;
 import com.badlogic.gdx.scenes.scene2d.ui.Window;
+import com.badlogic.gdx.scenes.scene2d.utils.Drawable;
+import com.badlogic.gdx.scenes.scene2d.utils.SpriteDrawable;
+import com.badlogic.gdx.utils.Align;
+import com.badlogic.gdx.utils.Scaling;
 import dev.gdx.markup.core.style.CssDocument;
 import dev.gdx.markup.core.style.CssParser;
 import java.nio.charset.StandardCharsets;
@@ -594,6 +600,323 @@ final class MarkupBuilderTest {
             assertEquals(expected, label.getStyle().fontColor);
             assertFalse(label.getStyle() == skin.get("label", Label.LabelStyle.class),
                     "per-actor overrides clone the shared style");
+        });
+    }
+
+    @Test
+    void backgroundColorTintsPerActorCloneWithoutMutatingSharedStyle() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            TextButton.TextButtonStyle shared = skin.get("button",
+                    TextButton.TextButtonStyle.class);
+            Drawable sharedUp = shared.up;
+            Color sharedColor = new Color(((SpriteDrawable) sharedUp).getSprite().getColor());
+
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <button id="plain"/>
+                      <button id="tinted" class="tinted"/>
+                    </ui>
+                    """), css.parse("""
+                    .tinted { background-color: rgba(12, 34, 56, 0.5); background: accent; }
+                    """), skin, new NoopSink());
+
+            TextButton plain = built.root().findActor("plain");
+            TextButton tinted = built.root().findActor("tinted");
+            assertSame(shared, plain.getStyle());
+            assertNotSame(shared, tinted.getStyle());
+            assertSame(sharedUp, shared.up, "shared drawable reference remains unchanged");
+            assertEquals(sharedColor, ((SpriteDrawable) shared.up).getSprite().getColor(),
+                    "tinting must not mutate the shared drawable");
+            assertNotSame(sharedUp, tinted.getStyle().up);
+            Color tint = ((SpriteDrawable) tinted.getStyle().up).getSprite().getColor();
+            assertEquals(12f / 255f, tint.r, 0.0001f);
+            assertEquals(34f / 255f, tint.g, 0.0001f);
+            assertEquals(56f / 255f, tint.b, 0.0001f);
+            assertEquals(0.5f, tint.a, 0.0001f);
+
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void backgroundColorPreservesPseudoStateDrawableSelection() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupBuilder.build(markup.parse(
+                    "<ui><button id=\"b\" class=\"primary\"/></ui>"), css.parse("""
+                    button.primary:hover {
+                      background-color: #336699cc;
+                      background: accent-over;
+                    }
+                    """), skin, new NoopSink());
+
+            TextButton.TextButtonStyle style = skin.get("button.primary",
+                    TextButton.TextButtonStyle.class);
+            assertNotSame(skin.getDrawable("accent-over"), style.over);
+            Color tint = ((SpriteDrawable) style.over).getSprite().getColor();
+            assertEquals(new Color(0x336699cc), tint);
+
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void backgroundColorWithoutTintableBaseFailsAtElementLocation() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            skin.remove("white", Drawable.class);
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("""
+                            <ui><label id="message" class="tinted">Message</label></ui>
+                            """), css.parse(".tinted { background-color: #123; }"),
+                            skin, new NoopSink()));
+            assertEquals(MarkupException.Kind.UNRESOLVED_STYLE, failure.kind());
+            assertEquals("ui/label", failure.elementPath());
+            assertTrue(failure.getMessage().contains("white"));
+
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void backgroundColorUsesWhiteFallbackWithoutAllocatingATexture() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            Drawable white = skin.getDrawable("white");
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui><label id="badge" class="badge">New</label></ui>
+                    """), css.parse(".badge { background-color: #1234; }"),
+                    skin, new NoopSink());
+            Label badge = built.root().findActor("badge");
+            assertNotNull(badge.getStyle().background);
+            assertNotSame(white, badge.getStyle().background,
+                    "the fallback drawable is cloned before tinting");
+
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void whiteSpaceAndTextOverflowMapOnlyToLabels() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupRegistry registry = MarkupRegistry.defaultRegistry();
+            registry.register("label", (element, context) -> new RecordingLabel(
+                    element.text(), context.resolveStyle(Label.LabelStyle.class)));
+
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <label id="wrapped" class="wrapped">Long copy</label>
+                      <label id="clipped" class="clipped">Short copy</label>
+                    </ui>
+                    """), css.parse("""
+                    .wrapped { white-space: normal; text-overflow: ellipsis; }
+                    .clipped { white-space: nowrap; text-overflow: clip; }
+                    """), skin, new NoopSink(), registry);
+
+            RecordingLabel wrapped = built.root().findActor("wrapped");
+            RecordingLabel clipped = built.root().findActor("clipped");
+            assertTrue(wrapped.getWrap());
+            assertTrue(wrapped.ellipsis);
+            assertFalse(clipped.getWrap());
+            assertFalse(clipped.ellipsis);
+
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void objectFitAndPositionMapToImageScalingAndAlignment() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupRegistry registry = MarkupRegistry.defaultRegistry();
+            registry.register("image", (element, context) -> new RecordingImage(
+                    context.requireDrawable(element.attr("drawable"))));
+
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <image id="cover" class="cover" drawable="accent"/>
+                      <image id="contain" class="contain" drawable="accent"/>
+                      <image id="fill" class="fill" drawable="accent"/>
+                      <image id="none" class="none" drawable="accent"/>
+                    </ui>
+                    """), css.parse("""
+                    .cover { object-fit: cover; object-position: right bottom; }
+                    .contain { object-fit: contain; object-position: center top; }
+                    .fill { object-fit: fill; object-position: left; }
+                    .none { object-fit: none; object-position: center; }
+                    """), skin, new NoopSink(), registry);
+
+            RecordingImage cover = built.root().findActor("cover");
+            RecordingImage contain = built.root().findActor("contain");
+            RecordingImage fill = built.root().findActor("fill");
+            RecordingImage none = built.root().findActor("none");
+            assertSame(Scaling.fill, cover.scaling);
+            assertEquals(Align.right | Align.bottom, cover.getAlign());
+            assertSame(Scaling.fit, contain.scaling);
+            assertEquals(Align.top, contain.getAlign());
+            assertSame(Scaling.stretch, fill.scaling);
+            assertEquals(Align.left, fill.getAlign());
+            assertSame(Scaling.none, none.scaling);
+            assertEquals(Align.center, none.getAlign());
+
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void textAndImagePropertiesFailOnIncompatibleTargetsAtCssSource() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupException textFailure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse(
+                            "<ui><button class=\"bad\"/></ui>"), css.parse("""
+
+                            .bad { white-space: normal; }
+                            """), skin, new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, textFailure.kind());
+            assertEquals("css", textFailure.elementPath());
+            assertEquals(2, textFailure.line());
+            assertTrue(textFailure.getMessage().contains("Label"));
+
+            MarkupException imageFailure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse(
+                            "<ui><label class=\"bad\">X</label></ui>"), css.parse("""
+
+                            .bad { object-fit: contain; }
+                            """), skin, new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, imageFailure.kind());
+            assertEquals("css", imageFailure.elementPath());
+            assertEquals(2, imageFailure.line());
+            assertTrue(imageFailure.getMessage().contains("Image"));
+
+            MarkupException containerFailure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse(
+                            "<ui><group class=\"bad\"/></ui>"), css.parse("""
+
+                            .bad { text-overflow: ellipsis; }
+                            """), skin, new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, containerFailure.kind());
+            assertEquals("css", containerFailure.elementPath());
+            assertTrue(containerFailure.getMessage().contains("Label"));
+
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void backgroundColorFailsOnActorsWithoutABackgroundField() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse(
+                            "<ui><group class=\"bad\"/></ui>"),
+                            css.parse(".bad { background-color: #123; }"),
+                            skin, new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+            assertEquals("css", failure.elementPath());
+            assertTrue(failure.getMessage().contains("background"));
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void backgroundColorAppliesToStyledContainerActors() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            ScrollPane.ScrollPaneStyle shared = skin.get("scrollpane",
+                    ScrollPane.ScrollPaneStyle.class);
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <scrollpane id="pane" class="tinted"><label text="Content"/></scrollpane>
+                    </ui>
+                    """), css.parse("""
+                    .tinted { background: scroll-bg; background-color: #123; }
+                    """), skin, new NoopSink());
+            ScrollPane pane = built.root().findActor("pane");
+            assertNotSame(shared, pane.getStyle());
+            assertNotSame(skin.getDrawable("scroll-bg"), pane.getStyle().background);
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void pseudoBackgroundFailsForTagWithoutStateStyle() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("<ui><table/></ui>"),
+                            css.parse("table:hover { background-color: #123; }"),
+                            skin, new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+            assertEquals("css", failure.elementPath());
+            assertTrue(failure.getMessage().contains("hover"));
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void actorPaintInputAndTransformsApplyAfterKnownSize() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <image id="styled" drawable="accent" width="200" height="100"/>
+                      <image id="interactive" drawable="accent"/>
+                      <group id="container" width="80" height="40"/>
+                    </ui>
+                    """), css.parse("""
+                    #styled {
+                      opacity: 0.25;
+                      pointer-events: none;
+                      scale: 2 0.5;
+                      rotate: -30deg;
+                      transform-origin: right bottom;
+                    }
+                    #interactive { pointer-events: auto; scale: 1.5; }
+                    #container { opacity: 0.5; scale: 2; transform-origin: center top; }
+                    """), skin, new NoopSink());
+
+            Image styled = built.root().findActor("styled");
+            assertEquals(1f, styled.getColor().r, 0.0001f);
+            assertEquals(1f, styled.getColor().g, 0.0001f);
+            assertEquals(1f, styled.getColor().b, 0.0001f);
+            assertEquals(0.25f, styled.getColor().a, 0.0001f);
+            assertEquals(Touchable.disabled, styled.getTouchable());
+            assertEquals(2f, styled.getScaleX(), 0.0001f);
+            assertEquals(0.5f, styled.getScaleY(), 0.0001f);
+            assertEquals(-30f, styled.getRotation(), 0.0001f);
+            assertEquals(200f, styled.getOriginX(), 0.0001f);
+            assertEquals(0f, styled.getOriginY(), 0.0001f);
+
+            Image interactive = built.root().findActor("interactive");
+            assertEquals(Touchable.enabled, interactive.getTouchable());
+            assertEquals(1.5f, interactive.getScaleX(), 0.0001f);
+            assertEquals(1.5f, interactive.getScaleY(), 0.0001f);
+
+            Group container = built.root().findActor("container");
+            assertEquals(0.5f, container.getColor().a, 0.0001f,
+                    "Actor properties also apply to non-widget containers");
+            assertEquals(2f, container.getScaleX(), 0.0001f);
+            assertEquals(40f, container.getOriginX(), 0.0001f);
+            assertEquals(40f, container.getOriginY(), 0.0001f);
+
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void explicitNonFocusableMarkupWinsOverPointerEventsAuto() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui><image id="locked" drawable="accent" focusable="false"/></ui>
+                    """), css.parse("#locked { pointer-events: auto; }"),
+                    skin, new NoopSink());
+            Image locked = built.root().findActor("locked");
+            assertEquals(Touchable.disabled, locked.getTouchable());
+            skin.dispose();
         });
     }
 
@@ -1240,6 +1563,36 @@ final class MarkupBuilderTest {
             assertEquals(1, first.disposeCount, "repeated failure leaks no pixmap");
             assertEquals(1, second.disposeCount, "repeated failure leaks no pixmap");
         });
+    }
+
+    /** Label test double exposing the write-only Scene2D ellipsis setting. */
+    private static final class RecordingLabel extends Label {
+        private boolean ellipsis;
+
+        RecordingLabel(CharSequence text, LabelStyle style) {
+            super(text, style);
+        }
+
+        @Override
+        public void setEllipsis(boolean ellipsis) {
+            super.setEllipsis(ellipsis);
+            this.ellipsis = ellipsis;
+        }
+    }
+
+    /** Image test double exposing the write-only Scene2D scaling setting. */
+    private static final class RecordingImage extends Image {
+        private Scaling scaling;
+
+        RecordingImage(Drawable drawable) {
+            super(drawable);
+        }
+
+        @Override
+        public void setScaling(Scaling scaling) {
+            super.setScaling(scaling);
+            this.scaling = scaling;
+        }
     }
 
     /** Counts {@link Pixmap#dispose()} calls so ownership tests can assert exactly-once disposal. */

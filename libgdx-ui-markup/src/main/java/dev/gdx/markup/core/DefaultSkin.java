@@ -205,6 +205,7 @@ public final class DefaultSkin {
 
     private static void addDrawables(Skin skin, TextureRegionDrawable pixel,
             java.util.Map<String, String> palette) {
+        addDrawable(skin, "white", pixel);
         Color panel = Color.valueOf(palette.get("panel"));
         Color panelAlt = Color.valueOf(palette.get("panel-alt"));
         Color accent = Color.valueOf(palette.get("accent"));
