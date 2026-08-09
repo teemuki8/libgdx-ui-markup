@@ -14,7 +14,7 @@ final class CliOptionsTest {
     void parsesAllFlags() {
         CliOptions options = CliOptions.parse(new String[] {
                 "--ui", "samples/signin.xml",
-                "--css", "samples/signin.css",
+                "--css", "samples/signin.gdxcss",
                 "--skin", "skin.json",
                 "--frames", "42",
                 "--screenshot", "out.png",
@@ -22,7 +22,7 @@ final class CliOptionsTest {
                 "--mcp",
         });
         assertEquals(Path.of("samples/signin.xml"), options.ui());
-        assertEquals(Path.of("samples/signin.css"), options.css());
+        assertEquals(Path.of("samples/signin.gdxcss"), options.css());
         assertEquals(Path.of("skin.json"), options.skin());
         assertEquals(42, options.frames());
         assertEquals(Path.of("out.png"), options.screenshot());

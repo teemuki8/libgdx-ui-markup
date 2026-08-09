@@ -43,14 +43,14 @@ Start the hot-reloading window; edit either sample while it runs and press Escap
 
 ```bash
 ./gradlew :libgdx-ui-markup-preview:run \
-  --args='--ui samples/signin.xml --css samples/signin.css'
+  --args='--ui samples/signin.xml --css samples/signin.gdxcss'
 ```
 
 For a bounded agent or CI check, render five frames, write a PNG, and exit:
 
 ```bash
 xvfb-run -a ./gradlew :libgdx-ui-markup-preview:run \
-  --args='--ui samples/signin.xml --css samples/signin.css --frames 5 --screenshot build/signin.png --exit'
+  --args='--ui samples/signin.xml --css samples/signin.gdxcss --frames 5 --screenshot build/signin.png --exit'
 ```
 
 A successful run emits a schema-versioned `markup-status` JSON line and exits 0. A markup or CSS
@@ -59,7 +59,9 @@ failure emits a typed status with `kind`, `elementPath`, `line`, `column`, and `
 
 Reference: [`CliOptions`](../../libgdx-ui-markup-preview/src/main/java/dev/gdx/markup/preview/CliOptions.java),
 [`MarkupStatus`](../../libgdx-ui-markup-preview/src/main/java/dev/gdx/markup/preview/MarkupStatus.java),
-and the committed [`signin.xml`](../../samples/signin.xml) / [`signin.css`](../../samples/signin.css).
+and the committed [`signin.xml`](../../samples/signin.xml) /
+[`signin.gdxcss`](../../samples/signin.gdxcss). Use `.gdxcss` for new stylesheets; legacy `.css`
+paths remain accepted by the parser, preview watcher, and IDEA sibling fallback.
 
 ## 2. Parse without GL
 
@@ -75,7 +77,7 @@ They also accept `Path` inputs and read at most their configured byte limit plus
 
 ```java
 MarkupDocument document = new MarkupParser().parse(Path.of("ui/menu.xml"));
-CssDocument css = new CssParser().parse(Path.of("ui/menu.css"));
+CssDocument css = new CssParser().parse(Path.of("ui/menu.gdxcss"));
 ```
 
 Do not create a `Skin`, actor, Stage, backend, or libGDX collection in the parse phase. Pass the
@@ -249,7 +251,7 @@ Configure the MCP client to launch this executable and argument vector from the 
 
 ```text
 command: libgdx-ui-markup-preview/build/install/libgdx-ui-markup-preview/bin/libgdx-ui-markup-preview
-args: --ui samples/signin.xml --css samples/signin.css --mcp
+args: --ui samples/signin.xml --css samples/signin.gdxcss --mcp
 ```
 
 Do not put `./gradlew ... run` between the client and server: Gradle writes its own progress to
@@ -357,7 +359,7 @@ affected suites in order:
 ```bash
 ./gradlew :libgdx-ui-markup:test
 xvfb-run -a ./gradlew :libgdx-ui-markup:test
-xvfb-run -a ./gradlew :libgdx-ui-markup-preview:run --args='--ui samples/signin.xml --css samples/signin.css --frames 5 --screenshot build/signin.png --exit'
+xvfb-run -a ./gradlew :libgdx-ui-markup-preview:run --args='--ui samples/signin.xml --css samples/signin.gdxcss --frames 5 --screenshot build/signin.png --exit'
 xvfb-run -a ./gradlew :libgdx-ui-markup-runtime:test
 xvfb-run -a ./gradlew :libgdx-ui-markup-harness:test
 ./gradlew :libgdx-ui-markup-idea:buildPlugin

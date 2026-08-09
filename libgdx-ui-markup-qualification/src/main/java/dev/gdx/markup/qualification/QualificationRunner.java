@@ -550,7 +550,7 @@ public final class QualificationRunner implements AutoCloseable {
      */
     private Optional<Path> render(CorpusEntry entry, RunBudget run) {
         Path xml = resolveInside(corpusDir, entry.markupFile());
-        Path css = corpusDir.resolve("shared.css");
+        Path css = corpusDir.resolve("shared.gdxcss");
         Path screenshot = resolveInside(outputDir, entry.id() + ".png");
         Path lib = previewDistribution.resolve("lib");
         if (!Files.isDirectory(lib)) {

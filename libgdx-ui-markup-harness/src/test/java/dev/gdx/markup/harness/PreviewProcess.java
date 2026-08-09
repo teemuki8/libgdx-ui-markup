@@ -81,7 +81,7 @@ final class PreviewProcess implements AutoCloseable {
                 lib.resolve("*").toString(),
                 "dev.gdx.markup.preview.PreviewApp",
                 "--ui", Path.of(samples, "signin.xml").toString(),
-                "--css", Path.of(samples, "signin.css").toString(),
+                "--css", Path.of(samples, "signin.gdxcss").toString(),
                 "--mcp"));
         Process process = new ProcessBuilder(command).start();
         return new PreviewProcess(process);

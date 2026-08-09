@@ -53,10 +53,10 @@ jobs:
         run: |
           set -euo pipefail
           xvfb-run -a ./gradlew :libgdx-ui-markup-preview:run \
-            --args='--ui samples/signin.xml --css samples/signin.css --frames 5 --screenshot build/signin.png --exit'
+            --args='--ui samples/signin.xml --css samples/signin.gdxcss --frames 5 --screenshot build/signin.png --exit'
           test -s build/signin.png
           output="$(xvfb-run -a ./gradlew :libgdx-ui-markup-preview:run \
-            --args='--ui samples/broken.xml --css samples/signin.css --frames 5 --exit' 2>&1 || true)"
+            --args='--ui samples/broken.xml --css samples/signin.gdxcss --frames 5 --exit' 2>&1 || true)"
           grep -q 'markup-status: .*"ok":false' <<<"$output" \
             || { echo 'broken path did not report a typed markup-status error' >&2; exit 1; }
       - name: Build IDEA plugin

@@ -1049,7 +1049,7 @@ final class MarkupBuilderTest {
         MarkupDocument document = markup.parse(Files.readString(
                 samples.resolve("signin.xml"), StandardCharsets.UTF_8));
         CssDocument styles = css.parse(Files.readString(
-                samples.resolve("signin.css"), StandardCharsets.UTF_8));
+                samples.resolve("signin.gdxcss"), StandardCharsets.UTF_8));
         return MarkupBuilder.build(document, styles, skin, new NoopSink());
     }
 
