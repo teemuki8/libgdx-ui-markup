@@ -17,6 +17,7 @@ import com.badlogic.gdx.graphics.Texture;
 import com.badlogic.gdx.graphics.g2d.BitmapFont;
 import com.badlogic.gdx.scenes.scene2d.Actor;
 import com.badlogic.gdx.scenes.scene2d.Group;
+import com.badlogic.gdx.scenes.scene2d.Touchable;
 import com.badlogic.gdx.scenes.scene2d.ui.CheckBox;
 import com.badlogic.gdx.scenes.scene2d.ui.Image;
 import com.badlogic.gdx.scenes.scene2d.ui.Label;
@@ -679,6 +680,24 @@ final class MarkupBuilderTest {
     }
 
     @Test
+    void backgroundColorUsesWhiteFallbackWithoutAllocatingATexture() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            Drawable white = skin.getDrawable("white");
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui><label id="badge" class="badge">New</label></ui>
+                    """), css.parse(".badge { background-color: #1234; }"),
+                    skin, new NoopSink());
+            Label badge = built.root().findActor("badge");
+            assertNotNull(badge.getStyle().background);
+            assertNotSame(white, badge.getStyle().background,
+                    "the fallback drawable is cloned before tinting");
+
+            skin.dispose();
+        });
+    }
+
+    @Test
     void whiteSpaceAndTextOverflowMapOnlyToLabels() throws Exception {
         GdxTestHost.run(() -> {
             Skin skin = DefaultSkin.create();
@@ -772,6 +791,70 @@ final class MarkupBuilderTest {
             assertEquals(2, imageFailure.line());
             assertTrue(imageFailure.getMessage().contains("Image"));
 
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void actorPaintInputAndTransformsApplyAfterKnownSize() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <image id="styled" drawable="accent" width="200" height="100"/>
+                      <image id="interactive" drawable="accent"/>
+                      <group id="container" width="80" height="40"/>
+                    </ui>
+                    """), css.parse("""
+                    #styled {
+                      opacity: 0.25;
+                      pointer-events: none;
+                      scale: 2 0.5;
+                      rotate: -30deg;
+                      transform-origin: right bottom;
+                    }
+                    #interactive { pointer-events: auto; scale: 1.5; }
+                    #container { opacity: 0.5; scale: 2; transform-origin: center top; }
+                    """), skin, new NoopSink());
+
+            Image styled = built.root().findActor("styled");
+            assertEquals(1f, styled.getColor().r, 0.0001f);
+            assertEquals(1f, styled.getColor().g, 0.0001f);
+            assertEquals(1f, styled.getColor().b, 0.0001f);
+            assertEquals(0.25f, styled.getColor().a, 0.0001f);
+            assertEquals(Touchable.disabled, styled.getTouchable());
+            assertEquals(2f, styled.getScaleX(), 0.0001f);
+            assertEquals(0.5f, styled.getScaleY(), 0.0001f);
+            assertEquals(-30f, styled.getRotation(), 0.0001f);
+            assertEquals(200f, styled.getOriginX(), 0.0001f);
+            assertEquals(0f, styled.getOriginY(), 0.0001f);
+
+            Image interactive = built.root().findActor("interactive");
+            assertEquals(Touchable.enabled, interactive.getTouchable());
+            assertEquals(1.5f, interactive.getScaleX(), 0.0001f);
+            assertEquals(1.5f, interactive.getScaleY(), 0.0001f);
+
+            Group container = built.root().findActor("container");
+            assertEquals(0.5f, container.getColor().a, 0.0001f,
+                    "Actor properties also apply to non-widget containers");
+            assertEquals(2f, container.getScaleX(), 0.0001f);
+            assertEquals(40f, container.getOriginX(), 0.0001f);
+            assertEquals(40f, container.getOriginY(), 0.0001f);
+
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void explicitNonFocusableMarkupWinsOverPointerEventsAuto() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui><image id="locked" drawable="accent" focusable="false"/></ui>
+                    """), css.parse("#locked { pointer-events: auto; }"),
+                    skin, new NoopSink());
+            Image locked = built.root().findActor("locked");
+            assertEquals(Touchable.disabled, locked.getTouchable());
             skin.dispose();
         });
     }

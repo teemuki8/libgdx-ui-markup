@@ -45,6 +45,8 @@ public final class CssParser {
 
     private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z][A-Za-z0-9_-]*");
     private static final Pattern FONT_SIZE = Pattern.compile("([0-9]+)(?:px)?");
+    private static final Pattern NUMBER = Pattern.compile(
+            "[+-]?(?:[0-9]+(?:\\.[0-9]+)?|\\.[0-9]+)");
     private static final Pattern SIMPLE_SELECTOR = Pattern.compile(
             "^([a-z][a-z0-9]*)(?:\\.([A-Za-z0-9_-]+))?$");
     private static final Pattern CLASS_SELECTOR = Pattern.compile("^\\.([A-Za-z0-9_-]+)$");
@@ -64,7 +66,8 @@ public final class CssParser {
     private static final Set<String> BASE_STATE_ONLY = Set.of(
             "font-size", "display", "gap", "row-gap", "column-gap", "visibility",
             "overflow", "vertical-align", "white-space", "text-overflow", "object-fit",
-            "object-position");
+            "object-position", "opacity", "pointer-events", "scale", "rotate",
+            "transform-origin");
 
     private static final Map<String, PropertyKind> PROPERTIES = properties();
 
@@ -86,6 +89,11 @@ public final class CssParser {
         TEXT_OVERFLOW,
         OBJECT_FIT,
         OBJECT_POSITION,
+        OPACITY,
+        POINTER_EVENTS,
+        SCALE,
+        ROTATE,
+        TRANSFORM_ORIGIN,
     }
 
     private static Map<String, PropertyKind> properties() {
@@ -122,6 +130,11 @@ public final class CssParser {
         map.put("text-overflow", PropertyKind.TEXT_OVERFLOW);
         map.put("object-fit", PropertyKind.OBJECT_FIT);
         map.put("object-position", PropertyKind.OBJECT_POSITION);
+        map.put("opacity", PropertyKind.OPACITY);
+        map.put("pointer-events", PropertyKind.POINTER_EVENTS);
+        map.put("scale", PropertyKind.SCALE);
+        map.put("rotate", PropertyKind.ROTATE);
+        map.put("transform-origin", PropertyKind.TRANSFORM_ORIGIN);
         map.put("visible", PropertyKind.BOOLEAN);
         return Map.copyOf(map);
     }
@@ -456,7 +469,66 @@ public final class CssParser {
             case TEXT_OVERFLOW -> enumValue(value, TEXT_OVERFLOWS, "clip or ellipsis");
             case OBJECT_FIT -> enumValue(value, OBJECT_FITS, "contain, cover, fill, or none");
             case OBJECT_POSITION -> validateObjectPosition(value);
+            case OPACITY -> validateRange(value, 0f, 1f,
+                    "a finite number from 0 through 1");
+            case POINTER_EVENTS -> Set.of("auto", "none").contains(value) ? null
+                    : "expected auto or none; got \"" + value + "\"";
+            case SCALE -> validateScale(value);
+            case ROTATE -> validateRotation(value);
+            case TRANSFORM_ORIGIN -> validateObjectPosition(value);
         };
+    }
+
+    private static String validateRange(String value, float minimum, float maximum,
+            String expected) {
+        if (!NUMBER.matcher(value).matches()) {
+            return "expected " + expected + "; got \"" + value + "\"";
+        }
+        try {
+            float parsed = Float.parseFloat(value);
+            return Float.isFinite(parsed) && parsed >= minimum && parsed <= maximum
+                    ? null : "expected " + expected + "; got \"" + value + "\"";
+        } catch (NumberFormatException failure) {
+            return "expected " + expected + "; got \"" + value + "\"";
+        }
+    }
+
+    private static String validateScale(String value) {
+        String[] parts = value.split("\\s+");
+        if (parts.length < 1 || parts.length > 2) {
+            return "expected one or two positive finite numbers; got \"" + value + "\"";
+        }
+        for (String part : parts) {
+            if (!NUMBER.matcher(part).matches()) {
+                return "expected one or two positive finite numbers; got \"" + value + "\"";
+            }
+            try {
+                float parsed = Float.parseFloat(part);
+                if (!Float.isFinite(parsed) || parsed <= 0f) {
+                    return "expected one or two positive finite numbers; got \""
+                            + value + "\"";
+                }
+            } catch (NumberFormatException failure) {
+                return "expected one or two positive finite numbers; got \"" + value + "\"";
+            }
+        }
+        return null;
+    }
+
+    private static String validateRotation(String value) {
+        if (!value.endsWith("deg")) {
+            return "expected a finite number with a deg suffix; got \"" + value + "\"";
+        }
+        String number = value.substring(0, value.length() - 3);
+        if (!NUMBER.matcher(number).matches()) {
+            return "expected a finite number with a deg suffix; got \"" + value + "\"";
+        }
+        try {
+            return Float.isFinite(Float.parseFloat(number)) ? null
+                    : "expected a finite number with a deg suffix; got \"" + value + "\"";
+        } catch (NumberFormatException failure) {
+            return "expected a finite number with a deg suffix; got \"" + value + "\"";
+        }
     }
 
     private static String validateObjectPosition(String value) {

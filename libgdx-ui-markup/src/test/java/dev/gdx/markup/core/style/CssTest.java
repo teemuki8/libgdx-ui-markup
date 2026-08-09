@@ -149,6 +149,46 @@ final class CssTest {
     }
 
     @Test
+    void parsesClosedActorPaintInputAndTransformValues() {
+        CssDocument document = parser.parse("""
+                image {
+                  opacity: 0.25;
+                  pointer-events: none;
+                  scale: 2 0.5;
+                  rotate: -30deg;
+                  transform-origin: right bottom;
+                }
+                """);
+        Map<String, String> properties = document.rules().getFirst().properties();
+        assertEquals("0.25", properties.get("opacity"));
+        assertEquals("none", properties.get("pointer-events"));
+        assertEquals("2 0.5", properties.get("scale"));
+        assertEquals("-30deg", properties.get("rotate"));
+        assertEquals("right bottom", properties.get("transform-origin"));
+
+        for (String opacity : List.of("-0.1", "1.1", "50%", "NaN", "0.5 trailing")) {
+            assertThrows(MarkupException.class,
+                    () -> parser.parse("image { opacity: " + opacity + "; }"));
+        }
+        for (String scale : List.of("0", "-1", "1 0", "1 2 3", "NaN", "1px")) {
+            assertThrows(MarkupException.class,
+                    () -> parser.parse("image { scale: " + scale + "; }"));
+        }
+        for (String rotate : List.of("30", "deg", "NaNdeg", "Infinitydeg", "3rad")) {
+            assertThrows(MarkupException.class,
+                    () -> parser.parse("image { rotate: " + rotate + "; }"));
+        }
+        assertThrows(MarkupException.class,
+                () -> parser.parse("image { pointer-events: painted; }"));
+        assertThrows(MarkupException.class,
+                () -> parser.parse("image { transform-origin: top left; }"));
+        assertThrows(MarkupException.class,
+                () -> parser.parse("image:hover { opacity: 0.5; }"));
+        assertThrows(MarkupException.class,
+                () -> parser.parse("image:pressed { scale: 2; }"));
+    }
+
+    @Test
     void malformedColorReportsExactDeclarationCoordinates() {
         MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse("""
                 button {

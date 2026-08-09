@@ -628,6 +628,7 @@ public final class MarkupBuilder {
                     element.attr("focusable"))) {
                 actor.setTouchable(Touchable.disabled);
             }
+            applyActorProperties(element, actor, style);
         }
 
         private void applySize(Element element, Actor actor, String attribute,
@@ -862,6 +863,29 @@ public final class MarkupBuilder {
                 label.setAlignment(horizontal | verticalAlignOf(base.get("vertical-align")));
             }
             applyTextAndImageProperties(element, actor, base);
+        }
+
+        private void applyActorProperties(Element element, Actor actor, ResolvedStyle style) {
+            if (style.has("opacity")) {
+                actor.getColor().a = Float.parseFloat(style.get("opacity"));
+            }
+            if (style.has("pointer-events") && element.attr("focusable") == null) {
+                actor.setTouchable("none".equals(style.get("pointer-events"))
+                        ? Touchable.disabled : Touchable.enabled);
+            }
+            if (style.has("scale")) {
+                String[] values = style.get("scale").split("\\s+");
+                float x = Float.parseFloat(values[0]);
+                float y = values.length == 2 ? Float.parseFloat(values[1]) : x;
+                actor.setScale(x, y);
+            }
+            if (style.has("rotate")) {
+                String value = style.get("rotate");
+                actor.setRotation(Float.parseFloat(value.substring(0, value.length() - 3)));
+            }
+            if (style.has("transform-origin")) {
+                actor.setOrigin(objectAlignOf(style.get("transform-origin")));
+            }
         }
 
         private void applyTextAndImageProperties(Element element, Actor actor,
