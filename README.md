@@ -23,6 +23,15 @@ engine, no full HTML.
 
 `settings.gradle.kts` includes all four modules; `./gradlew` (Gradle 9.6.1) builds with JDK 25.
 
+### Ecosystem versions
+
+**Current tested stack:** markup 0.4.1, harness 1.2.0, agent-runtime 2.0.0, and libGDX
+1.14.2. This is the recommended combination for new applications.
+
+**Minimum compatible stack:** harness 1.1.0 and agent-runtime 1.0.0. The release gate executes
+the adapter tests against both exact profiles from separate strict lock files; dynamic dependency
+versions are not used.
+
 `ui` declares the tree; ids become harness test identifiers and actor names:
 
 ```xml
@@ -134,8 +143,8 @@ a PNG — all against `samples/signin.xml`, no imperative wiring.
 ## Agent runtime values
 
 An element with `data-runtime-entity` becomes a value source in
-[libgdx-agent-runtime](https://github.com/teemuki8/libgdx-agent-runtime) (published
-`io.github.teemuki8:agent-runtime-core:1.0.0`) with an explicitly chosen value authority. The
+[libgdx-agent-runtime](https://github.com/teemuki8/libgdx-agent-runtime) (current tested artifact
+`io.github.teemuki8:agent-runtime-core:2.0.0`) with an explicitly chosen value authority. The
 property is named by `data-runtime-property` (default `value`), and a native `UiBinding` links
 the entity to the actor's control id in the session, so `uiToRuntime`/`runtimeToUi` resolve the
 correlation. Three registration modes on `MarkupRuntimeSource` share one transactional
@@ -162,7 +171,8 @@ The preview prints a bounded registration line naming the mode, e.g.
 
 The three-library story is complete against published artifacts: markup ↔ agent-runtime and
 markup ↔ harness (both on published jars), and agent-runtime ↔ harness through the
-`ui_runtime_compare` tool shipped in harness 1.1.0 (`harness-agent-runtime`). The preview's
+`ui_runtime_compare` tool shipped in harness (`harness-agent-runtime`, current tested version
+1.2.0). The preview's
 MCP session advertises the runtime-compare capability, `data-runtime-entity` actors carry the
 harness runtime binding with the frame-correlation token `markup-preview-frame`, and the E2E
 asserts the correlated `EQUAL` comparison (ADR 0002).

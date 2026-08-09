@@ -38,6 +38,9 @@ jobs:
       - name: Clean checks on Linux (full ladder, GL tests under Xvfb)
         if: runner.os == 'Linux'
         run: xvfb-run -a ./gradlew clean check --warning-mode=fail
+      - name: Qualify minimum and current ecosystem profiles
+        if: runner.os == 'Linux'
+        run: xvfb-run -a ./gradlew minimumEcosystemTest currentEcosystemTest --warning-mode=fail
       - name: Clean backend-neutral checks on Windows
         if: runner.os == 'Windows'
         shell: pwsh

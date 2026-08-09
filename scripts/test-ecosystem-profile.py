@@ -26,6 +26,23 @@ class EcosystemProfileContractTest(unittest.TestCase):
         for forbidden in ("latest.release", "latest.integration", "+\""):
             self.assertNotIn(forbidden, catalog)
 
+    def test_ci_and_release_execute_both_profiles(self):
+        ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        for task in ("minimumEcosystemTest", "currentEcosystemTest"):
+            self.assertIn(task, ci)
+            self.assertIn(task, release)
+
+    def test_current_and_minimum_stack_are_documented(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        embedding = (ROOT / "docs/guides/embedding.md").read_text(encoding="utf-8")
+        release_note = ROOT / "docs/releases/v0.4.1.md"
+        self.assertIn("Current tested stack", readme)
+        self.assertIn("Minimum compatible stack", readme)
+        self.assertIn("harness 1.2.0", embedding)
+        self.assertIn("agent-runtime 2.0.0", embedding)
+        self.assertTrue(release_note.is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
