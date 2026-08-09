@@ -878,6 +878,35 @@ final class MarkupBuilderTest {
     }
 
     @Test
+    void idAndMultiClassCompoundsRemainPerActorIsolated() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            TextButton.TextButtonStyle shared = skin.get("button",
+                    TextButton.TextButtonStyle.class);
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <button id="save"/>
+                      <button id="other"/>
+                      <button id="only-primary" class="primary"/>
+                      <button id="danger" class="primary danger"/>
+                    </ui>
+                    """), css.parse("""
+                    button#save { font-color: accent; }
+                    button.primary.danger { background: accent-down; }
+                    """), skin, new NoopSink());
+            TextButton save = built.root().findActor("save");
+            TextButton other = built.root().findActor("other");
+            TextButton onlyPrimary = built.root().findActor("only-primary");
+            TextButton danger = built.root().findActor("danger");
+            assertEquals(skin.getColor("accent"), save.getStyle().fontColor);
+            assertEquals(shared.fontColor, other.getStyle().fontColor);
+            assertSame(shared.up, onlyPrimary.getStyle().up);
+            assertSame(skin.getDrawable("accent-down"), danger.getStyle().up);
+            skin.dispose();
+        });
+    }
+
+    @Test
     void focusPseudoMapsOnlyToTextFieldFocusedStyleFields() throws Exception {
         GdxTestHost.run(() -> {
             Skin skin = DefaultSkin.create();
@@ -895,6 +924,35 @@ final class MarkupBuilderTest {
                             skin, new NoopSink()));
             assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
             assertTrue(failure.getMessage().contains("focus"));
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void documentedGdxcssCookbookFixtureParsesAndBuilds() throws Exception {
+        String xml;
+        String styles;
+        try (java.io.InputStream xmlStream = getClass().getResourceAsStream(
+                "/gdxcss-cookbook.xml");
+                java.io.InputStream styleStream = getClass().getResourceAsStream(
+                        "/gdxcss-cookbook.gdxcss")) {
+            assertNotNull(xmlStream);
+            assertNotNull(styleStream);
+            xml = new String(xmlStream.readAllBytes(), StandardCharsets.UTF_8);
+            styles = new String(styleStream.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        CssDocument parsedStyles = css.parse(styles);
+        assertEquals("100%", parsedStyles.variables().get("--full"));
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            BuiltUi built = MarkupBuilder.build(markup.parse(xml), parsedStyles,
+                    skin, new NoopSink());
+            Table screen = built.root().findActor("screen");
+            Label title = built.root().findActor("title");
+            Image art = built.root().findActor("art");
+            assertNotNull(screen);
+            assertNotNull(title.getStyle().background);
+            assertEquals(0.9f, art.getColor().a, 0.0001f);
             skin.dispose();
         });
     }

@@ -17,6 +17,7 @@ libgdx-ui-harness 1.2.0, and libgdx-agent-runtime 2.0.0 on Java 25.
 | Add the UI to an application-owned Stage | [Build on the render thread](#3-build-on-the-render-thread) |
 | Make a Table UI follow its parent or viewport | [Use responsive GDXCSS layout](#3a-use-responsive-gdxcss-layout) |
 | Style paint, text, images, input, or Actor transforms | [Use bounded Scene2D styling](#3b-use-bounded-scene2d-styling) |
+| Use structural selectors or design tokens | [Use selectors and tokens](#3c-use-structural-selectors-and-design-tokens) |
 | Give automation stable locators | [Declare semantics](#4-declare-semantics-for-strict-locators) |
 | Compare displayed state with domain state | [Choose runtime value authority](#5-choose-runtime-value-authority) |
 | Drive the preview through query/action/wait/screenshot | [Exercise the harness MCP path](#6-exercise-the-harness-mcp-path) |
@@ -281,6 +282,40 @@ xvfb-run -a ./gradlew :libgdx-ui-markup:test \
 Reference: [`CssColor`](../../libgdx-ui-markup/src/main/java/dev/gdx/markup/core/style/CssColor.java),
 [`CssParser`](../../libgdx-ui-markup/src/main/java/dev/gdx/markup/core/style/CssParser.java), and
 [`MarkupBuilder`](../../libgdx-ui-markup/src/main/java/dev/gdx/markup/core/MarkupBuilder.java).
+
+## 3c. Use structural selectors and design tokens
+
+Use one global `:root` block and complete-value substitutions. Structural matching follows the
+actual immutable markup ancestry, not the Actor tree after construction:
+
+```css
+:root { --surface: #182026; --full: 100%; }
+#screen { width: var(--full); height: var(--full); }
+table.shell > group.content label.title { background-color: var(--surface); }
+```
+
+Supported compounds combine an optional tag or `*`, one ID, and multiple classes. Separate
+compounds with whitespace (descendant) or `>` (direct child); at most eight parts are allowed.
+Comma groups are supported. `:active` normalizes to `:pressed`; `:focus` maps only TextField
+focused background/font color. Pseudos occur only on the rightmost compound. Attribute and
+sibling selectors, pseudo-elements, `:not()`, `:has()`, and other selector functions fail typed.
+
+Variables are global, capped at 256, and resolve through at most 16 names. Forward references
+work. `var(--name)` must be the complete property value; fallback arguments, mixed tokens,
+cycles, and missing names fail before the target property's ordinary validation. The executable
+recipe is `gdxcss-cookbook.xml` plus `gdxcss-cookbook.gdxcss` in core test resources.
+
+Narrow verification:
+
+```bash
+xvfb-run -a ./gradlew :libgdx-ui-markup:test \
+  --tests '*CssTest.structuralResolutionUsesAncestryChildAndDescendantSemantics' \
+  --tests '*CssTest.rootVariablesResolveForwardReferencesBeforePropertyValidation' \
+  --tests '*MarkupBuilderTest.documentedGdxcssCookbookFixtureParsesAndBuilds'
+```
+
+The complete property/value/limit matrix is in the README's “GDXCSS language contract”. Keep
+that matrix, this recipe, and the executable fixture synchronized with every dialect change.
 
 ## 4. Declare semantics for strict locators
 

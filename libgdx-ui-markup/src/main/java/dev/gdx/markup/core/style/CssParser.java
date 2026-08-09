@@ -566,6 +566,17 @@ public final class CssParser {
         if (value.isEmpty()) {
             throw styleError(line, column, "property \"" + name + "\" has no value");
         }
+        for (Selector selector : selectors) {
+            if (!"focus".equals(selector.pseudo())) continue;
+            if (!Set.of("background", "color", "font-color").contains(name)) {
+                throw styleError(line, column, "property \"" + name
+                        + "\" is not supported in a :focus rule");
+            }
+            if (selector.tag() != null && !"textfield".equals(selector.tag())) {
+                throw styleError(line, column, ":focus style fields exist only on textfield; "
+                        + "got <" + selector.tag() + ">");
+            }
+        }
         if ((BASE_STATE_ONLY.contains(name) || RESPONSIVE_DIMENSIONS.contains(name))
                 && selectors.stream().anyMatch(selector -> selector.pseudo() != null)) {
             throw styleError(line, column,

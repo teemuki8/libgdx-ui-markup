@@ -1,0 +1,16 @@
+:root {
+  --surface: #182026;
+  --full: 100%;
+}
+
+#screen { width: var(--full); height: var(--full); }
+table.shell > group.content label.title {
+  background-color: var(--surface);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+group.content > image.art {
+  object-fit: cover;
+  object-position: right bottom;
+  opacity: 0.9;
+}

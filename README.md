@@ -177,6 +177,31 @@ There is deliberately no support for gradients, borders/radius, shadows, filters
 general `transform` functions, translation, skew, matrices, URLs, or web fonts. Unknown and
 incompatible properties fail typed instead of being approximated.
 
+## GDXCSS language contract
+
+| Area | Supported contract |
+|---|---|
+| Selectors | `*`; tag, `#id`, any number of `.classes`, tag+ID/classes; descendant and `>` child; comma groups |
+| Pseudos | `:hover`, `:pressed`, `:active` (alias), `:checked`, `:disabled`; `:focus` only for TextField focused background/font color |
+| Dimensions | `width`, `height`, `min-*`, `max-*`: non-negative unitless/`px`, `%`, or `auto` |
+| Spacing/layout | `padding[-side]`, `margin[-side]`, `gap`, `row-gap`, `column-gap`, `display`, `visibility`, `visible`, `overflow`, `vertical-align` |
+| Widget style | `background` plus `-over/-down/-checked/-disabled`, `background-color`, `color`, `font-color`, `font`/`font-family`, `font-size`, `text-align` |
+| Text/Image | `white-space`, `text-overflow`, `object-fit`, `object-position` with the target restrictions above |
+| Actor | `opacity`, `pointer-events`, `scale`, `rotate`, `transform-origin` |
+| Tokens | one `:root` block, at most 256 `--names`; complete-value `var(--name)`, depth at most 16 |
+
+Selectors are capped at 256 characters, 64 selectors per comma group, 4,096 total selectors,
+and eight compound parts per selector. Stylesheets are capped at 262,144 UTF-8 bytes, 2,048
+rules, and 128 declarations per rule. Cascade matching also has per-resolution and per-build
+comparison limits. Attribute/sibling selectors, pseudo-elements, selector functions,
+inheritance, fallback or mixed-token `var()`, `!important`, at-rules/media queries, flex/grid,
+floats, positioning, browser-relative units/functions, and arbitrary resource loading are not
+supported.
+
+Legacy `.css` paths and the legacy one/four-value comma spacing form remain accepted. New files
+use `.gdxcss`; new spacing uses CSS-order whitespace values. Nested Table `padding` is internal;
+use `margin` for external Cell space.
+
 ## Exact-size fonts
 
 The default skin bundles Inter and rasterizes each requested logical size with `gdx-freetype`.

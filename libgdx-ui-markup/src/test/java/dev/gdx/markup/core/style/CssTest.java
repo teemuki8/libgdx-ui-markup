@@ -491,6 +491,20 @@ final class CssTest {
     }
 
     @Test
+    void focusPseudoIsClosedToTextFieldFocusedStyleFields() {
+        parser.parse("textfield:focus { background: field-focused; font-color: accent; }");
+        for (String invalid : List.of(
+                "label:focus { color: accent; }",
+                "textfield:focus { padding: 2px; }",
+                "textfield:focus { background-color: #fff; }")) {
+            MarkupException failure = assertThrows(MarkupException.class,
+                    () -> parser.parse(invalid), invalid);
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+            assertTrue(failure.getMessage().contains("focus"));
+        }
+    }
+
+    @Test
     void unknownTagSelectorFails() {
         MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse(
                 "foobar { color: red; }"));

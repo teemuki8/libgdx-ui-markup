@@ -66,6 +66,9 @@ final class SkinStyleCompiler {
         if (selector.parts().size() > 1) {
             return; // structural selectors require the builder's concrete element ancestry
         }
+        if (selector.id() != null || selector.parts().getFirst().classNames().size() > 1) {
+            return; // ID and multi-class compounds are per-actor, never shared Skin styles
+        }
         Class<?> styleClass = styleClass(selector.tag());
         if (styleClass == null) {
             String unsupportedProperty = pseudoStateProperty(rule);

@@ -80,7 +80,9 @@ public final class MarkupBuilder {
         for (CssRule rule : css.rules()) {
             for (Selector selector : rule.selectors()) {
                 if (selector.pseudo() != null
-                        && (selector.tag() == null || selector.parts().size() > 1)) {
+                        && (selector.tag() == null || selector.id() != null
+                        || selector.parts().getFirst().classNames().size() > 1
+                        || selector.parts().size() > 1)) {
                     states.add(selector.pseudo());
                 }
             }
