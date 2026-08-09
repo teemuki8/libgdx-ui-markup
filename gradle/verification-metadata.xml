@@ -51,7 +51,10 @@
             <trusting group="com.squareup.retrofit2" name="retrofit" version="3.0.0" file="retrofit-3.0.0.jar"/>
             <trusting group="com.squareup.retrofit2" name="retrofit" version="3.0.0" file="retrofit-3.0.0.module"/>
          </trusted-key>
-         <trusted-key id="1DE5E75F1040F8B0DC3A4320F2B5B2B1B9B1180A" group="com.google.re2j" name="re2j" version="1.8"/>
+         <trusted-key id="1DE5E75F1040F8B0DC3A4320F2B5B2B1B9B1180A">
+            <trusting group="com.google.re2j" name="re2j" version="1.8" file="re2j-1.8.jar"/>
+            <trusting group="com.google.re2j" name="re2j" version="1.8" file="re2j-1.8.pom"/>
+         </trusted-key>
          <trusted-key id="20B0D1DA0F0643E3FB281C1A93496A66B36BCD66">
             <trusting group="org.jcraft" name="jorbis" version="0.0.17" file="jorbis-0.0.17.jar"/>
             <trusting group="org.jcraft" name="jorbis" version="0.0.17" file="jorbis-0.0.17.pom"/>

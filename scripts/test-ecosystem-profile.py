@@ -28,6 +28,9 @@ class EcosystemProfileContractTest(unittest.TestCase):
         for forbidden in ("latest.release", "latest.integration", "+\""):
             self.assertNotIn(forbidden, catalog)
         self.assertNotIn('<trusting group="io.github.teemuki8"/>', verification)
+        self.assertIn(
+            '<trusting group="com.google.re2j" name="re2j" version="1.8" '
+            'file="re2j-1.8.jar"/>', verification)
 
     def test_ci_and_release_execute_both_profiles(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
