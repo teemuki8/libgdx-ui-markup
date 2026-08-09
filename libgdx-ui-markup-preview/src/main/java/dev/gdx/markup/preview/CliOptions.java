@@ -68,11 +68,11 @@ public record CliOptions(
     /** Prints the bounded usage summary. */
     public static String usage() {
         return """
-                Usage: gdx-ui-markup-preview --ui <file.xml> --css <file.css> [options]
+                Usage: gdx-ui-markup-preview --ui <file.xml> --css <file.gdxcss> [options]
 
                 Options:
                   --ui <file.xml>        markup document (required)
-                  --css <file.css>       stylesheet (required)
+                  --css <file.gdxcss>    GDXCSS stylesheet (legacy .css accepted; required)
                   --skin <file.json>     optional libGDX skin JSON
                   --frames <n>           render n frames then stop (CI)
                   --screenshot <path>    write a PNG after the requested frames (CI)

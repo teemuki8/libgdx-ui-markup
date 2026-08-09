@@ -8,6 +8,13 @@
     <depends>com.intellij.modules.platform</depends>
 
     <extensions defaultExtensionNs="com.intellij">
+        <fileType name="GDXCSS"
+                  language="GDXCSS"
+                  implementationClass="dev.gdx.markup.idea.GdxCssFileType"
+                  fieldName="INSTANCE"
+                  extensions="gdxcss"/>
+        <lang.syntaxHighlighterFactory language="GDXCSS"
+                    implementationClass="dev.gdx.markup.idea.GdxCssSyntaxHighlighterFactory"/>
         <toolWindow id="Markup Preview"
                     anchor="right"
                     factoryClass="dev.gdx.markup.idea.MarkupPreviewToolWindowFactory"/>

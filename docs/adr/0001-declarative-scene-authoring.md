@@ -45,6 +45,9 @@ XML dialect plus a bounded CSS subset:
    render state fields at runtime. `tag` and `tag.class` selectors compile into named skin
    styles; class-only and id-only selectors apply per actor (cloned style, never mutating the
    shared skin style).
+7. **Stylesheet identity.** The bounded language is named GDXCSS and uses `.gdxcss` for canonical
+   files. `CssParser` remains extension-neutral and the preview/IDE continue accepting `.css`,
+   so the name sets accurate authoring expectations without breaking existing applications.
 
 ## Follow-up: agent-runtime value source
 

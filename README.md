@@ -17,7 +17,8 @@ come from the markup, so libgdx-ui-harness locators stop depending on inference.
 
 Layout is Scene2D-native via XML attributes (`expand`, `fill`, `align`, `colspan`, `pad`,
 `space`, `grow`); CSS is a bounded styling subset compiled into a libGDX Skin. No CSS layout
-engine, no full HTML.
+engine, no full HTML. New stylesheets use the `.gdxcss` extension so tools and agents do not
+mistake the bounded language for browser CSS; legacy `.css` paths remain accepted.
 
 ## Quick start
 
@@ -60,7 +61,7 @@ versions are not used.
 </ui>
 ```
 
-`css` styles it (tag/class/id selectors with `:hover`, `:pressed`, `:checked`, `:disabled`):
+GDXCSS styles it (tag/class/id selectors with `:hover`, `:pressed`, `:checked`, `:disabled`):
 
 ```css
 .panel { padding: 28px; }
@@ -78,14 +79,14 @@ Run the live preview (hot reloads on file change, `esc` quits):
 
 ```
 ./gradlew :libgdx-ui-markup-preview:run \
-  --args='--ui samples/signin.xml --css samples/signin.css'
+  --args='--ui samples/signin.xml --css samples/signin.gdxcss'
 ```
 
 CI mode renders frames, writes a screenshot, exits 0 (or 2 with a typed error on stdout):
 
 ```
 ./gradlew :libgdx-ui-markup-preview:run \
-  --args='--ui samples/signin.xml --css samples/signin.css --frames 5 --screenshot build/signin.png --exit'
+  --args='--ui samples/signin.xml --css samples/signin.gdxcss --frames 5 --screenshot build/signin.png --exit'
 ```
 
 Programmatic build with a custom sink:
@@ -235,7 +236,7 @@ From the repository root:
 
 1. GL-free core: `./gradlew :libgdx-ui-markup:test`
 2. Render-thread builder: `xvfb-run -a ./gradlew :libgdx-ui-markup:test`
-3. Preview smoke: `xvfb-run -a ./gradlew :libgdx-ui-markup-preview:run --args='--ui samples/signin.xml --css samples/signin.css --frames 5 --screenshot build/signin.png --exit'`
+3. Preview smoke: `xvfb-run -a ./gradlew :libgdx-ui-markup-preview:run --args='--ui samples/signin.xml --css samples/signin.gdxcss --frames 5 --screenshot build/signin.png --exit'`
 4. Agent-runtime source: `xvfb-run -a ./gradlew :libgdx-ui-markup-runtime:test`
 5. Harness E2E: `xvfb-run -a ./gradlew :libgdx-ui-markup-harness:test`
 6. Plugin: `./gradlew :libgdx-ui-markup-idea:buildPlugin` plus the manual IDEA session above

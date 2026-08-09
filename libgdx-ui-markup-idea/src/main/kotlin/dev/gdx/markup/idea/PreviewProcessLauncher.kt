@@ -110,11 +110,12 @@ object PreviewProcessLauncher {
             emptyList()
         }
 
-    /** Returns the sibling {@code .css} file, or {@code null} when the preview cannot run. */
+    /** Returns the canonical sibling {@code .gdxcss}, then legacy {@code .css}, if present. */
     fun siblingCss(ui: Path): Path? {
-        val sibling = ui.resolveSibling(ui.fileName.toString()
-            .substringBeforeLast('.') + ".css")
-        return if (Files.isRegularFile(sibling)) sibling else null
+        val stem = ui.fileName.toString().substringBeforeLast('.')
+        return sequenceOf("$stem.gdxcss", "$stem.css")
+            .map(ui::resolveSibling)
+            .firstOrNull(Files::isRegularFile)
     }
 
     private fun launchable(distribution: Path): Boolean =

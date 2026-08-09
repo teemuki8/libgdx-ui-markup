@@ -44,6 +44,15 @@ final class PreviewAppTest {
     Path tempDir;
 
     @Test
+    void watcherRecognizesCanonicalAndLegacyStylesheets() {
+        assertTrue(PreviewApp.isWatchedSource(Path.of("screen.gdxcss")));
+        assertTrue(PreviewApp.isWatchedSource(Path.of("screen.css")));
+        assertTrue(PreviewApp.isWatchedSource(Path.of("screen.xml")));
+        assertFalse(PreviewApp.isWatchedSource(Path.of("screen.scss")));
+        assertFalse(PreviewApp.isWatchedSource(Path.of("screen.gdxcss.bak")));
+    }
+
+    @Test
     void oversizedUiFileFailsTooLargeThroughPreviewParserCall() throws Exception {
         // The final byte starts a two-byte UTF-8 sequence: a decode-first implementation (like
         // the previous Files.readString) would surface an IOException here, not typed TOO_LARGE.
@@ -140,7 +149,7 @@ final class PreviewAppTest {
     void screenshotIsTopLeftNormalizedAndByteIdenticalAcrossRepeatedRuns() throws Exception {
         requireGl();
         Path ui = fixture("asymmetric-top-bottom.xml");
-        Path css = fixture("asymmetric-top-bottom.css");
+        Path css = fixture("asymmetric-top-bottom.gdxcss");
 
         Path first = tempDir.resolve("first.png");
         Path second = tempDir.resolve("second.png");
@@ -165,7 +174,7 @@ final class PreviewAppTest {
     void screenshotIsByteIdenticalAfterLargerDifferentPriorRender() throws Exception {
         requireGl();
         Path ui = fixture("asymmetric-top-bottom.xml");
-        Path css = fixture("asymmetric-top-bottom.css");
+        Path css = fixture("asymmetric-top-bottom.gdxcss");
 
         Path clean = tempDir.resolve("clean.png");
         Path afterGhost = tempDir.resolve("after-ghost.png");
