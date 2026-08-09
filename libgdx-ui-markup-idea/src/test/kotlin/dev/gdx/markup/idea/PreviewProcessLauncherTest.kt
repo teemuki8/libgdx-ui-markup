@@ -100,19 +100,22 @@ class PreviewProcessLauncherTest {
     }
 
     @Test
+    fun resolvesBundledDistributionFromInstalledPluginRoot() {
+        val pluginRoot = createTempDirectory("installed-plugin")
+        val bundled = pluginRoot.resolve("libgdx-ui-markup-preview")
+        Files.createDirectories(bundled.resolve("lib"))
+
+        val resolved = PreviewProcessLauncher.resolveDistribution(null, pluginRoot)
+
+        assertEquals(bundled, resolved)
+    }
+
+    @Test
     fun resolutionNeverPointsAtMissingDistribution() {
-        val previous = System.getProperty("markup.preview.dist")
-        try {
-            System.clearProperty("markup.preview.dist")
-            val resolved = PreviewProcessLauncher.resolveDistribution()
-            if (resolved != null) {
-                assertTrue(Files.isDirectory(resolved.resolve("lib")),
-                    "resolved distribution must be launchable: $resolved")
-            }
-        } finally {
-            if (previous != null) {
-                System.setProperty("markup.preview.dist", previous)
-            }
-        }
+        val missingPluginRoot = createTempDirectory("missing-preview")
+
+        val resolved = PreviewProcessLauncher.resolveDistribution(null, missingPluginRoot)
+
+        assertNull(resolved)
     }
 }

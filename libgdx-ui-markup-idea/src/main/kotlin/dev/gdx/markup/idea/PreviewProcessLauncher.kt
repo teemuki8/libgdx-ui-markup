@@ -1,23 +1,34 @@
 package dev.gdx.markup.idea
 
+import com.intellij.ide.plugins.PluginManagerCore
+import com.intellij.openapi.extensions.PluginId
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 
 /**
  * Resolves and launches the preview distribution. Resolution order: explicit system property
- * {@code markup.preview.dist} (tests and dev), the distribution bundled next to the plugin
- * installation, then the prepared dev build directory.
+ * {@code markup.preview.dist} (tests and prepared development builds), then the distribution
+ * bundled in the installed plugin directory.
  */
 object PreviewProcessLauncher {
+    private const val PLUGIN_ID = "dev.gdx.markup.idea"
     private const val MAIN_CLASS = "dev.gdx.markup.preview.PreviewApp"
 
     /** Returns the launchable distribution, or {@code null} when nothing was found. */
     fun resolveDistribution(): Path? {
-        System.getProperty("markup.preview.dist")?.takeIf { it.isNotBlank() }?.let {
+        val explicitDistribution = System.getProperty("markup.preview.dist")
+        if (!explicitDistribution.isNullOrBlank()) {
+            return Path.of(explicitDistribution).takeIf(::launchable)
+        }
+        return resolveDistribution(null, pluginInstallRoot())
+    }
+
+    internal fun resolveDistribution(explicitDistribution: String?, pluginRoot: Path?): Path? {
+        explicitDistribution?.takeIf { it.isNotBlank() }?.let {
             return Path.of(it).takeIf(::launchable)
         }
-        pluginInstallRoot()?.let { root ->
+        pluginRoot?.let { root ->
             val bundled = root.resolve("libgdx-ui-markup-preview")
             if (launchable(bundled)) {
                 return bundled
@@ -109,19 +120,6 @@ object PreviewProcessLauncher {
     private fun launchable(distribution: Path): Boolean =
         Files.isDirectory(distribution.resolve("lib"))
 
-    private fun pluginInstallRoot(): Path? {
-        val codeSource = PreviewProcessLauncher::class.java.protectionDomain
-            ?.codeSource?.location ?: return null
-        return try {
-            val path = Path.of(codeSource.toURI())
-            if (path.fileName?.toString()?.endsWith(".jar") == true) {
-                // Plugin jars live in <plugin>/lib/; the bundled dist sits next to lib/.
-                path.parent?.parent
-            } else {
-                path.parent?.parent
-            }
-        } catch (failure: Exception) {
-            null
-        }
-    }
+    private fun pluginInstallRoot(): Path? =
+        PluginManagerCore.getPlugin(PluginId.getId(PLUGIN_ID))?.pluginPath
 }
