@@ -98,7 +98,7 @@ public final class CssParser {
         for (String dimension : RESPONSIVE_DIMENSIONS) {
             map.put(dimension, PropertyKind.RESPONSIVE_LENGTH);
         }
-        map.put("gap", PropertyKind.LENGTH);
+        map.put("gap", PropertyKind.SPACING);
         map.put("row-gap", PropertyKind.LENGTH);
         map.put("column-gap", PropertyKind.LENGTH);
         map.put("display", PropertyKind.DISPLAY);

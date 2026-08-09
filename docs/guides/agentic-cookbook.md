@@ -15,6 +15,7 @@ libgdx-ui-harness 1.2.0, and libgdx-agent-runtime 2.0.0 on Java 25.
 | See an XML/CSS change and get a bounded screenshot | [Preview a document](#1-preview-a-document) |
 | Validate untrusted markup without a GL context | [Parse without GL](#2-parse-without-gl) |
 | Add the UI to an application-owned Stage | [Build on the render thread](#3-build-on-the-render-thread) |
+| Make a Table UI follow its parent or viewport | [Use responsive GDXCSS layout](#3a-use-responsive-gdxcss-layout) |
 | Give automation stable locators | [Declare semantics](#4-declare-semantics-for-strict-locators) |
 | Compare displayed state with domain state | [Choose runtime value authority](#5-choose-runtime-value-authority) |
 | Drive the preview through query/action/wait/screenshot | [Exercise the harness MCP path](#6-exercise-the-harness-mcp-path) |
@@ -130,6 +131,84 @@ xvfb-run -a ./gradlew :libgdx-ui-markup:test --tests '*MarkupBuilderTest'
 For production session, correlation, and loop-order wiring, continue with the
 [embedding guide](embedding.md). Reference: [`MarkupBuilder`](../../libgdx-ui-markup/src/main/java/dev/gdx/markup/core/MarkupBuilder.java)
 and [`PreviewApp.rebuild`](../../libgdx-ui-markup-preview/src/main/java/dev/gdx/markup/preview/PreviewApp.java).
+
+## 3a. Use responsive GDXCSS layout
+
+Use a Table/Cell hierarchy when dimensions must reflow. Percentages are live Scene2D `Value`s,
+not pixels calculated once during the build:
+
+```xml
+<ui>
+  <table id="screen">
+    <table id="panel">
+      <label id="title" text="Settings"/>
+      <row/>
+      <button id="save" text="Save"/>
+    </table>
+  </table>
+</ui>
+```
+
+```css
+#screen {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+#panel {
+  width: 100%;
+  max-width: 960px;
+  padding: 16px 24px;
+  margin: 12px;
+  row-gap: 12px;
+}
+
+#save {
+  width: 100%;
+  min-width: 160px;
+  vertical-align: middle;
+}
+```
+
+The exact `width: 100%; height: 100%` pair makes a Table with no containing Cell fill its parent.
+Inside a Table, percentage width/height/min/max values follow the containing Table whenever it is
+laid out at a new size. Size the application-owned root Group to the viewport as shown in recipe
+3; no rebuild is required for an ordinary resize.
+
+Use unitless pixels or `px`, percentages, or `auto` for `width`, `height`, `min-width`,
+`min-height`, `max-width`, and `max-height`. `auto` removes the CSS constraint and uses the
+actor's native Scene2D sizing. Numeric XML dimensions win over the corresponding CSS property.
+Percent dimensions require a containing Table Cell, except for the full-parent Table pair above;
+an unsupported context is a `STYLE_ERROR` located at the winning CSS rule.
+
+Spacing is pixel-only. `padding` and `margin` accept one to four whitespace-separated values in
+CSS order: `top right bottom left`; one value applies to every side, two to vertical/horizontal,
+and three to top/horizontal/bottom. Legacy one/four comma forms remain accepted. Table padding is
+internal; non-Table padding and every margin map to the containing Cell. `gap`, `row-gap`, and
+`column-gap` set defaults on child Cells.
+
+Use `display: none` to omit an actor, its subtree, its Cell, and its harness semantics. Use
+`visibility: hidden` to keep layout and semantics while suppressing drawing. `overflow: hidden`
+clips only Table/Window actors; another target fails with a located `STYLE_ERROR`.
+`vertical-align: top | middle | bottom` aligns a Label and/or its containing Cell.
+
+Do not emit browser-relative units or functions. `em`, `rem`, viewport/physical units,
+`calc()`, `min()`, `max()`, and `clamp()` are intentionally unsupported and fail in the GL-free
+CSS parse. For deterministic diagnosis, report the exception `kind`, `elementPath`, `line`,
+`column`, and `message`; do not retry with a guessed pixel fallback.
+
+Narrow verification:
+
+```bash
+xvfb-run -a ./gradlew :libgdx-ui-markup:test \
+  --tests '*MarkupBuilderTest.percentCellWidthTracksContainingTableResizeWithoutRebuild' \
+  --tests '*MarkupBuilderTest.displayNoneOmitsActorAndSemanticsWhileVisibilityRetainsLayout'
+```
+
+Reference: [`CssLength`](../../libgdx-ui-markup/src/main/java/dev/gdx/markup/core/style/CssLength.java),
+[`CssSpacing`](../../libgdx-ui-markup/src/main/java/dev/gdx/markup/core/style/CssSpacing.java), and
+[`MarkupBuilder`](../../libgdx-ui-markup/src/main/java/dev/gdx/markup/core/MarkupBuilder.java).
 
 ## 4. Declare semantics for strict locators
 

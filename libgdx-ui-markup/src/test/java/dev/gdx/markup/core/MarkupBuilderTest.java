@@ -257,6 +257,14 @@ final class MarkupBuilderTest {
                             DefaultSkin.create(), new NoopSink()));
             assertEquals(MarkupException.Kind.STYLE_ERROR, tableFailure.kind());
             assertTrue(tableFailure.getMessage().contains("100%"));
+
+            MarkupException maxFailure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("<ui><label text=\"No cell\"/></ui>"),
+                            css.parse("label { max-width: 320px; }"), DefaultSkin.create(),
+                            new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, maxFailure.kind());
+            assertTrue(maxFailure.getMessage().contains("max-width"));
+            assertTrue(maxFailure.getMessage().contains("Table cell"));
         });
     }
 
@@ -276,6 +284,110 @@ final class MarkupBuilderTest {
                     "container padding must not be duplicated on its parent Cell");
             assertEquals(3f, cell.getSpaceTop(), 0.001f,
                     "margin remains external spacing on the parent Cell");
+        });
+    }
+
+    @Test
+    void tableGapShorthandAndAxisOverridesBecomeChildCellDefaults() throws Exception {
+        GdxTestHost.run(() -> {
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <table id="all"><label text="A"/></table>
+                      <table id="rows"><label text="B"/></table>
+                      <table id="columns"><label text="C"/></table>
+                    </ui>
+                    """), css.parse("""
+                    #all { gap: 1px 2px 3px 4px; }
+                    #rows { gap: 1px; row-gap: 5px; }
+                    #columns { gap: 1px; column-gap: 6px; }
+                    """), DefaultSkin.create(), new NoopSink());
+            Table all = (Table) built.root().findActor("all");
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> allCell = all.getCells().first();
+            assertEquals(1f, allCell.getSpaceTop(), 0.001f);
+            assertEquals(2f, allCell.getSpaceRight(), 0.001f);
+            assertEquals(3f, allCell.getSpaceBottom(), 0.001f);
+            assertEquals(4f, allCell.getSpaceLeft(), 0.001f);
+
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> rowCell =
+                    ((Table) built.root().findActor("rows")).getCells().first();
+            assertEquals(5f, rowCell.getSpaceTop(), 0.001f);
+            assertEquals(5f, rowCell.getSpaceBottom(), 0.001f);
+            assertEquals(1f, rowCell.getSpaceLeft(), 0.001f);
+
+            com.badlogic.gdx.scenes.scene2d.ui.Cell<?> columnCell =
+                    ((Table) built.root().findActor("columns")).getCells().first();
+            assertEquals(6f, columnCell.getSpaceLeft(), 0.001f);
+            assertEquals(6f, columnCell.getSpaceRight(), 0.001f);
+            assertEquals(1f, columnCell.getSpaceTop(), 0.001f);
+        });
+    }
+
+    @Test
+    void displayNoneOmitsActorAndSemanticsWhileVisibilityRetainsLayout() throws Exception {
+        GdxTestHost.run(() -> {
+            FakeSink sink = new FakeSink();
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui><table id="layout">
+                      <button id="gone" text="Gone"/>
+                      <button id="hidden" text="Hidden"/>
+                      <button id="visible-alias" text="Visible"/>
+                    </table></ui>
+                    """), css.parse("""
+                    #gone { display: none; }
+                    #hidden { visibility: hidden; }
+                    #visible-alias { visible: false; visibility: visible; }
+                    """), DefaultSkin.create(), sink);
+            Table table = (Table) built.root().getChildren().first();
+
+            assertEquals(2, table.getCells().size,
+                    "display:none contributes neither actor nor layout Cell");
+            assertNull(table.findActor("gone"));
+            assertFalse(built.actors().stream().anyMatch(actor -> "gone".equals(actor.getName())));
+            assertNull(sink.roles.get("gone"), "an omitted actor emits no harness semantics");
+
+            Actor hidden = table.findActor("hidden");
+            assertNotNull(hidden);
+            assertFalse(hidden.isVisible(), "visibility:hidden retains the Actor and its Cell");
+            assertTrue(table.findActor("visible-alias").isVisible(),
+                    "visibility takes precedence over the compatibility visible property");
+        });
+    }
+
+    @Test
+    void overflowHiddenClipsTablesAndRejectsUnsupportedActorsAtCssRule() throws Exception {
+        GdxTestHost.run(() -> {
+            BuiltUi built = MarkupBuilder.build(markup.parse(
+                    "<ui><table id=\"clip\"><label text=\"Child\"/></table></ui>"),
+                    css.parse("#clip { overflow: hidden; }"), DefaultSkin.create(),
+                    new NoopSink());
+            assertTrue(((Table) built.root().getChildren().first()).getClip());
+
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("<ui><label text=\"No\"/></ui>"),
+                            css.parse("\nlabel { overflow: hidden; }"), DefaultSkin.create(),
+                            new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+            assertEquals("css", failure.elementPath());
+            assertEquals(2, failure.line());
+            assertEquals(1, failure.column());
+            assertTrue(failure.getMessage().contains("Table"));
+        });
+    }
+
+    @Test
+    void verticalAlignAppliesToLabelAndContainingCell() throws Exception {
+        GdxTestHost.run(() -> {
+            BuiltUi built = MarkupBuilder.build(markup.parse(
+                    "<ui><table><label id=\"aligned\" text=\"Text\"/></table></ui>"),
+                    css.parse("#aligned { text-align: right; vertical-align: bottom; }"),
+                    DefaultSkin.create(), new NoopSink());
+            Table table = (Table) built.root().getChildren().first();
+            Label label = (Label) table.findActor("aligned");
+            int labelAlign = label.getLabelAlign();
+            assertTrue((labelAlign & com.badlogic.gdx.utils.Align.right) != 0);
+            assertTrue((labelAlign & com.badlogic.gdx.utils.Align.bottom) != 0);
+            assertTrue((table.getCells().first().getAlign()
+                    & com.badlogic.gdx.utils.Align.bottom) != 0);
         });
     }
 

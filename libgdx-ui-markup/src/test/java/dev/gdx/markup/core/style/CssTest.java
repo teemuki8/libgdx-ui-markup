@@ -301,7 +301,7 @@ final class CssTest {
         CssDocument document = parser.parse("""
                 table {
                     max-width: 90%; max-height: auto;
-                    gap: 4px; row-gap: 5; column-gap: 6px;
+                    gap: 4px 8px; row-gap: 5; column-gap: 6px;
                     display: initial; visibility: hidden;
                     overflow: hidden; vertical-align: middle;
                 }
@@ -310,7 +310,7 @@ final class CssTest {
                 .resolve(element("table", null, List.of()));
         assertEquals("90%", style.get("max-width"));
         assertEquals("auto", style.get("max-height"));
-        assertEquals("4px", style.get("gap"));
+        assertEquals("4px 8px", style.get("gap"));
         assertEquals("hidden", style.get("visibility"));
         assertEquals("middle", style.get("vertical-align"));
 

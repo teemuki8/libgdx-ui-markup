@@ -131,7 +131,8 @@ public final class MarkupBuilder {
         Walk walk = new Walk();
         if ("table".equals(document.root().tag())) {
             Actor rootActor = walk.buildActor(document.root(), null);
-            return new BuiltUi((Group) rootActor, walk.actors());
+            return new BuiltUi(rootActor == null ? new Group() : (Group) rootActor,
+                    walk.actors());
         }
         Group root = new Group();
         walk.pushRootPath("ui");
@@ -244,6 +245,9 @@ public final class MarkupBuilder {
             int column = element.column();
             enter(path, line, column);
             try {
+                if (displayNone(element)) {
+                    return null;
+                }
                 Actor actor = switch (element.tag()) {
                     case "ui" -> throw new MarkupException(MarkupException.Kind.INVALID_VALUE,
                             path, line, column, "<ui> must be the document root");
@@ -278,6 +282,7 @@ public final class MarkupBuilder {
             applyCssOverrides(element, table, cellTable);
             ResolvedStyle style = resolveStyle(element, null);
             applyTablePadding(table, style);
+            applyTableGaps(table, style);
             buildCellChildren(table, element);
             applySemantics(table, element, path);
             return table;
@@ -495,6 +500,7 @@ public final class MarkupBuilder {
                 applyPadCss(element, cell, style);
             }
             applySpaceCss(element, cell, style);
+            applyCellVerticalAlign(element, cell, style);
         }
 
         private void applyLengthCss(Table table, Element element,
@@ -559,7 +565,7 @@ public final class MarkupBuilder {
                 ResolvedStyle style) {
             if (element.attr("pad") == null && style.has("padding")) {
                 CssSpacing value = style.spacing("padding");
-                cell.pad(value.top(), value.right(), value.bottom(), value.left());
+                cell.pad(value.top(), value.left(), value.bottom(), value.right());
             }
             applyEdgeCss(element, cell, "pad-top", "padding-top", style, cell::padTop);
             applyEdgeCss(element, cell, "pad-right", "padding-right", style, cell::padRight);
@@ -571,7 +577,7 @@ public final class MarkupBuilder {
                 ResolvedStyle style) {
             if (element.attr("space") == null && style.has("margin")) {
                 CssSpacing value = style.spacing("margin");
-                cell.space(value.top(), value.right(), value.bottom(), value.left());
+                cell.space(value.top(), value.left(), value.bottom(), value.right());
             }
             applyEdgeCss(element, cell, null, "margin-top", style, cell::spaceTop);
             applyEdgeCss(element, cell, null, "margin-right", style, cell::spaceRight);
@@ -593,18 +599,23 @@ public final class MarkupBuilder {
                 applySize(element, actor, "width", actor::setWidth);
                 applySize(element, actor, "height", actor::setHeight);
                 if (actor instanceof Table table && hasFullParentDimensions(element, style)) {
-                    rejectOtherTopLevelPercentages(element, style, Set.of("width", "height"));
+                    rejectUnsupportedTopLevelDimensions(element, style,
+                            Set.of("width", "height"));
                     table.setFillParent(true);
                 } else {
-                    rejectOtherTopLevelPercentages(element, style, Set.of());
+                    rejectUnsupportedTopLevelDimensions(element, style, Set.of());
                     // Actor has no min/max-size setters; those remain cell constraints.
                     applyFixedActorSize(element, "width", style, actor::setWidth);
                     applyFixedActorSize(element, "height", style, actor::setHeight);
                 }
             }
+            rejectTableOnlyProperties(element, actor, cellTable, style);
+            applyOverflow(element, actor, style);
             String visible = element.attr("visible");
             if (visible != null) {
                 actor.setVisible(Boolean.parseBoolean(visible));
+            } else if (style.has("visibility")) {
+                actor.setVisible("visible".equals(style.get("visibility")));
             } else if (style.has("visible")) {
                 actor.setVisible(style.booleanValue("visible", true));
             }
@@ -647,16 +658,31 @@ public final class MarkupBuilder {
             return length instanceof CssLength.Percent percent && percent.ratio() == 1f;
         }
 
-        private void rejectOtherTopLevelPercentages(Element element, ResolvedStyle style,
+        private void rejectUnsupportedTopLevelDimensions(Element element, ResolvedStyle style,
                 Set<String> allowed) {
             for (String property : List.of("width", "height", "min-width", "min-height",
                     "max-width", "max-height")) {
-                if (element.attr(property) == null && style.has(property)
-                        && style.lengthValue(property) instanceof CssLength.Percent
-                        && !allowed.contains(property)) {
+                if (element.attr(property) != null || !style.has(property)) {
+                    continue;
+                }
+                CssLength length = style.lengthValue(property);
+                if ((property.startsWith("min-") || property.startsWith("max-"))
+                        && !(length instanceof CssLength.Auto)) {
+                    throw unsupportedCellConstraint(element, style, property);
+                }
+                if (length instanceof CssLength.Percent && !allowed.contains(property)) {
                     throw unsupportedPercent(element, style, property);
                 }
             }
+        }
+
+        private MarkupException unsupportedCellConstraint(Element element, ResolvedStyle style,
+                String property) {
+            CssRule source = style.sourceRule(property);
+            return new MarkupException(MarkupException.Kind.STYLE_ERROR, "css",
+                    source.line(), source.column(), "property \"" + property
+                    + "\" requires a Table cell (matched <" + element.tag() + "> at "
+                    + paths.current() + ")");
         }
 
         private MarkupException unsupportedPercent(Element element, ResolvedStyle style,
@@ -671,7 +697,7 @@ public final class MarkupBuilder {
         private void applyTablePadding(Table table, ResolvedStyle style) {
             if (style.has("padding")) {
                 CssSpacing value = style.spacing("padding");
-                table.pad(value.top(), value.right(), value.bottom(), value.left());
+                table.pad(value.top(), value.left(), value.bottom(), value.right());
             }
             if (style.has("padding-top")) {
                 table.padTop(style.length("padding-top", 0f));
@@ -685,6 +711,87 @@ public final class MarkupBuilder {
             if (style.has("padding-left")) {
                 table.padLeft(style.length("padding-left", 0f));
             }
+        }
+
+        private void applyTableGaps(Table table, ResolvedStyle style) {
+            CssSpacing gap = style.spacing("gap");
+            float top = gap == null ? 0f : gap.top();
+            float right = gap == null ? 0f : gap.right();
+            float bottom = gap == null ? 0f : gap.bottom();
+            float left = gap == null ? 0f : gap.left();
+            if (style.has("row-gap")) {
+                top = style.length("row-gap", 0f);
+                bottom = top;
+            }
+            if (style.has("column-gap")) {
+                right = style.length("column-gap", 0f);
+                left = right;
+            }
+            if (gap != null || style.has("row-gap") || style.has("column-gap")) {
+                table.defaults().space(top, left, bottom, right);
+            }
+        }
+
+        private boolean displayNone(Element element) {
+            ResolvedStyle style = resolveStyle(element, null);
+            return "none".equals(style.get("display"));
+        }
+
+        private void rejectTableOnlyProperties(Element element, Actor actor, Table cellTable,
+                ResolvedStyle style) {
+            if (actor instanceof Table) {
+                return;
+            }
+            for (String property : List.of("gap", "row-gap", "column-gap")) {
+                if (style.has(property)) {
+                    throw unsupportedTarget(element, style, property,
+                            "property \"" + property + "\" requires a Table actor");
+                }
+            }
+            if (style.has("vertical-align") && !(actor instanceof Label)
+                    && cellTable == null) {
+                throw unsupportedTarget(element, style, "vertical-align",
+                        "property \"vertical-align\" requires a Label or containing Table Cell");
+            }
+        }
+
+        private void applyOverflow(Element element, Actor actor, ResolvedStyle style) {
+            if (!style.has("overflow")) {
+                return;
+            }
+            if (actor instanceof Table table) {
+                table.setClip("hidden".equals(style.get("overflow")));
+                return;
+            }
+            throw unsupportedTarget(element, style, "overflow",
+                    "property \"overflow\" requires a Table actor");
+        }
+
+        private void applyCellVerticalAlign(Element element,
+                com.badlogic.gdx.scenes.scene2d.ui.Cell<?> cell, ResolvedStyle style) {
+            if (element.attr("align") != null || !style.has("vertical-align")) {
+                return;
+            }
+            int align = cell.getAlign() & ~(Align.top | Align.bottom);
+            align |= verticalAlignOf(style.get("vertical-align"));
+            cell.align(align);
+        }
+
+        private int verticalAlignOf(String value) {
+            return switch (value) {
+                case "top" -> Align.top;
+                case "bottom" -> Align.bottom;
+                case "middle" -> 0;
+                default -> throw new AssertionError("validated vertical-align " + value);
+            };
+        }
+
+        private MarkupException unsupportedTarget(Element element, ResolvedStyle style,
+                String property, String message) {
+            CssRule source = style.sourceRule(property);
+            return new MarkupException(MarkupException.Kind.STYLE_ERROR, "css",
+                    source.line(), source.column(), message + " (matched <" + element.tag()
+                    + "> at " + paths.current() + ")");
         }
 
         private boolean isTableContainer(Element element) {
@@ -738,10 +845,15 @@ public final class MarkupBuilder {
             }
             if (base.has("text-align")) {
                 if (actor instanceof Label label) {
-                    label.setAlignment(alignOf(base.get("text-align")));
+                    int vertical = label.getLabelAlign() & (Align.top | Align.bottom);
+                    label.setAlignment(alignOf(base.get("text-align")) | vertical);
                 } else if (actor instanceof TextField field) {
                     field.setAlignment(alignOf(base.get("text-align")));
                 }
+            }
+            if (base.has("vertical-align") && actor instanceof Label label) {
+                int horizontal = label.getLabelAlign() & (Align.left | Align.right);
+                label.setAlignment(horizontal | verticalAlignOf(base.get("vertical-align")));
             }
         }
 
