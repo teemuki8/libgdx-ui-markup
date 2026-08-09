@@ -283,6 +283,45 @@ final class CssTest {
     }
 
     @Test
+    void structuralResolutionUsesAncestryChildAndDescendantSemantics() {
+        CssDocument document = parser.parse("""
+                table button { color: descendant; }
+                table > button { background: direct; }
+                table > group button { font-color: backtracked; }
+                """);
+        Element table = element("table", null, List.of());
+        Element outerGroup = element("group", null, List.of());
+        Element innerGroup = element("group", null, List.of());
+        Element button = element("button", null, List.of());
+        CssStyleResolver resolver = new CssStyleResolver(document);
+
+        ResolvedStyle nested = resolver.resolve(button,
+                List.of(table, outerGroup, innerGroup), null, "ui/table/group/group/button");
+        assertEquals("descendant", nested.get("color"));
+        assertNull(nested.get("background"));
+        assertEquals("backtracked", nested.get("font-color"),
+                "descendant matching backtracks when a later child part requires it");
+        assertNull(new CssStyleResolver(document).resolve(button).get("color"),
+                "legacy overload has empty ancestry and cannot match structural selectors");
+
+        ResolvedStyle direct = new CssStyleResolver(document).resolve(button,
+                List.of(table), null, null);
+        assertEquals("direct", direct.get("background"));
+    }
+
+    @Test
+    void structuralMatchingCountsEveryAttemptAgainstWorkLimit() {
+        CssDocument document = parser.parse("table group button { color: text; }");
+        Element table = element("table", null, List.of());
+        Element group = element("group", null, List.of());
+        Element button = element("button", null, List.of());
+        assertThrows(MarkupException.class, () -> new CssStyleResolver(
+                document.rules(), 2, 100).resolve(button, List.of(table, group), null, "button"));
+        assertEquals("text", new CssStyleResolver(document.rules(), 3, 100)
+                .resolve(button, List.of(table, group), null, "button").get("color"));
+    }
+
+    @Test
     void specificityOrdering() {
         CssDocument document = parser.parse("""
                 button { color: from-tag; }

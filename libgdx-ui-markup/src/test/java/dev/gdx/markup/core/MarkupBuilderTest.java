@@ -857,6 +857,49 @@ final class MarkupBuilderTest {
     }
 
     @Test
+    void structuralSelectorsUseTheBuiltElementAncestry() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            Color original = new Color(skin.get("textfield", TextField.TextFieldStyle.class)
+                    .fontColor);
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <table><group><textfield id="nested"/></group></table>
+                      <textfield id="outside"/>
+                    </ui>
+                    """), css.parse("table > group textfield { font-color: accent; }"),
+                    skin, new NoopSink());
+            TextField nested = built.root().findActor("nested");
+            TextField outside = built.root().findActor("outside");
+            assertEquals(skin.getColor("accent"), nested.getStyle().fontColor);
+            assertEquals(original, outside.getStyle().fontColor);
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void focusPseudoMapsOnlyToTextFieldFocusedStyleFields() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupBuilder.build(markup.parse("<ui><textfield id=\"name\"/></ui>"),
+                    css.parse("textfield:focus { background: field-focused; "
+                            + "font-color: accent; }"), skin, new NoopSink());
+            TextField.TextFieldStyle style = skin.get("textfield",
+                    TextField.TextFieldStyle.class);
+            assertSame(skin.getDrawable("field-focused"), style.focusedBackground);
+            assertEquals(skin.getColor("accent"), style.focusedFontColor);
+
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse("<ui><button/></ui>"),
+                            css.parse("button:focus { background: accent; }"),
+                            skin, new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+            assertTrue(failure.getMessage().contains("focus"));
+            skin.dispose();
+        });
+    }
+
+    @Test
     void actorPaintInputAndTransformsApplyAfterKnownSize() throws Exception {
         GdxTestHost.run(() -> {
             Skin skin = DefaultSkin.create();
