@@ -86,10 +86,12 @@ to `docs/guides/embedding.md`.
 Show a minimal markup fragment declaring stable semantics:
 
 ```xml
-<button id="save" role="button" name="Save" text="Save"/>
+<button id="save" name="Save" text="Save"/>
 ```
 
-Explain that strict resolution must retain distinct zero-match and multiple-match failures. Point
+Explain that `id` becomes the harness test id, `name` becomes the accessible name, and the
+`button` tag supplies the canonical `button` role. The dialect does not accept a `role`
+attribute. Strict resolution must retain distinct zero-match and multiple-match failures. Point
 to the harness end-to-end test for executable query/action/wait/screenshot examples instead of
 inventing a second client API.
 
