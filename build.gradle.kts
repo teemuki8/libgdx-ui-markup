@@ -2,6 +2,17 @@ import org.gradle.api.artifacts.dsl.LockMode
 import org.gradle.plugins.signing.SigningExtension
 import java.util.zip.ZipFile
 
+data class EcosystemVersions(val harness: String, val agentRuntime: String)
+
+val ecosystemProfiles = mapOf(
+    "minimum" to EcosystemVersions("1.1.0", "1.0.0"),
+    "current" to EcosystemVersions("1.2.0", "2.0.0"),
+)
+val ecosystemProfile = providers.gradleProperty("ecosystemProfile").orElse("current")
+val selectedEcosystem = ecosystemProfiles[ecosystemProfile.get()]
+    ?: throw GradleException(
+        "ecosystemProfile must be one of ${ecosystemProfiles.keys.sorted().joinToString()}")
+
 val mavenGroup = "io.github.teemuki8"
 val mavenGroupPath = mavenGroup.replace('.', '/')
 val releaseVersion = providers.gradleProperty("releaseVersion").orElse("0.2.0-SNAPSHOT")
@@ -28,6 +39,22 @@ allprojects {
     dependencyLocking {
         lockAllConfigurations()
         lockMode = LockMode.STRICT
+        if (ecosystemProfile.get() == "minimum") {
+            lockFile.set(layout.projectDirectory.file("gradle-minimum.lockfile"))
+        }
+    }
+
+    configurations.configureEach {
+        resolutionStrategy.eachDependency {
+            if (requested.group == "io.github.teemuki8") {
+                when {
+                    requested.name.startsWith("harness-") ->
+                        useVersion(selectedEcosystem.harness)
+                    requested.name.startsWith("agent-runtime-") ->
+                        useVersion(selectedEcosystem.agentRuntime)
+                }
+            }
+        }
     }
 }
 
@@ -165,6 +192,30 @@ tasks.register("resolveAndLockAll") {
                 }
         }
     }
+}
+
+tasks.register<GradleBuild>("minimumEcosystemTest") {
+    group = "verification"
+    description = "Runs markup adapter tests against harness 1.1.0 and agent-runtime 1.0.0"
+    dir = rootDir
+    buildName = "minimum-ecosystem"
+    tasks = listOf(
+        ":libgdx-ui-markup-runtime:test",
+        ":libgdx-ui-markup-harness:test",
+    )
+    startParameter.projectProperties = mapOf("ecosystemProfile" to "minimum")
+}
+
+tasks.register<GradleBuild>("currentEcosystemTest") {
+    group = "verification"
+    description = "Runs markup adapter tests against harness 1.2.0 and agent-runtime 2.0.0"
+    dir = rootDir
+    buildName = "current-ecosystem"
+    tasks = listOf(
+        ":libgdx-ui-markup-runtime:test",
+        ":libgdx-ui-markup-harness:test",
+    )
+    startParameter.projectProperties = mapOf("ecosystemProfile" to "current")
 }
 
 val verifyPublishedLicenseFiles = tasks.register("verifyPublishedLicenseFiles") {

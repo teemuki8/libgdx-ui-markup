@@ -1,15 +1,14 @@
 # This is a Gradle generated file for dependency locking.
 # Manual edits can break the build and are not advised.
 # This file is expected to be part of source control.
-# To regenerate this file, run: ./gradlew :libgdx-ui-markup-runtime:dependencies --write-locks
+# To regenerate this file, run: ./gradlew :libgdx-ui-markup:dependencies --write-locks
 com.badlogicgames.gdx:gdx-backend-lwjgl3:1.14.2=testCompileClasspath,testRuntimeClasspath
 com.badlogicgames.gdx:gdx-freetype-platform:1.14.2=runtimeClasspath,testRuntimeClasspath
-com.badlogicgames.gdx:gdx-freetype:1.14.2=runtimeClasspath,testRuntimeClasspath
+com.badlogicgames.gdx:gdx-freetype:1.14.2=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 com.badlogicgames.gdx:gdx-jnigen-loader:2.5.2=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 com.badlogicgames.gdx:gdx-platform:1.14.2=testRuntimeClasspath
 com.badlogicgames.gdx:gdx:1.14.2=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 com.badlogicgames.jlayer:jlayer:1.0.1-gdx=testCompileClasspath,testRuntimeClasspath
-io.github.teemuki8:agent-runtime-core:2.0.0=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 org.apiguardian:apiguardian-api:1.1.2=testCompileClasspath
 org.jcraft:jorbis:0.0.17=testCompileClasspath,testRuntimeClasspath
 org.junit.jupiter:junit-jupiter-api:5.10.2=testCompileClasspath,testRuntimeClasspath
