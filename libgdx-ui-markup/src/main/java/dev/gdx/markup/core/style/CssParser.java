@@ -59,6 +59,9 @@ public final class CssParser {
     private static final Set<String> VERTICAL_ALIGNS = Set.of("top", "middle", "bottom");
     private static final Set<String> RESPONSIVE_DIMENSIONS = Set.of(
             "width", "height", "min-width", "min-height", "max-width", "max-height");
+    private static final Set<String> BASE_STATE_ONLY = Set.of(
+            "font-size", "display", "gap", "row-gap", "column-gap", "visibility",
+            "overflow", "vertical-align");
 
     private static final Map<String, PropertyKind> PROPERTIES = properties();
 
@@ -396,8 +399,7 @@ public final class CssParser {
         if (value.isEmpty()) {
             throw styleError(line, column, "property \"" + name + "\" has no value");
         }
-        if (("font-size".equals(name) || "display".equals(name)
-                || RESPONSIVE_DIMENSIONS.contains(name))
+        if ((BASE_STATE_ONLY.contains(name) || RESPONSIVE_DIMENSIONS.contains(name))
                 && selectors.stream().anyMatch(selector -> selector.pseudo() != null)) {
             throw styleError(line, column,
                     "property \"" + name + "\" is not allowed in a pseudo-state rule");

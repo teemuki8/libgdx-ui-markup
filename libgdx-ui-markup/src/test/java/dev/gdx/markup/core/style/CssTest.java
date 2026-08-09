@@ -326,8 +326,11 @@ final class CssTest {
     }
 
     @Test
-    void dimensionsAndDisplayAreRejectedInPseudoStateRulesAtDeclarationLocation() {
-        for (String declaration : List.of("width: 100%", "max-height: 10px", "display: none")) {
+    void baseOnlyLayoutPropertiesAreRejectedInPseudoStateRulesAtDeclarationLocation() {
+        for (String declaration : List.of(
+                "width: 100%", "max-height: 10px", "display: none", "gap: 4px",
+                "row-gap: 4px", "column-gap: 4px", "visibility: hidden",
+                "overflow: hidden", "vertical-align: bottom")) {
             MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse(
                     "button:hover {\n    " + declaration + ";\n}"), declaration);
             assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind(), declaration);

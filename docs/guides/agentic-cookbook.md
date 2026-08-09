@@ -192,6 +192,9 @@ Use `display: none` to omit an actor, its subtree, its Cell, and its harness sem
 `visibility: hidden` to keep layout and semantics while suppressing drawing. `overflow: hidden`
 clips only Table/Window actors; another target fails with a located `STYLE_ERROR`.
 `vertical-align: top | middle | bottom` aligns a Label and/or its containing Cell.
+Dimensions, display/visibility, gaps, overflow, and vertical alignment are base-state only;
+declaring them in `:hover`, `:pressed`, `:checked`, or `:disabled` rules is a typed error rather
+than a silently ignored layout mutation.
 
 Do not emit browser-relative units or functions. `em`, `rem`, viewport/physical units,
 `calc()`, `min()`, `max()`, and `clamp()` are intentionally unsupported and fail in the GL-free
