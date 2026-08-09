@@ -9,15 +9,20 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.badlogic.gdx.Gdx;
+import com.badlogic.gdx.files.FileHandle;
 import com.badlogic.gdx.graphics.Color;
 import com.badlogic.gdx.graphics.Pixmap;
 import com.badlogic.gdx.graphics.Texture;
+import com.badlogic.gdx.graphics.g2d.BitmapFont;
 import com.badlogic.gdx.scenes.scene2d.Actor;
 import com.badlogic.gdx.scenes.scene2d.Group;
 import com.badlogic.gdx.scenes.scene2d.ui.CheckBox;
 import com.badlogic.gdx.scenes.scene2d.ui.Label;
 import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane;
+import com.badlogic.gdx.scenes.scene2d.ui.SelectBox;
 import com.badlogic.gdx.scenes.scene2d.ui.Skin;
+import com.badlogic.gdx.scenes.scene2d.ui.Slider;
 import com.badlogic.gdx.scenes.scene2d.ui.Table;
 import com.badlogic.gdx.scenes.scene2d.ui.TextButton;
 import com.badlogic.gdx.scenes.scene2d.ui.TextField;
@@ -328,6 +333,226 @@ final class MarkupBuilderTest {
             assertEquals(expected, label.getStyle().fontColor);
             assertFalse(label.getStyle() == skin.get("label", Label.LabelStyle.class),
                     "per-actor overrides clone the shared style");
+        });
+    }
+
+    @Test
+    void xmlAndCssFontSizesProduceCachedExactSizeFonts() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <label id="small" font-size="14" text="A"/>
+                      <label id="large" class="large" font="inter" text="B"/>
+                      <label id="large-again" class="large" text="C"/>
+                      <label id="xml-wins" class="large" font-size="20" text="D"/>
+                    </ui>
+                    """), css.parse(".large { font: inter; font-size: 28px; }"),
+                    skin, new NoopSink());
+
+            Label small = built.root().findActor("small");
+            Label large = built.root().findActor("large");
+            Label largeAgain = built.root().findActor("large-again");
+            Label xmlWins = built.root().findActor("xml-wins");
+            assertTrue(large.getStyle().font.getLineHeight()
+                    > small.getStyle().font.getLineHeight());
+            assertSame(large.getStyle().font, largeAgain.getStyle().font,
+                    "the family/size cache is shared within the skin");
+            assertTrue(large.getStyle().font.getLineHeight()
+                    > xmlWins.getStyle().font.getLineHeight(),
+                    "the XML size independently overrides the CSS size");
+
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void generatedFontReachesEveryTextBearingWidgetWithoutMutatingSharedStyles()
+            throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            BitmapFont shared = skin.get("label", Label.LabelStyle.class).font;
+            BuiltUi built = MarkupBuilder.build(markup.parse("""
+                    <ui>
+                      <label id="label" font-size="24" text="Label"/>
+                      <button id="button" font-size="24" text="Button"/>
+                      <checkbox id="checkbox" font-size="24" text="Checkbox"/>
+                      <textfield id="field" font-size="24" text="Field"/>
+                      <selectbox id="select" font-size="24" items="One,Two"/>
+                      <window id="window" font-size="24" title="Window"/>
+                      <list id="list" font-size="24" items="One,Two"/>
+                    </ui>
+                    """), css.parse(""), skin, new NoopSink());
+
+            BitmapFont generated = ((Label) built.root().findActor("label")).getStyle().font;
+            assertNotSame(shared, generated);
+            assertSame(generated,
+                    ((TextButton) built.root().findActor("button")).getStyle().font);
+            assertSame(generated,
+                    ((CheckBox) built.root().findActor("checkbox")).getStyle().font);
+            TextField field = built.root().findActor("field");
+            assertSame(generated, field.getStyle().font);
+            assertSame(generated, field.getStyle().messageFont);
+            SelectBox<?> select = built.root().findActor("select");
+            assertSame(generated, select.getStyle().font);
+            assertSame(generated, select.getList().getStyle().font);
+            assertSame(generated,
+                    ((Window) built.root().findActor("window")).getStyle().titleFont);
+            assertSame(generated,
+                    ((com.badlogic.gdx.scenes.scene2d.ui.List<?>) built.root().findActor("list"))
+                            .getStyle().font);
+            assertSame(shared, skin.get("label", Label.LabelStyle.class).font,
+                    "shared skin styles remain unchanged");
+            assertNotSame(skin.get("selectbox-list",
+                            com.badlogic.gdx.scenes.scene2d.ui.List.ListStyle.class),
+                    select.getStyle().listStyle, "the nested list style is copied");
+
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void fontWithoutSizeKeepsNamedSkinFontCompatibility() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            BitmapFont named = new BitmapFont();
+            skin.add("legacy-font", named, BitmapFont.class);
+
+            BuiltUi built = MarkupBuilder.build(markup.parse(
+                    "<ui><label id=\"label\" font=\"legacy-font\" text=\"Text\"/></ui>"),
+                    css.parse(""), skin, new NoopSink());
+
+            assertSame(named, ((Label) built.root().findActor("label")).getStyle().font);
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void unrelatedPseudoSelectorInACommaGroupDoesNotRejectBaseFont() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            BitmapFont named = new BitmapFont();
+            skin.add("legacy-font", named, BitmapFont.class);
+
+            BuiltUi built = MarkupBuilder.build(markup.parse(
+                            "<ui><label id=\"label\" class=\"target\" text=\"Text\"/></ui>"),
+                    css.parse(".other:hover, .target { font: legacy-font; }"),
+                    skin, new NoopSink());
+
+            assertSame(named, ((Label) built.root().findActor("label")).getStyle().font);
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void matchingTaglessPseudoFontStillFailsLocated() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse(
+                                    "<ui><label class=\"target\" text=\"Text\"/></ui>"),
+                            css.parse(".target:hover { font: default-font; }"),
+                            skin, new NoopSink()));
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+            assertEquals("css", failure.elementPath());
+            assertEquals(1, failure.line());
+            assertEquals(1, failure.column());
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void unresolvedFreeTypeConfigurationProducesLocatedDiagnostics() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin bare = new Skin();
+            BitmapFont font = new BitmapFont();
+            bare.add("default-font", font, BitmapFont.class);
+            bare.add("label", new Label.LabelStyle(font, Color.WHITE));
+            bare.add("default", new Label.LabelStyle(font, Color.WHITE));
+            MarkupException missingManager = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse(
+                                    "<ui><label font-size=\"20\" text=\"Text\"/></ui>"),
+                            css.parse(""), bare, new NoopSink()));
+            assertEquals(MarkupException.Kind.UNRESOLVED_STYLE, missingManager.kind());
+            assertEquals("ui/label", missingManager.elementPath());
+            bare.dispose();
+
+            Skin skin = DefaultSkin.create();
+            MarkupException unknownFamily = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse(
+                                    "<ui><label font=\"missing\" font-size=\"20\" text=\"Text\"/>"
+                                            + "</ui>"),
+                            css.parse(""), skin, new NoopSink()));
+            assertEquals(MarkupException.Kind.UNRESOLVED_STYLE, unknownFamily.kind());
+            assertEquals("ui/label", unknownFamily.elementPath());
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void reservedFontCollisionIsLocatedButManagerLifecycleFailurePropagates() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin collisionSkin = DefaultSkin.create();
+            BitmapFont reserved = new BitmapFont();
+            collisionSkin.add("__markup-freetype-font-inter-24", reserved, BitmapFont.class);
+            MarkupException collision = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse(
+                                    "<ui><label font-size=\"24\" text=\"Text\"/></ui>"),
+                            css.parse(""), collisionSkin, new NoopSink()));
+            assertEquals(MarkupException.Kind.UNRESOLVED_STYLE, collision.kind());
+            assertEquals("ui/label", collision.elementPath());
+            collisionSkin.dispose();
+
+            Skin disposedSkin = DefaultSkin.create();
+            FreeTypeFontManager.optional(disposedSkin).dispose();
+            IllegalStateException lifecycle = assertThrows(IllegalStateException.class, () ->
+                    MarkupBuilder.build(markup.parse(
+                                    "<ui><label font-size=\"24\" text=\"Text\"/></ui>"),
+                            css.parse(""), disposedSkin, new NoopSink()));
+            assertTrue(lifecycle.getMessage().contains("disposed"));
+            disposedSkin.dispose();
+        });
+    }
+
+    @Test
+    void sixtyFifthDistinctGeneratedFontFailsAtTheTriggeringElement() throws Exception {
+        GdxTestHost.run(() -> {
+            StringBuilder xml = new StringBuilder("<ui>");
+            for (int size = 4; size <= 68; size++) {
+                xml.append("<label font-size=\"").append(size).append("\" text=\"Text\"/>");
+            }
+            xml.append("</ui>");
+            Skin skin = DefaultSkin.create();
+
+            MarkupException failure = assertThrows(MarkupException.class, () ->
+                    MarkupBuilder.build(markup.parse(xml.toString()), css.parse(""),
+                            skin, new NoopSink()));
+
+            assertEquals(MarkupException.Kind.TOO_LARGE, failure.kind());
+            assertEquals("ui/label[64]", failure.elementPath());
+            assertTrue(failure.getMessage().contains("64-font limit"));
+            skin.dispose();
+        });
+    }
+
+    @Test
+    void fontSizeOnANonTextWidgetDoesNotConsumeTheFontCache() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = new Skin();
+            FileHandle inter = Gdx.files.classpath("META-INF/fonts/Inter-Regular.ttf");
+            FreeTypeFontManager fonts = FreeTypeFontManager.install(skin, "inter",
+                    Map.of("inter", inter), "abc", 1f, 1, 2);
+            Slider.SliderStyle sliderStyle = new Slider.SliderStyle();
+            skin.add("slider", sliderStyle);
+            skin.add("default", new Slider.SliderStyle(sliderStyle));
+
+            MarkupBuilder.build(markup.parse(
+                            "<ui><slider min=\"0\" max=\"1\"/></ui>"),
+                    css.parse("slider { font-size: 20px; }"), skin, new NoopSink());
+
+            assertSame(fonts.font("inter", 18), fonts.font("inter", 18),
+                    "non-text CSS must not allocate an unused exact-size font");
+            skin.dispose();
         });
     }
 

@@ -12,6 +12,8 @@ intellij-platform = "2.18.1"
 [libraries]
 gdx = { module = "com.badlogicgames.gdx:gdx", version.ref = "gdx" }
 gdx-backend-lwjgl3 = { module = "com.badlogicgames.gdx:gdx-backend-lwjgl3", version.ref = "gdx" }
+gdx-freetype = { module = "com.badlogicgames.gdx:gdx-freetype", version.ref = "gdx" }
+gdx-freetype-platform = { module = "com.badlogicgames.gdx:gdx-freetype-platform", version.ref = "gdx" }
 harness-core = { module = "io.github.teemuki8:harness-core", version.ref = "harness" }
 harness-scene2d = { module = "io.github.teemuki8:harness-scene2d", version.ref = "harness" }
 harness-lwjgl3 = { module = "io.github.teemuki8:harness-lwjgl3", version.ref = "harness" }

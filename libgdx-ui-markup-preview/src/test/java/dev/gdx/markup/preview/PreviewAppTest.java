@@ -87,6 +87,20 @@ final class PreviewAppTest {
     }
 
     @Test
+    void rasterScaleUsesTheLargerAxisAndStaysWithinTheSupportedRange() {
+        assertEquals(1f, PreviewApp.rasterScale(1280, 720, 1280, 720));
+        assertEquals(2f, PreviewApp.rasterScale(1280, 720, 2560, 1440));
+        assertEquals(2f, PreviewApp.rasterScale(1000, 500, 1500, 1000),
+                "the larger physical-to-logical axis wins");
+        assertEquals(1f, PreviewApp.rasterScale(1000, 500, 500, 250),
+                "downscaled backing buffers clamp to one");
+        assertEquals(4f, PreviewApp.rasterScale(100, 100, 800, 800),
+                "extreme backing buffers clamp to four");
+        assertEquals(1f, PreviewApp.rasterScale(0, 0, 0, 0),
+                "uninitialized dimensions use the safe default");
+    }
+
+    @Test
     void truncatedMultibyteUiFileFailsWithTypedDiagnosticThroughPreviewParserCall()
             throws Exception {
         byte[] truncated = new byte[] {'<', 'u', 'i', '/', '>', (byte) 0xC3};
@@ -216,7 +230,8 @@ final class PreviewAppTest {
         try (PreviewTestProcess child = PreviewTestProcess.launch(
                 "bad-after-good", ui, css, null, Duration.ofSeconds(60))) {
             int exit = child.await();
-            assertEquals(0, exit, "child exit code; stderr: " + child.stderr());
+            assertEquals(0, exit, "child exit code; stdout: " + child.stdout()
+                    + " stderr: " + child.stderr());
             assertTrue(child.stdout().contains("preview-child: bad-after-good ok"),
                     "child ok line; stdout: " + child.stdout() + " stderr: " + child.stderr());
         }
@@ -240,6 +255,31 @@ final class PreviewAppTest {
             int exit = child.await();
             assertEquals(0, exit, "child exit code; stderr: " + child.stderr());
             assertTrue(child.stdout().contains("preview-child: initial-bad ok"),
+                    "child ok line; stdout: " + child.stdout() + " stderr: " + child.stderr());
+        }
+        assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
+    }
+
+    /**
+     * A JSON skin keeps its bitmap {@code default-font}, gains exact-size FreeType rendering,
+     * and participates in the same density-change transaction as the preview overlay: a failed
+     * candidate retains every last-good texture, recovery retires them, and close releases the
+     * recovered custom, exact-size, and overlay fonts.
+     */
+    @Test
+    @Timeout(120)
+    void customSkinFontSizingAndDensityRefreshAreTransactional() throws Exception {
+        requireGl();
+        Path ui = tempDir.resolve("custom-skin.xml");
+        Path css = tempDir.resolve("custom-skin.css");
+        Path skin = writeCustomSkin();
+        Files.writeString(css, "/* parent placeholder */", StandardCharsets.UTF_8);
+        try (PreviewTestProcess child = PreviewTestProcess.launch(
+                "custom-skin-fonts", ui, css, null, skin, Duration.ofSeconds(60))) {
+            int exit = child.await();
+            assertEquals(0, exit, "child exit code; stdout: " + child.stdout()
+                    + " stderr: " + child.stderr());
+            assertTrue(child.stdout().contains("preview-child: custom-skin-fonts ok"),
                     "child ok line; stdout: " + child.stdout() + " stderr: " + child.stderr());
         }
         assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
@@ -341,6 +381,36 @@ final class PreviewAppTest {
             Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
             return target;
         }
+    }
+
+    private Path writeCustomSkin() throws Exception {
+        Path png = tempDir.resolve("custom-font.png");
+        BufferedImage pixel = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
+        pixel.setRGB(0, 0, 0xffffffff);
+        ImageIO.write(pixel, "png", png.toFile());
+        Files.writeString(tempDir.resolve("custom-font.fnt"), """
+                info face="custom" size=16 bold=0 italic=0 charset="" unicode=1 stretchH=100 smooth=1 aa=1 padding=0,0,0,0 spacing=0,0
+                common lineHeight=16 base=13 scaleW=1 scaleH=1 pages=1 packed=0
+                page id=0 file="custom-font.png"
+                chars count=1
+                char id=32 x=0 y=0 width=1 height=1 xoffset=0 yoffset=0 xadvance=4 page=0 chnl=15
+                kernings count=0
+                """, StandardCharsets.UTF_8);
+        Path skin = tempDir.resolve("custom-skin.json");
+        Files.writeString(skin, """
+                {
+                  "com.badlogic.gdx.graphics.Color": {
+                    "white": { "r": 1, "g": 1, "b": 1, "a": 1 }
+                  },
+                  "com.badlogic.gdx.graphics.g2d.BitmapFont": {
+                    "default-font": { "file": "custom-font.fnt" }
+                  },
+                  "com.badlogic.gdx.scenes.scene2d.ui.Label$LabelStyle": {
+                    "default": { "font": "default-font", "fontColor": "white" }
+                  }
+                }
+                """, StandardCharsets.UTF_8);
+        return skin;
     }
 
     /** Runs one child scenario and asserts a clean exit, its ok line, and the PNG artifact. */

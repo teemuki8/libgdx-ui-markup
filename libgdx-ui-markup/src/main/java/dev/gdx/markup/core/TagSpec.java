@@ -15,6 +15,11 @@ import java.util.regex.Pattern;
  * whitelist shared by every dialect consumer.
  */
 public final class TagSpec {
+    /** Smallest supported logical font size. */
+    public static final int MIN_FONT_SIZE = 4;
+    /** Largest supported logical font size. */
+    public static final int MAX_FONT_SIZE = 256;
+
     private static final Pattern DATA_SUFFIX = Pattern.compile("[A-Za-z0-9_-]+");
 
     /** Attribute value grammar used by the strict validator. */
@@ -37,6 +42,8 @@ public final class TagSpec {
         ITEMS,
         /** Bounded non-empty text. */
         TEXT,
+        /** Integer logical font size in the bounded supported range. */
+        FONT_SIZE,
         /** {@code data-*} semantic property; validated by suffix pattern. */
         DATA_PREFIX,
     }
@@ -127,6 +134,7 @@ public final class TagSpec {
             case FLOAT -> finiteFloat(value);
             case ITEMS -> items(value);
             case TEXT -> text(value);
+            case FONT_SIZE -> fontSize(value);
             case DATA_PREFIX -> DATA_SUFFIX.matcher(value).matches() ? null
                     : "invalid data-* suffix \"" + value + "\"";
         };
@@ -140,13 +148,13 @@ public final class TagSpec {
         map.put("stack", actor("stack", null));
         map.put("group", actor("group", null));
         map.put("scrollpane", actor("scrollpane", null));
-        map.put("label", actorWith("label", null, Map.of("text", ValueKind.TEXT)));
-        map.put("button", actorWith("button", "button", Map.of("text", ValueKind.TEXT)));
-        map.put("checkbox", actorWith("checkbox", "checkbox",
+        map.put("label", textActorWith("label", null, Map.of("text", ValueKind.TEXT)));
+        map.put("button", textActorWith("button", "button", Map.of("text", ValueKind.TEXT)));
+        map.put("checkbox", textActorWith("checkbox", "checkbox",
                 Map.of("text", ValueKind.TEXT, "checked", ValueKind.BOOLEAN)));
-        map.put("textfield", actorWith("textfield", "textfield",
+        map.put("textfield", textActorWith("textfield", "textfield",
                 Map.of("text", ValueKind.TEXT, "editable", ValueKind.BOOLEAN)));
-        map.put("selectbox", actorWith("selectbox", "selectbox",
+        map.put("selectbox", textActorWith("selectbox", "selectbox",
                 Map.of("items", ValueKind.ITEMS), Set.of("items")));
         map.put("slider", actorWith("slider", "slider",
                 Map.of("min", ValueKind.FLOAT, "max", ValueKind.FLOAT,
@@ -157,9 +165,9 @@ public final class TagSpec {
                 Set.of("min", "max")));
         map.put("image", actorWith("image", null,
                 Map.of("drawable", ValueKind.TEXT), Set.of("drawable")));
-        map.put("window", actorWith("window", "window",
+        map.put("window", textActorWith("window", "window",
                 Map.of("title", ValueKind.TEXT), Set.of("title")));
-        map.put("list", actorWith("list", "list",
+        map.put("list", textActorWith("list", "list",
                 Map.of("items", ValueKind.ITEMS), Set.of("items")));
         return Map.copyOf(map);
     }
@@ -178,6 +186,19 @@ public final class TagSpec {
         Map<String, ValueKind> merged = new LinkedHashMap<>(COMMON_KINDS);
         merged.putAll(specific);
         return new TagSpec(tag, role, merged, required);
+    }
+
+    private static TagSpec textActorWith(
+            String tag, String role, Map<String, ValueKind> specific) {
+        return textActorWith(tag, role, specific, Set.of());
+    }
+
+    private static TagSpec textActorWith(
+            String tag, String role, Map<String, ValueKind> specific, Set<String> required) {
+        Map<String, ValueKind> textAttributes = new LinkedHashMap<>(specific);
+        textAttributes.put("font", ValueKind.TEXT);
+        textAttributes.put("font-size", ValueKind.FONT_SIZE);
+        return actorWith(tag, role, textAttributes, required);
     }
 
     private static Map<String, ValueKind> commonKinds() {
@@ -291,6 +312,19 @@ public final class TagSpec {
             return "must not be blank";
         }
         return null;
+    }
+
+    private static String fontSize(String value) {
+        try {
+            int parsed = Integer.parseInt(value);
+            if (parsed >= MIN_FONT_SIZE && parsed <= MAX_FONT_SIZE) {
+                return null;
+            }
+        } catch (NumberFormatException ignored) {
+            // fall through to the typed failure
+        }
+        return "expected an integer from " + MIN_FONT_SIZE + " through " + MAX_FONT_SIZE
+                + ", got \"" + value + "\"";
     }
 
     /** Returns the canonical vocabulary tags in declaration order. */

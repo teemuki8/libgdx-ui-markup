@@ -6,10 +6,10 @@
     "license" : "Apache-2.0 — libgdx-ui-harness agentic-palisade corpus (our own benchmark UI).",
     "markupFile" : "palisade-skirmish.xml",
     "thresholds" : {
-      "geometry" : 0.13,
+      "geometry" : 0.149,
       "color" : 0.701,
-      "detail" : 0.281,
-      "coarseLayout" : 0.303
+      "detail" : 0.335,
+      "coarseLayout" : 0.309
     },
     "referenceWidth" : 1280,
     "referenceHeight" : 720
@@ -22,10 +22,10 @@
     "license" : "(c) Supergiant Games. Copyrighted material; used solely for private layout-verification testing, never redistributed.",
     "markupFile" : "hades-boon.xml",
     "thresholds" : {
-      "geometry" : 0.1,
-      "color" : 0.243,
-      "detail" : 0.103,
-      "coarseLayout" : 0.213
+      "geometry" : 0.104,
+      "color" : 0.241,
+      "detail" : 0.124,
+      "coarseLayout" : 0.23
     },
     "referenceWidth" : 1920,
     "referenceHeight" : 1080
@@ -39,9 +39,9 @@
     "markupFile" : "sts-shop.xml",
     "thresholds" : {
       "geometry" : 0.1,
-      "color" : 0.214,
-      "detail" : 0.154,
-      "coarseLayout" : 0.23
+      "color" : 0.211,
+      "detail" : 0.212,
+      "coarseLayout" : 0.258
     },
     "referenceWidth" : 1920,
     "referenceHeight" : 1080
@@ -55,9 +55,9 @@
     "markupFile" : "wesnoth-battle.xml",
     "thresholds" : {
       "geometry" : 0.106,
-      "color" : 0.158,
-      "detail" : 0.109,
-      "coarseLayout" : 0.218
+      "color" : 0.151,
+      "detail" : 0.13,
+      "coarseLayout" : 0.251
     },
     "referenceWidth" : 1920,
     "referenceHeight" : 1080

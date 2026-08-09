@@ -2,9 +2,9 @@
 .panel { padding: 28px; }
 .title { font-color: accent; }
 button { padding: 12px; }
-button.primary { background: accent; }
+button.primary { background: accent; font-size: 20px; }
 button.primary:hover { background: accent-over; }
 button.primary:pressed { background: accent-down; }
-textfield { background: field; padding: 8px; }
-checkbox { font-color: text; }
+textfield { background: field; padding: 8px; font-size: 18px; }
+checkbox { font-color: text; font-size: 18px; }
 checkbox:hover { font-color: accent; }

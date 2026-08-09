@@ -31,7 +31,7 @@ engine, no full HTML.
     <window id="signin-window" title="Sign in" expand="true" fill="true">
       <table id="signin-form">
         <row/>
-        <label id="signin-title" class="title" text="Sign in"/>
+        <label id="signin-title" class="title" font="inter" font-size="28" text="Sign in"/>
         <row/>
         <label id="username-label" text="Username"/>
         <textfield id="username" label="Username" data-runtime-entity="user"/>
@@ -54,11 +54,11 @@ engine, no full HTML.
 .panel { padding: 28px; }
 .title { font-color: accent; }
 button { padding: 12px; }
-button.primary { background: accent; }
+button.primary { background: accent; font-size: 20px; }
 button.primary:hover { background: accent-over; }
 button.primary:pressed { background: accent-down; }
-textfield { background: field; padding: 8px; }
-checkbox { font-color: text; }
+textfield { background: field; padding: 8px; font-size: 18px; }
+checkbox { font-color: text; font-size: 18px; }
 checkbox:hover { font-color: accent; }
 ```
 
@@ -87,6 +87,36 @@ BuiltUi ui = MarkupBuilder.build(
         new NoopSink());            // HarnessSemanticSink for harness metadata
 stage.addActor(ui.root());
 ```
+
+## Exact-size fonts
+
+The default skin bundles Inter and rasterizes each requested logical size with `gdx-freetype`.
+XML accepts integer `font-size` values from 4 through 256; CSS accepts the same integer with an
+optional `px` suffix. XML overrides CSS independently for `font` and `font-size`. A declaration
+with a size resolves `font` as a registered FreeType family (default `inter`); without a size,
+named `BitmapFont` resources in the Skin retain precedence for compatibility.
+
+Applications can register a bounded custom family set on the render thread. The application
+chooses the `FileHandle`s and glyph set—markup never supplies a path:
+
+```java
+Skin skin = new Skin(Gdx.files.internal("ui/skin.json"));
+FreeTypeFontManager.install(
+        skin,
+        "game-ui",
+        Map.of("game-ui", Gdx.files.internal("fonts/GameUi-Regular.ttf")),
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?-",
+        2f); // physical backing-buffer density; logical layout sizes do not change
+
+BuiltUi ui = MarkupBuilder.build(document, css, skin, sink);
+// ... use the UI ...
+skin.dispose(); // owns generated BitmapFonts; the attached manager owns its generators
+```
+
+The family set is capped at 16, the glyph string at 2,048 BMP characters, and the per-Skin
+family/size cache at 64 fonts. `DefaultSkin.create(rasterScale)` performs the same setup for
+bundled Inter. Accessibility scaling should rebuild the markup UI with changed logical sizes so
+Scene2D layout reflows; it should not magnify the finished Stage.
 
 Because `id` became a harness test identifier, the UI is drivable through the harness locator
 API with no imperative metadata:

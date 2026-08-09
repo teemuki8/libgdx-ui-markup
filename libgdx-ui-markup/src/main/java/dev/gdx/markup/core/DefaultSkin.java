@@ -21,9 +21,9 @@ import com.badlogic.gdx.scenes.scene2d.utils.Drawable;
 import com.badlogic.gdx.scenes.scene2d.utils.TextureRegionDrawable;
 
 /**
- * Programmatic default skin for the whole vocabulary: a 1&times;1 pixel texture, the built-in
- * bitmap font, named colors and drawables (so CSS can reference {@code accent}, {@code panel},
- * …), and a named style per tag. Styles are named after their tag ({@code button},
+ * Programmatic default skin for the whole vocabulary: a 1&times;1 pixel texture, bundled Inter
+ * rendered through FreeType, named colors and drawables (so CSS can reference {@code accent},
+ * {@code panel}, …), and a named style per tag. Styles are named after their tag ({@code button},
  * {@code textfield}, …) plus a {@code default} alias for each type. Must be created on the GL
  * thread; the caller owns disposal.
  */
@@ -63,7 +63,15 @@ public final class DefaultSkin {
 
     /** Builds a fresh skin; call on the render thread and dispose when done. */
     public static Skin create() {
-        return create(DefaultSkin::createPixel, pixmap -> new Texture(pixmap));
+        return create(1f);
+    }
+
+    /**
+     * Builds a fresh skin with fonts rasterized at the supplied backbuffer-to-logical scale.
+     * The scale is bounded by {@link FreeTypeFontManager} and does not alter logical layout.
+     */
+    public static Skin create(float rasterScale) {
+        return create(DefaultSkin::createPixel, pixmap -> new Texture(pixmap), rasterScale);
     }
 
     /** The effective palette: built-in hex values overridden by the optional palette file. */
@@ -129,27 +137,36 @@ public final class DefaultSkin {
      * factories to observe disposal. Production callers use {@link #create()}.
      */
     static Skin create(PixmapFactory pixels, TextureFactory textures) {
-        Skin skin = new Skin();
-        Pixmap pixmap = pixels.create();
-        Texture pixelTexture;
-        try {
-            // Texture(Pixmap) copies the pixels during construction; the Pixmap is never retained.
-            pixelTexture = textures.create(pixmap);
-        } finally {
-            pixmap.dispose();
-        }
-        pixelTexture.setFilter(Texture.TextureFilter.Nearest, Texture.TextureFilter.Nearest);
-        BitmapFont font = new BitmapFont();
-        font.getData().markupEnabled = false;
-        skin.add("pixel", pixelTexture);
-        skin.add("default-font", font);
+        return create(pixels, textures, 1f);
+    }
 
-        java.util.Map<String, String> palette = palette();
-        addColors(skin, palette);
-        TextureRegionDrawable pixel = new TextureRegionDrawable(new TextureRegion(pixelTexture));
-        addDrawables(skin, pixel, palette);
-        addStyles(skin, font, pixel, palette);
-        return skin;
+    private static Skin create(
+            PixmapFactory pixels, TextureFactory textures, float rasterScale) {
+        Skin skin = new Skin();
+        try {
+            Pixmap pixmap = pixels.create();
+            Texture pixelTexture;
+            try {
+                // Texture(Pixmap) copies pixels during construction; the Pixmap is not retained.
+                pixelTexture = textures.create(pixmap);
+            } finally {
+                pixmap.dispose();
+            }
+            pixelTexture.setFilter(Texture.TextureFilter.Nearest, Texture.TextureFilter.Nearest);
+            skin.add("pixel", pixelTexture);
+
+            java.util.Map<String, String> palette = palette();
+            addColors(skin, palette);
+            TextureRegionDrawable pixel = new TextureRegionDrawable(
+                    new TextureRegion(pixelTexture));
+            addDrawables(skin, pixel, palette);
+            BitmapFont font = FreeTypeFontManager.installDefault(skin, rasterScale).defaultFont();
+            addStyles(skin, font, pixel, palette);
+            return skin;
+        } catch (RuntimeException | Error failure) {
+            skin.dispose();
+            throw failure;
+        }
     }
 
     /** Pixel source for the skin's 1&times;1 upload. */

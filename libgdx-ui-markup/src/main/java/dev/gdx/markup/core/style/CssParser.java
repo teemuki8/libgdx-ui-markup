@@ -47,6 +47,7 @@ public final class CssParser {
     private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z][A-Za-z0-9_-]*");
     private static final Pattern LENGTH = Pattern.compile(
             "[0-9]+(?:\\.[0-9]+)?(?:px)?");
+    private static final Pattern FONT_SIZE = Pattern.compile("([0-9]+)(?:px)?");
     private static final Pattern SIMPLE_SELECTOR = Pattern.compile(
             "^([a-z][a-z0-9]*)(?:\\.([A-Za-z0-9_-]+))?$");
     private static final Pattern CLASS_SELECTOR = Pattern.compile("^\\.([A-Za-z0-9_-]+)$");
@@ -64,6 +65,7 @@ public final class CssParser {
         COLOR,
         DRAWABLE,
         FONT,
+        FONT_SIZE,
         TEXT_ALIGN,
         BOOLEAN,
     }
@@ -72,6 +74,7 @@ public final class CssParser {
         Map<String, PropertyKind> map = new LinkedHashMap<>();
         map.put("color", PropertyKind.COLOR);
         map.put("font", PropertyKind.FONT);
+        map.put("font-size", PropertyKind.FONT_SIZE);
         map.put("font-color", PropertyKind.COLOR);
         map.put("background", PropertyKind.DRAWABLE);
         map.put("background-over", PropertyKind.DRAWABLE);
@@ -198,7 +201,7 @@ public final class CssParser {
                     throw styleError(ruleLine, ruleColumn, "unterminated rule block");
                 }
                 parseDeclaration(css.substring(nameStart, terminator), nameLine, nameColumn,
-                        properties);
+                        selectors, properties);
                 if (cursor.peek() == ';') {
                     cursor.advance();
                 }
@@ -360,7 +363,7 @@ public final class CssParser {
     }
 
     private static void parseDeclaration(String raw, int line, int column,
-            LinkedHashMap<String, String> properties) {
+            List<Selector> selectors, LinkedHashMap<String, String> properties) {
         String statement = removeComments(raw).strip();
         if (statement.isEmpty()) {
             return;
@@ -378,6 +381,11 @@ public final class CssParser {
         }
         if (value.isEmpty()) {
             throw styleError(line, column, "property \"" + name + "\" has no value");
+        }
+        if ("font-size".equals(name)
+                && selectors.stream().anyMatch(selector -> selector.pseudo() != null)) {
+            throw styleError(line, column,
+                    "property \"font-size\" is not allowed in a pseudo-state rule");
         }
         String failure = validate(kind, name, value);
         if (failure != null) {
@@ -399,6 +407,7 @@ public final class CssParser {
                     : "expected a drawable name; got \"" + value + "\"";
             case FONT -> IDENTIFIER.matcher(value).matches() ? null
                     : "expected a font name; got \"" + value + "\"";
+            case FONT_SIZE -> validateFontSize(value);
             case TEXT_ALIGN -> TEXT_ALIGNS.contains(value) ? null
                     : "expected left, center, or right; got \"" + value + "\"";
             case BOOLEAN -> ("true".equals(value) || "false".equals(value)) ? null
@@ -417,6 +426,22 @@ public final class CssParser {
             }
         }
         return null;
+    }
+
+    private static String validateFontSize(String value) {
+        Matcher matcher = FONT_SIZE.matcher(value);
+        if (matcher.matches()) {
+            try {
+                int parsed = Integer.parseInt(matcher.group(1));
+                if (parsed >= TagSpec.MIN_FONT_SIZE && parsed <= TagSpec.MAX_FONT_SIZE) {
+                    return null;
+                }
+            } catch (NumberFormatException ignored) {
+                // fall through to the typed failure
+            }
+        }
+        return "expected an integer from " + TagSpec.MIN_FONT_SIZE + " through "
+                + TagSpec.MAX_FONT_SIZE + " with optional px suffix; got \"" + value + "\"";
     }
 
     private static MarkupException styleError(int line, int column, String message) {

@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.zip.ZipFile;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -39,5 +41,29 @@ final class PreviewStartScriptTest {
         assertFalse(bat.contains("XstartOnFirstThread"),
                 "-XstartOnFirstThread is a macOS-only HotSpot option and must never appear "
                         + "in the Windows launcher");
+    }
+
+    @Test
+    void distributionContainsFreeTypeJavaNativeAndBundledFontArtifacts() throws Exception {
+        Path lib = Path.of(System.getProperty("preview.installDir")).resolve("lib");
+        List<Path> jars;
+        try (var files = Files.list(lib)) {
+            jars = files.toList();
+        }
+        assertTrue(jars.stream().anyMatch(path -> path.getFileName().toString()
+                        .equals("gdx-freetype-1.14.2.jar")),
+                "distribution contains the FreeType Java binding");
+        assertTrue(jars.stream().anyMatch(path -> path.getFileName().toString()
+                        .equals("gdx-freetype-platform-1.14.2-natives-desktop.jar")),
+                "distribution contains desktop FreeType natives");
+        Path core = jars.stream().filter(path -> path.getFileName().toString()
+                        .matches("libgdx-ui-markup-[0-9].*\\.jar"))
+                .findFirst().orElseThrow();
+        try (ZipFile jar = new ZipFile(core.toFile())) {
+            assertTrue(jar.getEntry("META-INF/fonts/Inter-Regular.ttf") != null,
+                    "core JAR contains bundled Inter");
+            assertTrue(jar.getEntry("META-INF/fonts/Inter-OFL.txt") != null,
+                    "core JAR contains Inter's OFL license");
+        }
     }
 }

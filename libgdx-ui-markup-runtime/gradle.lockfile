@@ -3,6 +3,8 @@
 # This file is expected to be part of source control.
 # To regenerate this file, run: ./gradlew :libgdx-ui-markup-runtime:dependencies --write-locks
 com.badlogicgames.gdx:gdx-backend-lwjgl3:1.14.2=testCompileClasspath,testRuntimeClasspath
+com.badlogicgames.gdx:gdx-freetype-platform:1.14.2=runtimeClasspath,testRuntimeClasspath
+com.badlogicgames.gdx:gdx-freetype:1.14.2=runtimeClasspath,testRuntimeClasspath
 com.badlogicgames.gdx:gdx-jnigen-loader:2.5.2=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 com.badlogicgames.gdx:gdx-platform:1.14.2=testRuntimeClasspath
 com.badlogicgames.gdx:gdx:1.14.2=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath

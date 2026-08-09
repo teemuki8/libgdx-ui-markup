@@ -609,7 +609,7 @@ public final class MarkupBuilder {
                 table.setBackground(requireDrawable(element, base.get("background")));
             }
             Object copied = null;
-            if (hasStateStyle(base)) {
+            if (hasStateStyle(base) || hasXmlFontOverride(element)) {
                 copied = applyStateStyle(element, actor, base, null, copied);
             }
             copied = applyPseudoCssOverrides(element, actor, copied);
@@ -663,7 +663,11 @@ public final class MarkupBuilder {
         /** Style-field properties applied per actor for tagless selectors. */
         private static final List<String> STATE_STYLE_PROPERTIES = List.of(
                 "background", "background-over", "background-down", "background-checked",
-                "background-disabled", "font-color", "color", "font");
+                "background-disabled", "font-color", "color", "font", "font-size");
+
+        private static boolean hasXmlFontOverride(Element element) {
+            return element.attr("font") != null || element.attr("font-size") != null;
+        }
 
         private static boolean hasStateStyle(ResolvedStyle style) {
             for (String property : STATE_STYLE_PROPERTIES) {
@@ -709,13 +713,101 @@ public final class MarkupBuilder {
                                     element.tag(), property, source);
                     case "color", "font-color" -> SkinStyleCompiler.setStateColor(copied, state,
                             color(element, style), element.tag(), property, source);
-                    case "font" -> SkinStyleCompiler.setStateFont(copied, state,
-                            requireFont(element, style.get("font")), element.tag(), property,
-                            source);
+                    case "font" -> {
+                        if (pseudo != null && sourceDeclaresPseudo(
+                                source, element, pseudo)) {
+                            throw SkinStyleCompiler.unsupported(
+                                    element.tag(), pseudo, property, source);
+                        }
+                    }
+                    case "font-size" -> {
+                        // The parser forbids pseudo-state sizes. Base selection is applied below.
+                    }
                     default -> throw new AssertionError(property);
                 }
             }
+            if (pseudo == null && supportsFont(actor)) {
+                com.badlogic.gdx.graphics.g2d.BitmapFont font = effectiveFont(element, style);
+                if (font != null) {
+                    SkinStyleCompiler.setStateFont(copied, SkinStyleCompiler.propertyState(
+                            "font", null), font, element.tag(), "font", null);
+                }
+            }
             return copied;
+        }
+
+        private boolean sourceDeclaresPseudo(
+                CssRule source, Element element, String pseudo) {
+            for (Selector selector : source.selectors()) {
+                if (pseudo.equals(selector.pseudo()) && selector.matches(element.tag(),
+                        element.id(), element.classes(), pseudo)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private com.badlogic.gdx.graphics.g2d.BitmapFont effectiveFont(
+                Element element, ResolvedStyle style) {
+            String family = element.attr("font");
+            if (family == null && style.has("font")) {
+                family = style.get("font");
+            }
+            String sizeValue = element.attr("font-size");
+            if (sizeValue == null && style.has("font-size")) {
+                sizeValue = style.get("font-size");
+            }
+            if (family == null && sizeValue == null) {
+                return null;
+            }
+
+            FreeTypeFontManager manager = FreeTypeFontManager.optional(skin);
+            if (sizeValue == null) {
+                com.badlogic.gdx.graphics.g2d.BitmapFont named = skin.optional(
+                        family, com.badlogic.gdx.graphics.g2d.BitmapFont.class);
+                if (named != null) {
+                    return named;
+                }
+                if (manager == null) {
+                    throw unresolvedFont(element,
+                            "skin has no font named \"" + family + "\"");
+                }
+                sizeValue = Integer.toString(FreeTypeFontManager.DEFAULT_FONT_SIZE);
+            } else if (manager == null) {
+                throw unresolvedFont(element,
+                        "skin has no FreeType font manager for font-size");
+            }
+            if (family == null) {
+                family = manager.defaultFamily();
+            }
+
+            int logicalSize = Integer.parseInt(sizeValue.endsWith("px")
+                    ? sizeValue.substring(0, sizeValue.length() - 2) : sizeValue);
+            try {
+                return manager.font(family, logicalSize);
+            } catch (FreeTypeFontManager.CacheLimitException failure) {
+                throw new MarkupException(MarkupException.Kind.TOO_LARGE,
+                        paths.current(), element.line(), element.column(), failure.getMessage());
+            } catch (IllegalArgumentException failure) {
+                throw unresolvedFont(element, failure.getMessage());
+            } catch (FreeTypeFontManager.ResourceCollisionException failure) {
+                throw unresolvedFont(element, failure.getMessage());
+            }
+        }
+
+        private boolean supportsFont(Actor actor) {
+            return actor instanceof Label
+                    || actor instanceof TextButton
+                    || actor instanceof CheckBox
+                    || actor instanceof TextField
+                    || actor instanceof SelectBox<?>
+                    || actor instanceof Window
+                    || actor instanceof com.badlogic.gdx.scenes.scene2d.ui.List<?>;
+        }
+
+        private MarkupException unresolvedFont(Element element, String message) {
+            return new MarkupException(MarkupException.Kind.UNRESOLVED_STYLE,
+                    paths.current(), element.line(), element.column(), message);
         }
 
         private MarkupException unsupportedState(Element element, ResolvedStyle style,
@@ -750,18 +842,6 @@ public final class MarkupBuilder {
                         "skin has no color named \"" + name + "\"");
             }
             return color;
-        }
-
-        private com.badlogic.gdx.graphics.g2d.BitmapFont requireFont(Element element,
-                String name) {
-            com.badlogic.gdx.graphics.g2d.BitmapFont font =
-                    skin.optional(name, com.badlogic.gdx.graphics.g2d.BitmapFont.class);
-            if (font == null) {
-                throw new MarkupException(MarkupException.Kind.UNRESOLVED_STYLE,
-                        paths.current(), element.line(), element.column(),
-                        "skin has no font named \"" + name + "\"");
-            }
-            return font;
         }
 
         private Object widgetStyle(Actor actor) {

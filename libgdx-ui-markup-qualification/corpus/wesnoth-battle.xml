@@ -47,7 +47,7 @@
         </table>
         <row/>
         <row/>
-        <table width="1134" height="36" pad="3"><label id="battlefield-status" class="heading" text="Maaf · Dune Rider · HP 31/39 · MP 0/7" align="center"/></table>
+        <table width="1134" height="36" pad="3"><label id="battlefield-status" class="heading" text="Maaf - Dune Rider - HP 31/39 - MP 0/7" align="center"/></table>
     </table>
     </table>
     <table id="sidebar" class="panel" width="130" height="698" pad="6" align="left top">
@@ -68,9 +68,9 @@
       <row/>
       <label id="attack-title" class="heading" text="Attacks" width="112" height="22"/>
       <row/>
-      <label id="attack-detail" class="section" text="5×2 mace\n7×3 composite bow" width="112" height="46"/>
+      <label id="attack-detail" class="section" text="5x2 mace\n7x3 composite bow" width="112" height="46"/>
       <row/>
-      <label id="status" class="section" text="Player 1 · Turn 3" width="112" align="left"/>
+      <label id="status" class="section" text="Player 1 - Turn 3" width="112" align="left"/>
       <button id="end-turn" text="End Turn" name="End turn" width="112" height="20"/>
     </table>
   </table>

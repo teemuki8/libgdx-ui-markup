@@ -17,6 +17,7 @@ import com.badlogic.gdx.scenes.scene2d.ui.Skin;
 import com.badlogic.gdx.utils.viewport.ScreenViewport;
 import dev.gdx.markup.core.BuiltUi;
 import dev.gdx.markup.core.DefaultSkin;
+import dev.gdx.markup.core.FreeTypeFontManager;
 import dev.gdx.markup.core.MarkupBuilder;
 import dev.gdx.markup.core.MarkupDocument;
 import dev.gdx.markup.core.MarkupException;
@@ -63,6 +64,9 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
     private final CliOptions options;
     private Stage stage;
     private Skin skin;
+    private Skin overlaySkin;
+    private float overlayRasterScale = Float.NaN;
+    private float committedRasterScale = Float.NaN;
     private PreviewMcp mcp;
     private Label errorLabel;
     private Label.LabelStyle errorStyle;
@@ -115,8 +119,10 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
                 return false;
             }
         });
+        overlayRasterScale = rasterScaleSource.get();
+        overlaySkin = createOverlaySkin(overlayRasterScale);
         errorStyle = new Label.LabelStyle();
-        errorStyle.font = new BitmapFont();
+        errorStyle.font = overlaySkin.getFont("default-font");
         errorStyle.fontColor = ERROR_TEXT;
         errorLabel = new Label("", errorStyle);
         errorLabel.setWrap(true);
@@ -155,10 +161,15 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
         Candidate candidate = null;
         PreviewMcp.PendingRuntime pendingRuntime = null;
         StageState stageBefore = null;
+        Skin candidateOverlaySkin = null;
+        float candidateRasterScale = rasterScaleSource.get();
         try {
+            if (Math.abs(candidateRasterScale - overlayRasterScale) > 0.001f) {
+                candidateOverlaySkin = createOverlaySkin(candidateRasterScale);
+            }
             MarkupDocument document = new MarkupParser().parse(options.ui());
             CssDocument css = new CssParser().parse(options.css());
-            candidate = new Candidate(document, css, createSkin());
+            candidate = new Candidate(document, css, createSkin(candidateRasterScale));
             BuiltUi built = MarkupBuilder.build(document, css, candidate.skin(), sink());
             candidate.adoptBuilt(built);
             // The ui root group must cover the viewport or harness actionability (parent
@@ -179,28 +190,78 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
             candidate = null; // ownership transferred; never dispose the committed skin
             Skin previous = skin;
             skin = newSkin;
+            committedRasterScale = candidateRasterScale;
+            if (candidateOverlaySkin != null) {
+                Skin previousOverlay = overlaySkin;
+                overlaySkin = candidateOverlaySkin;
+                candidateOverlaySkin = null;
+                overlayRasterScale = candidateRasterScale;
+                errorStyle.font = overlaySkin.getFont("default-font");
+                errorLabel.setStyle(errorStyle);
+                disposePreviousOverlaySkin(previousOverlay);
+            }
             if (previous != null) {
                 disposePreviousSkin(previous);
             }
             status(MarkupStatus.ok(built.actors().size()));
         } catch (MarkupException failure) {
             handleRebuildFailure(failure, failure.formatted(), MarkupStatus.error(failure),
-                    candidate, pendingRuntime, stageBefore);
+                    candidate, candidateOverlaySkin, pendingRuntime, stageBefore);
         } catch (IOException failure) {
             handleRebuildFailure(failure, failure.getMessage(),
-                    MarkupStatus.error(failure.getMessage()), candidate, pendingRuntime,
-                    stageBefore);
+                    MarkupStatus.error(failure.getMessage()), candidate, candidateOverlaySkin,
+                    pendingRuntime, stageBefore);
         } catch (RuntimeException failure) {
             String message = failure.getMessage() == null
                     ? failure.getClass().getSimpleName() : failure.getMessage();
             handleRebuildFailure(failure, message, MarkupStatus.error(message), candidate,
-                    pendingRuntime, stageBefore);
+                    candidateOverlaySkin, pendingRuntime, stageBefore);
         }
     }
 
-    private Skin createSkin() {
-        return options.skin() == null ? DefaultSkin.create()
-                : new Skin(Gdx.files.absolute(options.skin().toString()));
+    private static Skin createOverlaySkin(float scale) {
+        Skin candidate = new Skin();
+        try {
+            FreeTypeFontManager.installDefault(candidate, scale);
+            return candidate;
+        } catch (RuntimeException | Error failure) {
+            candidate.dispose();
+            throw failure;
+        }
+    }
+
+    private Skin createSkin(float scale) {
+        if (options.skin() == null) {
+            return DefaultSkin.create(scale);
+        }
+        Skin custom = new Skin(Gdx.files.absolute(options.skin().toString()));
+        try {
+            FreeTypeFontManager.installDefault(custom, scale);
+            return custom;
+        } catch (RuntimeException | Error failure) {
+            custom.dispose();
+            throw failure;
+        }
+    }
+
+    /**
+     * Returns the physical-pixel raster density for a logical viewport. The larger axis avoids
+     * undersampling on asymmetric backing buffers; invalid startup dimensions use one.
+     */
+    static float rasterScale(
+            int logicalWidth, int logicalHeight, int backBufferWidth, int backBufferHeight) {
+        if (logicalWidth <= 0 || logicalHeight <= 0
+                || backBufferWidth <= 0 || backBufferHeight <= 0) {
+            return 1f;
+        }
+        float horizontal = (float) backBufferWidth / logicalWidth;
+        float vertical = (float) backBufferHeight / logicalHeight;
+        return Math.clamp(Math.max(horizontal, vertical), 1f, 4f);
+    }
+
+    private static float currentRasterScale() {
+        return rasterScale(Gdx.graphics.getWidth(), Gdx.graphics.getHeight(),
+                Gdx.graphics.getBackBufferWidth(), Gdx.graphics.getBackBufferHeight());
     }
 
     /**
@@ -210,7 +271,7 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
      * rebuild always ends in one typed error.
      */
     private void handleRebuildFailure(Throwable failure, String text,
-            MarkupStatus status, Candidate candidate,
+            MarkupStatus status, Candidate candidate, Skin candidateOverlaySkin,
             PreviewMcp.PendingRuntime pendingRuntime, StageState stageBefore) {
         if (mcp != null && pendingRuntime != null) {
             // rollbackRuntime already aggregated candidate close + reinstatement with
@@ -230,6 +291,13 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
         if (candidate != null) {
             try {
                 candidate.close();
+            } catch (RuntimeException closeFailure) {
+                failure.addSuppressed(closeFailure);
+            }
+        }
+        if (candidateOverlaySkin != null) {
+            try {
+                candidateOverlaySkin.dispose();
             } catch (RuntimeException closeFailure) {
                 failure.addSuppressed(closeFailure);
             }
@@ -352,6 +420,16 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
             previous.dispose();
         } catch (RuntimeException cleanupFailure) {
             System.err.println("markup-warning: failed to dispose the previous skin: "
+                    + cleanupFailure.getMessage());
+            System.err.flush();
+        }
+    }
+
+    private static void disposePreviousOverlaySkin(Skin previous) {
+        try {
+            previous.dispose();
+        } catch (RuntimeException cleanupFailure) {
+            System.err.println("markup-warning: failed to dispose the previous overlay skin: "
                     + cleanupFailure.getMessage());
             System.err.flush();
         }
@@ -488,6 +566,14 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
     /** Returns the currently committed (live) skin, or {@code null} before the first success. */
     Skin skin() {
         return skin;
+    }
+
+    Actor actor(String actorName) {
+        return stage == null ? null : stage.getRoot().findActor(actorName);
+    }
+
+    BitmapFont errorOverlayFont() {
+        return errorStyle == null ? null : errorStyle.font;
     }
 
     /** Returns whether the typed error overlay is visible and staged in the scene. */
@@ -628,11 +714,22 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
         }
     }
 
+    @FunctionalInterface
+    interface RasterScaleSource {
+        float get();
+    }
+
+    RasterScaleSource rasterScaleSource = PreviewApp::currentRasterScale;
+
     @Override public void resize(int width, int height) {
         if (stage != null) {
             stage.getViewport().update(width, height, true);
             if (!stage.getRoot().getChildren().isEmpty()) {
                 stage.getRoot().getChildren().first().setSize(width, height);
+            }
+            float scale = rasterScaleSource.get();
+            if (skin != null && Math.abs(scale - committedRasterScale) > 0.001f) {
+                rebuild();
             }
         }
     }
@@ -657,6 +754,9 @@ public final class PreviewApp extends ApplicationAdapter implements AutoCloseabl
         }
         if (skin != null) {
             skin.dispose();
+        }
+        if (overlaySkin != null) {
+            overlaySkin.dispose();
         }
     }
 }

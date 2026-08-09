@@ -245,6 +245,46 @@ final class CssTest {
     }
 
     @Test
+    void fontSizeAcceptsBoundedIntegersWithOptionalPxSuffix() {
+        CssDocument document = parser.parse("""
+                label.title { font: inter; font-size: 28px; }
+                button { font-size: 16; }
+                """);
+        CssStyleResolver resolver = new CssStyleResolver(document);
+
+        ResolvedStyle label = resolver.resolve(element("label", null, List.of("title")));
+        assertEquals("inter", label.get("font"));
+        assertEquals("28px", label.get("font-size"));
+        assertEquals("16", resolver.resolve(element("button", null, List.of()))
+                .get("font-size"));
+    }
+
+    @Test
+    void fontSizeRejectsFractionsAndValuesOutsideTheBoundedRange() {
+        for (String value : List.of("3px", "257px", "16.5px", "-1px", "big")) {
+            MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse(
+                    "label { font-size: " + value + "; }"), value);
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind(), value);
+            assertTrue(failure.getMessage().contains("font-size"), value);
+        }
+    }
+
+    @Test
+    void pseudoStateCannotChangeFontSize() {
+        MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse("""
+                button:hover {
+                    font-size: 20px;
+                }
+                """));
+
+        assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
+        assertEquals(2, failure.line());
+        assertEquals(5, failure.column());
+        assertTrue(failure.getMessage().contains("font-size"));
+        assertTrue(failure.getMessage().contains("pseudo-state"));
+    }
+
+    @Test
     void lengthsAcceptPxAndCommaLists() {
         CssDocument document = parser.parse("""
                 button { padding: 28px; margin: 1,2,3,4; width: 100; }

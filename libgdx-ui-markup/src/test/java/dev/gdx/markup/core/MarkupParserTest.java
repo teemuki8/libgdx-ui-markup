@@ -152,6 +152,51 @@ final class MarkupParserTest {
     }
 
     @Test
+    void textWidgetsAcceptFontFamilyAndLogicalFontSize() {
+        List<String> widgets = List.of(
+                "<label text=\"Label\" font=\"inter\" font-size=\"28\"/>",
+                "<button text=\"Button\" font=\"inter\" font-size=\"28\"/>",
+                "<checkbox text=\"Check\" font=\"inter\" font-size=\"28\"/>",
+                "<textfield text=\"Field\" font=\"inter\" font-size=\"28\"/>",
+                "<selectbox items=\"One,Two\" font=\"inter\" font-size=\"28\"/>",
+                "<window title=\"Window\" font=\"inter\" font-size=\"28\"/>",
+                "<list items=\"One,Two\" font=\"inter\" font-size=\"28\"/>");
+
+        for (String widget : widgets) {
+            Element element = parser.parse("<ui>" + widget + "</ui>")
+                    .root().children().get(0);
+            assertEquals("inter", element.attr("font"), widget);
+            assertEquals("28", element.attr("font-size"), widget);
+        }
+    }
+
+    @Test
+    void fontSizeMustBeAnIntegerWithinTheBoundedRange() {
+        for (String value : List.of("3", "257", "16.5", "16px", "-1", "big")) {
+            MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse(
+                    "<ui><label font-size=\"" + value + "\"/></ui>"), value);
+            assertEquals(MarkupException.Kind.INVALID_VALUE, failure.kind(), value);
+            assertEquals("ui/label", failure.elementPath(), value);
+            assertTrue(failure.line() >= 1, value);
+            assertTrue(failure.column() >= 1, value);
+        }
+    }
+
+    @Test
+    void nonTextActorsRejectFontAttributes() {
+        for (String actor : List.of(
+                "<image drawable=\"pixel\" %s/>",
+                "<slider min=\"0\" max=\"1\" %s/>",
+                "<table %s/>")) {
+            for (String attribute : List.of("font=\"inter\"", "font-size=\"16\"")) {
+                MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse(
+                        "<ui>" + actor.formatted(attribute) + "</ui>"), actor + attribute);
+                assertEquals(MarkupException.Kind.UNKNOWN_ATTRIBUTE, failure.kind(), attribute);
+            }
+        }
+    }
+
+    @Test
     void doctypeDeclarationIsRejected() {
         MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse(
                 "<!DOCTYPE ui [<!ENTITY x \"boom\">]><ui/>"));

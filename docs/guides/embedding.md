@@ -19,7 +19,7 @@ time of writing); harness and agent-runtime are fixed dependencies of that relea
 
 | Coordinate | Version | Provides |
 |---|---|---|
-| `io.github.teemuki8:libgdx-ui-markup` | 0.3.0 | `MarkupBuilder`, parser, CSS engine, `DefaultSkin` |
+| `io.github.teemuki8:libgdx-ui-markup` | 0.3.0 | `MarkupBuilder`, parser, CSS engine, `DefaultSkin`, exact-size FreeType manager |
 | `io.github.teemuki8:libgdx-ui-markup-harness` | 0.3.0 | `HarnessSemanticSink` |
 | `io.github.teemuki8:libgdx-ui-markup-runtime` | 0.3.0 | `MarkupRuntimeSource` |
 | `io.github.teemuki8:harness-core` / `harness-scene2d` / `harness-lwjgl3` | 1.1.0 | `RuntimeComparator`, `Scene2dSession`, `RenderThreadScheduler`, `ControlledStageClock`, capture |
@@ -29,7 +29,9 @@ time of writing); harness and agent-runtime are fixed dependencies of that relea
 
 Requires Java 25 and libGDX 1.14.2 (the harness backend). The preview distribution also needs
 `gdx-backend-lwjgl3` plus the desktop natives; a game with its own backend adapts the harness
-`lwjgl3` pieces accordingly.
+`lwjgl3` pieces accordingly. Desktop embedding also needs `gdx-freetype` and
+`gdx-freetype-platform:1.14.2:natives-desktop`; the markup artifact declares them on its
+runtime path.
 
 ## 1. Build the UI on the render thread with a live session
 
@@ -46,7 +48,8 @@ HarnessSemanticSink sink = new HarnessSemanticSink(session.semantics(), CORRELAT
 
 MarkupDocument document = new MarkupParser().parse(xml);
 CssDocument css = new CssParser().parse(stylesheet);
-BuiltUi ui = MarkupBuilder.build(document, css, DefaultSkin.create(), sink);
+Skin skin = DefaultSkin.create(rasterScale);
+BuiltUi ui = MarkupBuilder.build(document, css, skin, sink);
 ui.root().setSize(stage.getViewport().getWorldWidth(), stage.getViewport().getWorldHeight());
 stage.addActor(ui.root());
 ```
@@ -54,7 +57,35 @@ stage.addActor(ui.root());
 Size the root group to the viewport: harness actionability tests parent intersection and
 `Group.hit`, so a zero-sized root rejects every actor (the preview does this explicitly).
 
-## 2. Register runtime bindings and value authority separately
+## 2. Own fonts and accessibility reflow with the Skin
+
+Parsing XML/CSS remains GL-free. Creating or installing the font manager, building actors,
+rebuilding after a density/accessibility change, and disposing the Skin are render-thread work.
+`font-size` is an integer from 4 through 256 in XML and the same integer with optional `px` in
+CSS. XML `font` and `font-size` each override their CSS value independently.
+
+`DefaultSkin.create(rasterScale)` bundles Inter. For an application Skin, register only
+application-owned font handles; markup cannot read files:
+
+```java
+Skin skin = new Skin(Gdx.files.internal("ui/skin.json"));
+FreeTypeFontManager.install(
+        skin,
+        "game-ui",
+        Map.of("game-ui", Gdx.files.internal("fonts/GameUi-Regular.ttf")),
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:;!?-",
+        rasterScale);
+```
+
+Compute `rasterScale` from the larger backbuffer/logical-window ratio and clamp it to 1–4.
+The manager rasterizes physical pixels at that density and scales font metrics back to logical
+units, so layout does not grow merely because the monitor is HiDPI. When an accessibility
+setting changes the requested logical size, rebuild the markup actor tree and let Table/Cell
+layout reflow. Keep the manager attached to the Skin: disposing the Skin releases generated
+fonts and the manager releases its FreeType generators. A failed candidate rebuild must dispose
+only its candidate Skin, leaving the committed Skin live.
+
+## 3. Register runtime bindings and value authority separately
 
 A `data-runtime-entity` element declares two independent contracts: the **actor binding**
 (which entity property the actor's control id correlates with) and the **value authority**
@@ -125,7 +156,7 @@ runtimeSource = MarkupRuntimeSource.registerAuthoritative(
 The preview prints a bounded registration line naming the mode, e.g.
 `markup-runtime: {"mode":"widget-mirror","entities":1,"bindings":1}`.
 
-## 3. Record one UiFrameCorrelation per rendered frame
+## 4. Record one UiFrameCorrelation per rendered frame
 
 The harness proves frame equality by resolving each binding's correlation token against the
 correlations the application records per rendered frame. Record exactly one correlation per
@@ -153,7 +184,7 @@ through this source. The recovery is to record every frame's correlation under t
 passed to the sink (the sink's Javadoc and the statuses section below name the same checks).
 Choose one stable application-scoped value and never change it without re-recording.
 
-## 4. Serve ui_runtime_compare on the render-thread scheduler
+## 5. Serve ui_runtime_compare on the render-thread scheduler
 
 `RuntimeComparator` is pure; it must run on the render thread where snapshots are taken. Wire
 `AgentRuntimeObservationSource` to it and submit the comparison through the
@@ -180,7 +211,7 @@ CapabilitySet capabilities = new CapabilitySet(List.of(
 The harness serves the tool only to sessions declaring the capability; without it the MCP tool
 answers `UNSUPPORTED_CAPABILITY`.
 
-## 5. The loop order that makes EQUAL achievable
+## 6. The loop order that makes EQUAL achievable
 
 The comparator's snapshot frame must equal the last recorded correlation frame. That requires
 a fixed loop order on the render thread:

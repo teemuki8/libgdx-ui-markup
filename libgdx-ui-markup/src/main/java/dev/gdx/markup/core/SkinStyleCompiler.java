@@ -27,8 +27,9 @@ import java.util.Objects;
  * default skin is never mutated in place). Pseudo-states map to the widget style's state fields
  * ({@code :hover} &rarr; {@code over}, {@code :pressed} &rarr; {@code down}, {@code :checked}
  * &rarr; {@code checked}, {@code :disabled} &rarr; {@code disabled}); the {@code background-*}
- * properties target the same fields explicitly, and {@code font-color}/{@code color}/{@code font}
- * follow the same state mapping ({@code :hover} &rarr; {@code overFontColor}, …). Class-only
+ * properties target the same fields explicitly, and {@code font-color}/{@code color}
+ * follow the same state mapping ({@code :hover} &rarr; {@code overFontColor}, …). Fonts are
+ * resolved per actor by {@link MarkupBuilder}, after the full cascade and XML overrides. Class-only
  * and id-only selectors are applied per-actor by the builder, which shares the same
  * pseudo-to-field mapping through the {@code setState*} methods below; a widget/state/property
  * combination without a target field fails with a located {@code STYLE_ERROR} instead of being
@@ -97,8 +98,12 @@ final class SkinStyleCompiler {
             }
             case "color", "font-color" -> setStateColor(style, propertyState(property, pseudo),
                     color(value, rule), tag, property, rule);
-            case "font" -> setStateFont(style, propertyState(property, pseudo),
-                    font(value, rule), tag, property, rule);
+            case "font" -> {
+                if (pseudo != null) {
+                    throw unsupported(tag, pseudo, property, rule);
+                }
+                // Base fonts are resolved per actor after XML-over-CSS precedence is known.
+            }
             default -> {
                 // padding/margin/width/height/min-*/text-align/visible are actor and cell
                 // properties handled by the builder, not the skin.
@@ -137,14 +142,6 @@ final class SkinStyleCompiler {
             throw unresolved(rule, "skin has no color named \"" + name + "\"");
         }
         return color;
-    }
-
-    private BitmapFont font(String name, CssRule rule) {
-        BitmapFont font = skin.optional(name, BitmapFont.class);
-        if (font == null) {
-            throw unresolved(rule, "skin has no font named \"" + name + "\"");
-        }
-        return font;
     }
 
     private static MarkupException unresolved(CssRule rule, String message) {
@@ -373,6 +370,7 @@ final class SkinStyleCompiler {
             case TextFieldStyle s -> {
                 if (BASE.equals(state)) {
                     s.font = font;
+                    s.messageFont = font;
                 } else {
                     throw unsupported(tag, state, property, source);
                 }
@@ -380,6 +378,10 @@ final class SkinStyleCompiler {
             case SelectBoxStyle s -> {
                 if (BASE.equals(state)) {
                     s.font = font;
+                    if (s.listStyle != null) {
+                        s.listStyle = new ListStyle(s.listStyle);
+                        s.listStyle.font = font;
+                    }
                 } else {
                     throw unsupported(tag, state, property, source);
                 }

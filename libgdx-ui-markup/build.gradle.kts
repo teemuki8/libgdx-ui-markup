@@ -4,8 +4,10 @@ plugins {
 
 dependencies {
     api(libs.gdx)
+    implementation(libs.gdx.freetype)
     testImplementation(libs.gdx.backend.lwjgl3)
     testRuntimeOnly("com.badlogicgames.gdx:gdx-platform:${libs.versions.gdx.get()}:natives-desktop")
+    runtimeOnly("com.badlogicgames.gdx:gdx-freetype-platform:${libs.versions.gdx.get()}:natives-desktop")
     testRuntimeOnly("org.slf4j:slf4j-nop:2.0.17")
 }
 

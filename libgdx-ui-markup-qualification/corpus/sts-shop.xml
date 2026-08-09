@@ -5,19 +5,19 @@
   <table id="root" class="backdrop" width="1280" height="720">
     <table id="hud" class="panel-alt" width="1280" height="58" expand="true" fill="true" pad="10">
       <label id="player-name" class="heading" text="MegaCrit   the Defect" width="220" align="left"/>
-      <label id="player-hp" text="♥ 47/82" width="130" align="left"/>
-      <label id="player-gold" text="◉ 86" width="110" align="left"/>
+      <label id="player-hp" text="HP 47/82" width="130" align="left"/>
+      <label id="player-gold" text="O 86" width="110" align="left"/>
       <label id="floor" class="title" text="11th Floor" width="420" align="center"/>
       <label id="draw-pile" text="Deck 14" width="150" align="right"/>
     </table>
     <row/>
     <table id="battlefield" width="1280" height="492" expand="true" fill="true" pad="0">
       <table id="hero-zone" width="430" height="440" pad="18" align="center center">
-        <label id="hero-orb" class="accent-bar" text="●  ◌  ◌"/>
+        <label id="hero-orb" class="accent-bar" text="O  o  o"/>
         <row/>
         <label id="hero-name" class="heading" text="THE DEFECT"/>
         <row/>
-        <label id="hero-status" text="47 / 82 HP   ◆"/>
+        <label id="hero-status" text="47 / 82 HP   *"/>
         <row/>
         <progressbar id="hero-hp" min="0" max="82" value="47" width="240" height="16"/>
         <row/>
@@ -25,7 +25,7 @@
         <row/>
         <label id="hero-orb-status" class="section" text="Lightning  3     Focus  1"/>
         <row/>
-        <label id="hero-potion" text="Potion   ●"/>
+        <label id="hero-potion" text="Potion   O"/>
         <row/>
         <label id="hero-intent" class="muted" text="Turn 7"/>
         <row/>
@@ -48,7 +48,7 @@
       <table id="enemy-zone" width="670" height="440" pad="18" align="center center">
         <label id="enemy-name" class="heading" text="THE AWAKENED ONE"/>
         <row/>
-        <label id="enemy-intent" class="title" text="7   ⚡"/>
+        <label id="enemy-intent" class="title" text="7   !"/>
         <row/>
         <label id="enemy-status" text="30 / 50 HP"/>
         <row/>

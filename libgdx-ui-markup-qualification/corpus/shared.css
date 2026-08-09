@@ -18,3 +18,14 @@ button.primary:hover { background: accent-over; }
 button.primary:pressed { background: accent-down; }
 textfield { background: field; padding: 8px; }
 checkbox { font-color: text; }
+
+/* Entry-specific typography is explicit now that exact logical sizes are part of markup CSS. */
+#tile-top-1, #arena-line-1, #arena-line-2, #arena-line-3, #arena-line-4, #arena-line-5,
+#obelisk-left-mark, #hero-mark, #battle-flare, #obelisk-right-mark, #tile-bottom-1,
+#tile-grid-1, #tile-grid-2, #tile-grid-3, #tile-grid-4 { font-size: 18px; }
+
+#player-name, #player-hp, #player-gold, #floor, #draw-pile, #hero-orb, #hero-name,
+#hero-status, #hero-energy, #hero-orb-status, #hero-potion, #hero-intent, #hero-power,
+#card-cost, #card-name, #card-kind, #card-rule, #card-target, #card-flavor, #enemy-name,
+#enemy-intent, #enemy-status, #enemy-buff, #enemy-action, #enemy-block, #enemy-armor,
+#card-strike-left, #card-strike, #card-dualcast, #card-defend { font-size: 20px; }

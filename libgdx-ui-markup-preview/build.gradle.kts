@@ -59,10 +59,13 @@ tasks.named("startScripts") {
 tasks.named<Test>("test") {
     // Script-content tests read the generated launchers.
     dependsOn(tasks.named("startScripts"))
+    dependsOn(tasks.named("installDist"))
     systemProperty("preview.unixScript",
         layout.buildDirectory.file("scripts/libgdx-ui-markup-preview").get().asFile.absolutePath)
     systemProperty("preview.windowsScript",
         layout.buildDirectory.file("scripts/libgdx-ui-markup-preview.bat").get().asFile.absolutePath)
+    systemProperty("preview.installDir",
+        layout.buildDirectory.dir("install/libgdx-ui-markup-preview").get().asFile.absolutePath)
 }
 
 tasks.named<Sync>("installDist") {

@@ -15,6 +15,9 @@ import com.badlogic.gdx.Gdx;
 import com.badlogic.gdx.backends.lwjgl3.Lwjgl3Application;
 import com.badlogic.gdx.backends.lwjgl3.Lwjgl3ApplicationConfiguration;
 import com.badlogic.gdx.graphics.GL20;
+import com.badlogic.gdx.graphics.Texture;
+import com.badlogic.gdx.graphics.g2d.BitmapFont;
+import com.badlogic.gdx.scenes.scene2d.ui.Label;
 import com.badlogic.gdx.scenes.scene2d.Stage;
 import com.badlogic.gdx.scenes.scene2d.ui.Skin;
 import dev.gdx.markup.runtime.MarkupRuntimeSource;
@@ -149,11 +152,13 @@ public final class PreviewTestChild {
         Path ui = null;
         Path css = null;
         Path png = null;
+        Path skin = null;
         for (int index = 1; index < args.length; index++) {
             switch (args[index]) {
                 case "--ui" -> ui = Path.of(args[++index]);
                 case "--css" -> css = Path.of(args[++index]);
                 case "--png" -> png = Path.of(args[++index]);
+                case "--skin" -> skin = Path.of(args[++index]);
                 default -> fail("unknown argument " + args[index]);
             }
         }
@@ -174,6 +179,7 @@ public final class PreviewTestChild {
                 case "initial-bad" -> runInitialBad(ui, css);
                 case "mcp-attach" -> runMcpAttach(ui, css);
                 case "swap-failure" -> runSwapFailure(ui, css);
+                case "custom-skin-fonts" -> runCustomSkinFonts(ui, css, skin);
                 case "mcp-swap-failure" -> runMcpSwapFailure(ui, css);
                 case "retire-failure" -> runRetireFailure(ui, css);
                 case "restore-failure" -> runRestoreFailure(ui, css);
@@ -405,6 +411,112 @@ public final class PreviewTestChild {
                 app.dispose();
             }
         });
+    }
+
+    private static void runCustomSkinFonts(Path ui, Path css, Path skinPath) {
+        String goodUi = "<ui><label id=\"title\" text=\"Exact\" font-size=\"24\"/></ui>";
+        writeFixture(ui, css, goodUi);
+        PreviewApp app = new PreviewApp(CliOptions.parse(new String[]{
+                "--ui", ui.toString(), "--css", css.toString(),
+                "--skin", skinPath.toString()}));
+        launch(new ApplicationAdapter() {
+            private int frame;
+            private Skin initialSkin;
+            private BitmapFont initialDefault;
+            private BitmapFont initialExact;
+            private BitmapFont initialOverlay;
+            private BitmapFont recoveredDefault;
+            private BitmapFont recoveredExact;
+            private BitmapFont recoveredOverlay;
+
+            @Override public void create() {
+                app.create();
+            }
+
+            @Override public void render() {
+                try {
+                    frame++;
+                    if (frame == 1) {
+                        app.render();
+                        initialSkin = app.skin();
+                        initialDefault = initialSkin.getFont("default-font");
+                        assertCustomDefaultFont(initialDefault);
+                        initialExact = ((Label) app.actor("title")).getStyle().font;
+                        initialOverlay = app.errorOverlayFont();
+                        assertNotSame(initialDefault, initialExact,
+                                "font-size uses FreeType without replacing custom default-font");
+                        assertEquals(Texture.TextureFilter.Linear,
+                                initialExact.getRegions().first().getTexture().getMinFilter(),
+                                "the exact-size font uses the FreeType filtering policy");
+                        assertEquals(Texture.TextureFilter.Linear,
+                                initialOverlay.getRegions().first().getTexture().getMinFilter(),
+                                "the preview overlay also uses the FreeType filtering policy");
+                    } else if (frame == 2) {
+                        app.rasterScaleSource = () -> 2f;
+                        writeUi(ui, BAD_UI);
+                        app.resize(WINDOW_WIDTH, WINDOW_HEIGHT);
+                        assertSame(initialSkin, app.skin(),
+                                "failed density rebuild retains the custom skin");
+                        assertSame(initialOverlay, app.errorOverlayFont(),
+                                "failed density rebuild retains the overlay font");
+                        assertTextureLive(initialDefault, "retained custom default font");
+                        assertTextureLive(initialExact, "retained exact-size font");
+                        assertTextureLive(initialOverlay, "retained overlay font");
+                        app.render();
+                    } else if (frame == 3) {
+                        writeUi(ui, goodUi);
+                        app.resize(WINDOW_WIDTH, WINDOW_HEIGHT);
+                        assertNotSame(initialSkin, app.skin(),
+                                "recovery commits a fresh custom skin");
+                        recoveredDefault = app.skin().getFont("default-font");
+                        assertCustomDefaultFont(recoveredDefault);
+                        recoveredExact = ((Label) app.actor("title")).getStyle().font;
+                        recoveredOverlay = app.errorOverlayFont();
+                        assertNotSame(initialOverlay, recoveredOverlay,
+                                "recovery commits the density-adjusted overlay font");
+                        assertEquals(0, textureHandle(initialDefault),
+                                "recovery disposes the retired custom font");
+                        assertEquals(0, textureHandle(initialExact),
+                                "recovery disposes the retired exact-size font");
+                        assertEquals(0, textureHandle(initialOverlay),
+                                "recovery disposes the retired overlay font");
+                        assertEquals(0.5f, recoveredExact.getData().scaleX, 0.0001f,
+                                "custom-skin FreeType font is rasterized at the new density");
+                        assertEquals(0.5f, recoveredOverlay.getData().scaleX, 0.0001f,
+                                "overlay font is rasterized at the new density");
+                        app.render();
+                        Gdx.app.exit();
+                    }
+                } catch (Throwable thrown) {
+                    fail(messageOf(thrown));
+                }
+            }
+
+            @Override public void dispose() {
+                app.dispose();
+                assertEquals(0, textureHandle(recoveredDefault),
+                        "close disposes the recovered custom default font");
+                assertEquals(0, textureHandle(recoveredExact),
+                        "close disposes the recovered exact-size font");
+                assertEquals(0, textureHandle(recoveredOverlay),
+                        "close disposes the recovered overlay font");
+            }
+        });
+    }
+
+    private static void assertTextureLive(BitmapFont font, String message) {
+        assertTrue(textureHandle(font) != 0, message);
+    }
+
+    private static void assertCustomDefaultFont(BitmapFont font) {
+        assertNotNull(font.getData().getFontFile(),
+                "the JSON bitmap font retains its source file");
+        assertEquals("custom-font.fnt", font.getData().getFontFile().name(),
+                "FreeType installation preserves the JSON skin's default-font");
+    }
+
+    private static int textureHandle(BitmapFont font) {
+        return font.getRegions().first().getTexture().getTextureObjectHandle();
     }
 
     /**

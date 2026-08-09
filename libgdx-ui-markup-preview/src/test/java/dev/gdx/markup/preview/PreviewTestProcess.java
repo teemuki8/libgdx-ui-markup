@@ -96,6 +96,11 @@ final class PreviewTestProcess implements AutoCloseable {
      */
     static PreviewTestProcess launch(String scenario, Path ui, Path css, Path png,
             Duration deadline) throws IOException {
+        return launch(scenario, ui, css, png, null, deadline);
+    }
+
+    static PreviewTestProcess launch(String scenario, Path ui, Path css, Path png, Path skin,
+            Duration deadline) throws IOException {
         List<String> programArgs = new ArrayList<>();
         programArgs.add(scenario);
         if (ui != null) {
@@ -109,6 +114,10 @@ final class PreviewTestProcess implements AutoCloseable {
         if (png != null) {
             programArgs.add("--png");
             programArgs.add(png.toString());
+        }
+        if (skin != null) {
+            programArgs.add("--skin");
+            programArgs.add(skin.toString());
         }
         List<String> command = command(
                 Path.of(System.getProperty("java.home"), "bin", "java").toString(),
