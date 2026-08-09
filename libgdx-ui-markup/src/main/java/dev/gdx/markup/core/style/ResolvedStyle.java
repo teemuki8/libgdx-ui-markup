@@ -1,7 +1,6 @@
 package dev.gdx.markup.core.style;
 
 import dev.gdx.markup.core.MarkupException;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -67,18 +66,25 @@ public final class ResolvedStyle {
         return parseLength(property, value);
     }
 
+    /** Returns a typed responsive dimension, or {@code null} when unmatched. */
+    public CssLength lengthValue(String property) {
+        String value = properties.get(property);
+        return value == null ? null : CssLength.parse(value, true);
+    }
+
+    /** Returns expanded top/right/bottom/left spacing, or {@code null} when unmatched. */
+    public CssSpacing spacing(String property) {
+        String value = properties.get(property);
+        return value == null ? null : CssSpacing.parse(value);
+    }
+
     /** Returns one or four declared lengths (padding/margin), or the fallback list. */
     public List<Float> lengths(String property, List<Float> fallback) {
         String value = properties.get(property);
         if (value == null) {
             return fallback;
         }
-        String[] parts = value.split(",");
-        ArrayList<Float> parsed = new ArrayList<>(parts.length);
-        for (String part : parts) {
-            parsed.add(parseLength(property, part));
-        }
-        return List.copyOf(parsed);
+        return CssSpacing.parse(value).values();
     }
 
     private static float parseLength(String property, String raw) {

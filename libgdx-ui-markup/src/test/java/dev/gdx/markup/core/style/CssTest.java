@@ -192,13 +192,13 @@ final class CssTest {
     void unknownPropertyReportsPropertyCoordinates() {
         MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse("""
                 button { color: red; }
-                label { display: none; }
+                label { grid-template: none; }
                 """));
         assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind());
         assertEquals("css", failure.elementPath());
         assertEquals(2, failure.line(), "property token sits on the second source line");
         assertEquals(9, failure.column(), "property token starts after 'label { '");
-        assertTrue(failure.getMessage().contains("display"));
+        assertTrue(failure.getMessage().contains("grid-template"));
     }
 
     @Test
@@ -240,7 +240,7 @@ final class CssTest {
         assertEquals(MarkupException.Kind.STYLE_ERROR, visible.kind());
 
         MarkupException padding = assertThrows(MarkupException.class, () -> parser.parse(
-                "button { padding: 1px 2px; }"));
+                "button { padding: 1px 2px 3px 4px 5px; }"));
         assertEquals(MarkupException.Kind.STYLE_ERROR, padding.kind());
     }
 
@@ -294,6 +294,45 @@ final class CssTest {
         assertEquals(28f, style.length("padding", -1));
         assertEquals(List.of(1f, 2f, 3f, 4f), style.lengths("margin", List.of()));
         assertEquals(100f, style.length("width", -1));
+    }
+
+    @Test
+    void responsiveLayoutPropertiesAcceptOnlyTheirClosedValueSets() {
+        CssDocument document = parser.parse("""
+                table {
+                    max-width: 90%; max-height: auto;
+                    gap: 4px; row-gap: 5; column-gap: 6px;
+                    display: initial; visibility: hidden;
+                    overflow: hidden; vertical-align: middle;
+                }
+                """);
+        ResolvedStyle style = new CssStyleResolver(document)
+                .resolve(element("table", null, List.of()));
+        assertEquals("90%", style.get("max-width"));
+        assertEquals("auto", style.get("max-height"));
+        assertEquals("4px", style.get("gap"));
+        assertEquals("hidden", style.get("visibility"));
+        assertEquals("middle", style.get("vertical-align"));
+
+        for (String declaration : List.of(
+                "gap: 10%", "display: block", "visibility: collapse",
+                "overflow: scroll", "vertical-align: baseline")) {
+            MarkupException failure = assertThrows(MarkupException.class,
+                    () -> parser.parse("table { " + declaration + "; }"), declaration);
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind(), declaration);
+        }
+    }
+
+    @Test
+    void dimensionsAndDisplayAreRejectedInPseudoStateRulesAtDeclarationLocation() {
+        for (String declaration : List.of("width: 100%", "max-height: 10px", "display: none")) {
+            MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse(
+                    "button:hover {\n    " + declaration + ";\n}"), declaration);
+            assertEquals(MarkupException.Kind.STYLE_ERROR, failure.kind(), declaration);
+            assertEquals(2, failure.line(), declaration);
+            assertEquals(5, failure.column(), declaration);
+            assertTrue(failure.getMessage().contains("pseudo-state"), declaration);
+        }
     }
 
     @Test
