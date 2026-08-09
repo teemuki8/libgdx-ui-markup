@@ -322,6 +322,72 @@ final class CssTest {
     }
 
     @Test
+    void rootVariablesResolveForwardReferencesBeforePropertyValidation() {
+        CssDocument document = parser.parse("""
+                :root {
+                  --panel-width: var(--space-lg);
+                  --space-lg: 24px;
+                  --surface: #182026;
+                }
+                .panel { width: var(--panel-width); background-color: var(--surface); }
+                """);
+        assertEquals("24px", document.variables().get("--panel-width"));
+        assertEquals("24px", document.variables().get("--space-lg"));
+        assertEquals("#182026", document.variables().get("--surface"));
+        assertEquals("24px", document.rules().getFirst().properties().get("width"));
+        assertEquals("#182026",
+                document.rules().getFirst().properties().get("background-color"));
+    }
+
+    @Test
+    void rootVariablesRemainClosedBoundedAndLocated() {
+        for (String cssText : List.of(
+                ":root { --a: var(--missing); } button { width: var(--a); }",
+                ":root { --a: var(--b); --b: var(--a); } button { width: 1px; }",
+                ":root { --a: 1px; } :root { --b: 2px; } button { width: 1px; }",
+                ":root { --bad.name: 1px; } button { width: 1px; }",
+                ":root { --a: 1px; } button { width: calc(var(--a) + 1px); }",
+                ":root { --a: 1px; } button { width: var(--a, 2px); }")) {
+            assertThrows(MarkupException.class, () -> parser.parse(cssText), cssText);
+        }
+
+        StringBuilder variables = new StringBuilder(":root {");
+        for (int index = 0; index <= CssVariables.MAX_VARIABLES; index++) {
+            variables.append("--v").append(index).append(": 1px;");
+        }
+        variables.append("} button { width: 1px; }");
+        MarkupException tooMany = assertThrows(MarkupException.class,
+                () -> parser.parse(variables.toString()));
+        assertEquals(MarkupException.Kind.TOO_LARGE, tooMany.kind());
+
+        MarkupException postValidation = assertThrows(MarkupException.class, () -> parser.parse("""
+                :root { --bad-width: #fff; }
+                button {
+                  width: var(--bad-width);
+                }
+                """));
+        assertEquals(3, postValidation.line());
+        assertEquals(3, postValidation.column());
+
+        StringBuilder depth16 = new StringBuilder(":root {");
+        for (int index = 1; index < 16; index++) {
+            depth16.append("--v").append(index).append(": var(--v")
+                    .append(index + 1).append(");");
+        }
+        depth16.append("--v16: 8px; } button { width: var(--v1); }");
+        assertEquals("8px", parser.parse(depth16.toString()).rules().getFirst()
+                .properties().get("width"));
+
+        StringBuilder depth17 = new StringBuilder(":root {");
+        for (int index = 1; index < 17; index++) {
+            depth17.append("--v").append(index).append(": var(--v")
+                    .append(index + 1).append(");");
+        }
+        depth17.append("--v17: 8px; } button { width: var(--v1); }");
+        assertThrows(MarkupException.class, () -> parser.parse(depth17.toString()));
+    }
+
+    @Test
     void specificityOrdering() {
         CssDocument document = parser.parse("""
                 button { color: from-tag; }

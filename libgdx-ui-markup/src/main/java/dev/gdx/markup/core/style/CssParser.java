@@ -47,6 +47,9 @@ public final class CssParser {
     private static final Pattern FONT_SIZE = Pattern.compile("([0-9]+)(?:px)?");
     private static final Pattern NUMBER = Pattern.compile(
             "[+-]?(?:[0-9]+(?:\\.[0-9]+)?|\\.[0-9]+)");
+    private static final Pattern ROOT_BLOCK = Pattern.compile(
+            "(?s)(?<![A-Za-z0-9_-]):root\\s*\\{([^{}]*)\\}");
+    private static final Pattern VARIABLE_NAME = Pattern.compile("--[A-Za-z][A-Za-z0-9_-]*");
     private static final Set<String> PSEUDO_STATES = Set.of("hover", "pressed", "checked",
             "disabled", "active", "focus");
     private static final Set<String> TEXT_ALIGNS = Set.of("left", "center", "right");
@@ -191,6 +194,9 @@ public final class CssParser {
 
     /** Shared parse body for in-bounds UTF-8 stylesheets, whether from a String or a file. */
     private CssDocument parseUtf8(int byteLength, String css) {
+        RootExtraction extraction = extractRoot(css);
+        css = extraction.stylesheet();
+        Map<String, String> variables = extraction.variables();
         Cursor cursor = new Cursor(css);
         ArrayList<CssRule> rules = new ArrayList<>();
         int ruleIndex = 0;
@@ -240,7 +246,7 @@ public final class CssParser {
                     throw styleError(ruleLine, ruleColumn, "unterminated rule block");
                 }
                 parseDeclaration(css.substring(nameStart, terminator), nameLine, nameColumn,
-                        selectors, properties);
+                        selectors, properties, variables);
                 if (cursor.peek() == ';') {
                     cursor.advance();
                 }
@@ -255,8 +261,74 @@ public final class CssParser {
                         + "-rule limit");
             }
         }
-        return new CssDocument(List.copyOf(rules), byteLength);
+        return new CssDocument(List.copyOf(rules), byteLength, variables);
     }
+
+    private static RootExtraction extractRoot(String css) {
+        Matcher matcher = ROOT_BLOCK.matcher(maskComments(css));
+        if (!matcher.find()) return new RootExtraction(css, Map.of());
+        int rootLine = lineAt(css, matcher.start());
+        int rootColumn = columnAt(css, matcher.start());
+        int start = matcher.start();
+        int bodyStart = matcher.start(1);
+        int end = matcher.end();
+        if (matcher.find()) {
+            throw styleError(lineAt(css, matcher.start()), columnAt(css, matcher.start()),
+                    "only one :root variable block is allowed");
+        }
+        LinkedHashMap<String, String> raw = new LinkedHashMap<>();
+        String body = css.substring(bodyStart, end - 1);
+        for (String declaration : removeComments(body).split(";", -1)) {
+            String statement = declaration.strip();
+            if (statement.isEmpty()) continue;
+            int colon = statement.indexOf(':');
+            if (colon <= 0) throw styleError(rootLine, rootColumn,
+                    "expected custom property declaration in :root");
+            String name = statement.substring(0, colon).strip();
+            String value = statement.substring(colon + 1).strip();
+            if (!VARIABLE_NAME.matcher(name).matches() || value.isEmpty()) {
+                throw styleError(rootLine, rootColumn, "invalid custom property \"" + name + "\"");
+            }
+            if (raw.containsKey(name)) throw styleError(rootLine, rootColumn,
+                    "duplicate custom property \"" + name + "\"");
+            if (raw.size() >= CssVariables.MAX_VARIABLES) {
+                throw new MarkupException(MarkupException.Kind.TOO_LARGE, "css", rootLine,
+                        rootColumn, "root variables exceed the " + CssVariables.MAX_VARIABLES
+                                + "-variable limit");
+            }
+            raw.put(name, value);
+        }
+        Map<String, String> resolved = CssVariables.resolve(raw, rootLine, rootColumn);
+        char[] sanitized = css.toCharArray();
+        for (int index = start; index < end; index++) {
+            if (sanitized[index] != '\n' && sanitized[index] != '\r') sanitized[index] = ' ';
+        }
+        return new RootExtraction(new String(sanitized), resolved);
+    }
+
+    private static String maskComments(String text) {
+        char[] masked = text.toCharArray();
+        Matcher comments = Pattern.compile("(?s)/\\*.*?\\*/").matcher(text);
+        while (comments.find()) {
+            for (int index = comments.start(); index < comments.end(); index++) {
+                if (masked[index] != '\n' && masked[index] != '\r') masked[index] = ' ';
+            }
+        }
+        return new String(masked);
+    }
+
+    private static int lineAt(String text, int offset) {
+        int line = 1;
+        for (int index = 0; index < offset; index++) if (text.charAt(index) == '\n') line++;
+        return line;
+    }
+
+    private static int columnAt(String text, int offset) {
+        int newline = text.lastIndexOf('\n', Math.max(0, offset - 1));
+        return offset - newline;
+    }
+
+    private record RootExtraction(String stylesheet, Map<String, String> variables) {}
 
     /**
      * Reads at most {@code maxBytes + 1} bytes from {@code in}, stopping as soon as the
@@ -473,7 +545,8 @@ public final class CssParser {
     }
 
     private static void parseDeclaration(String raw, int line, int column,
-            List<Selector> selectors, LinkedHashMap<String, String> properties) {
+            List<Selector> selectors, LinkedHashMap<String, String> properties,
+            Map<String, String> variables) {
         String statement = removeComments(raw).strip();
         if (statement.isEmpty()) {
             return;
@@ -484,7 +557,8 @@ public final class CssParser {
                     + statement.substring(0, Math.min(statement.length(), 40)) + "\"");
         }
         String name = statement.substring(0, colon).strip().toLowerCase(Locale.ROOT);
-        String value = statement.substring(colon + 1).strip();
+        String value = CssVariables.substitute(statement.substring(colon + 1).strip(),
+                variables, line, column);
         PropertyKind kind = PROPERTIES.get(name);
         if (kind == null) {
             throw styleError(line, column, "unknown CSS property \"" + name + "\"");
