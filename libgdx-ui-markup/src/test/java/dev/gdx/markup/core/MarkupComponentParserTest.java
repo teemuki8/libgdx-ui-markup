@@ -151,6 +151,40 @@ final class MarkupComponentParserTest {
     }
 
     @Test
+    void unusedNestedFillContentUsesOrdinaryCallerGrammar() {
+        assertKind(
+                MarkupException.Kind.INVALID_VALUE,
+                """
+                <ui><components>
+                  <component name="Wrapper"><table><slot/></table></component>
+                  <component name="Unused">
+                    <use component="Wrapper"><fill><slot/></fill></use>
+                  </component>
+                </components><label text="Ready"/></ui>
+                """);
+    }
+
+    @Test
+    void unusedNestedPassThroughExpansionUsesTheRealDepth() {
+        StringBuilder xml = new StringBuilder("<ui><components>");
+        for (int index = 0; index < 17; index++) {
+            xml.append("<component name=\"W").append(index)
+                    .append("\"><table><slot/></table></component>");
+        }
+        xml.append("<component name=\"Unused\">");
+        for (int index = 0; index < 17; index++) {
+            xml.append("<use component=\"W").append(index).append("\"><fill>");
+        }
+        xml.append("<label text=\"Deep\"/>");
+        for (int index = 0; index < 17; index++) {
+            xml.append("</fill></use>");
+        }
+        xml.append("</component></components><label text=\"Ready\"/></ui>");
+
+        assertKind(MarkupException.Kind.TOO_LARGE, xml.toString());
+    }
+
+    @Test
     void componentNamesAreRequiredPascalCaseAndUnique() {
         assertKind(
                 MarkupException.Kind.MISSING_ATTRIBUTE,

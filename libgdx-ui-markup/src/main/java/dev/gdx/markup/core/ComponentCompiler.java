@@ -153,22 +153,16 @@ final class ComponentCompiler {
         }
         for (Definition definition : definitions.values()) {
             validateTemplateNode(
-                    definition.templateRoot(), !reachable.contains(definition.name()));
+                    definition.templateRoot(), !reachable.contains(definition.name()), false);
         }
         Map<String, Integer> states = new LinkedHashMap<>();
-        Map<String, Integer> depths = new LinkedHashMap<>();
         for (Definition definition : definitions.values()) {
-            validateDefinitionGraph(definition.name(), states, depths, new ArrayList<>());
+            validateDefinitionCycles(definition.name(), states, new ArrayList<>());
         }
         for (Definition definition : definitions.values()) {
             if (!reachable.contains(definition.name())
-                    && depths.get(definition.name())
-                            > MarkupParser.MAX_COMPONENT_EXPANSION_DEPTH) {
-                throw tooLarge(
-                        definition.origin(),
-                        "component expansion exceeds the "
-                                + MarkupParser.MAX_COMPONENT_EXPANSION_DEPTH + "-level limit",
-                        List.of());
+                    && !hasDynamicComponentTarget(definition.templateRoot())) {
+                validateUnusedExpansion(definition);
             }
         }
     }
@@ -186,10 +180,17 @@ final class ComponentCompiler {
         }
     }
 
-    private void validateTemplateNode(RawElement raw, boolean validateLiteralValues) {
+    private void validateTemplateNode(
+            RawElement raw, boolean validateLiteralValues, boolean callerContent) {
         if ("slot".equals(raw.tag())) {
+            if (callerContent) {
+                throw invalid(
+                        raw.origin(), raw.origin().elementPath(),
+                        "<slot> is not valid in ordinary document content",
+                        "ordinary actor content or <use>", raw.tag(), "", List.of());
+            }
             for (RawElement child : raw.children()) {
-                validateTemplateNode(child, validateLiteralValues);
+                validateTemplateNode(child, validateLiteralValues, false);
             }
             return;
         }
@@ -254,7 +255,7 @@ final class ComponentCompiler {
             }
         }
         for (RawElement child : raw.children()) {
-            validateTemplateNode(child, validateLiteralValues);
+            validateTemplateNode(child, validateLiteralValues, callerContent);
         }
     }
 
@@ -343,7 +344,7 @@ final class ComponentCompiler {
                         "at most one fill per slot", displaySlot(slot), "slot", List.of());
             }
             for (RawElement child : fill.children()) {
-                validateTemplateNode(child, validateLiteralValues);
+                validateTemplateNode(child, validateLiteralValues, true);
             }
         }
         if (target != null) {
@@ -360,17 +361,15 @@ final class ComponentCompiler {
         }
     }
 
-    private int validateDefinitionGraph(
+    private void validateDefinitionCycles(
             String name,
             Map<String, Integer> states,
-            Map<String, Integer> depths,
             List<String> stack) {
         if (states.getOrDefault(name, 0) == 2) {
-            return depths.get(name);
+            return;
         }
         states.put(name, 1);
         stack.add(name);
-        int depth = 1;
         for (RawElement use : declaredUses(definitions.get(name).templateRoot())) {
             String target = use.attrs().get("component").value();
             if (SUBSTITUTION.matcher(target).find()) {
@@ -387,13 +386,49 @@ final class ComponentCompiler {
                         "an acyclic component graph", String.join(" -> ", cycle),
                         "component", List.of());
             }
-            int targetDepth = validateDefinitionGraph(target, states, depths, stack);
-            depth = Math.max(depth, 1 + targetDepth);
+            validateDefinitionCycles(target, states, stack);
         }
         stack.removeLast();
         states.put(name, 2);
-        depths.put(name, depth);
-        return depth;
+    }
+
+    private void validateUnusedExpansion(Definition definition) {
+        LinkedHashMap<String, RawAttribute> attrs = new LinkedHashMap<>();
+        attrs.put("component", new RawAttribute(definition.name(), definition.origin()));
+        for (Parameter parameter : definition.parameters().values()) {
+            if (parameter.required()) {
+                attrs.put(parameter.name(), new RawAttribute("x", definition.origin()));
+            }
+        }
+        List<RawElement> fills = new ArrayList<>();
+        for (Slot slot : definition.slots().values()) {
+            if (slot.required()) {
+                Map<String, RawAttribute> fillAttrs = slot.name().isEmpty()
+                        ? Map.of()
+                        : Map.of("slot", new RawAttribute(slot.name(), slot.origin()));
+                fills.add(new RawElement(
+                        "fill", fillAttrs, "", List.of(), slot.origin(), List.of()));
+            }
+        }
+        RawElement invocation = new RawElement(
+                "use", attrs, "", fills, definition.origin(), List.of());
+        budget = new ExpansionBudget(maxFinalElements);
+        expandUse(invocation);
+    }
+
+    private static boolean hasDynamicComponentTarget(RawElement raw) {
+        if ("use".equals(raw.tag())) {
+            RawAttribute component = raw.attrs().get("component");
+            if (component != null && SUBSTITUTION.matcher(component.value()).find()) {
+                return true;
+            }
+        }
+        for (RawElement child : raw.children()) {
+            if (hasDynamicComponentTarget(child)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static List<RawElement> declaredUses(RawElement raw) {
