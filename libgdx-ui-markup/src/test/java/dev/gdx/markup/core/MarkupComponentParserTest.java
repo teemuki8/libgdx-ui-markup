@@ -207,6 +207,23 @@ final class MarkupComponentParserTest {
     }
 
     @Test
+    void syntheticValidationWorkIsBoundedAcrossTheWholeDocument() {
+        StringBuilder xml = new StringBuilder(
+                "<ui><components><component name=\"Leaf\"><table>");
+        for (int index = 0; index < 390; index++) {
+            xml.append("<label/>");
+        }
+        xml.append("</table></component>");
+        for (int index = 0; index < 255; index++) {
+            xml.append("<component name=\"W").append(index)
+                    .append("\"><use component=\"Leaf\"/></component>");
+        }
+        xml.append("</components><label text=\"Ready\"/></ui>");
+
+        assertKind(MarkupException.Kind.TOO_LARGE, xml.toString());
+    }
+
+    @Test
     void componentNamesAreRequiredPascalCaseAndUnique() {
         assertKind(
                 MarkupException.Kind.MISSING_ATTRIBUTE,

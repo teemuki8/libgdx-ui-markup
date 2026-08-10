@@ -56,7 +56,7 @@ final class ComponentCompiler {
             indexDefinitions(components);
             validateDefinitions(documentRoot, components);
         }
-        budget = new ExpansionBudget(maxFinalElements);
+        budget = new ExpansionBudget(maxFinalElements, new ExpansionWorkBudget());
         budget.addConcrete(documentRoot.origin(), documentRoot.componentTrace());
 
         List<RawElement> body = new ArrayList<>();
@@ -159,9 +159,10 @@ final class ComponentCompiler {
         for (Definition definition : definitions.values()) {
             validateDefinitionCycles(definition.name(), states, new ArrayList<>());
         }
+        ExpansionWorkBudget validationWork = new ExpansionWorkBudget();
         for (Definition definition : definitions.values()) {
             if (!hasDynamicComponentTarget(definition.templateRoot())) {
-                validateDefaultExpansion(definition);
+                validateDefaultExpansion(definition, validationWork);
             }
         }
     }
@@ -391,7 +392,8 @@ final class ComponentCompiler {
         states.put(name, 2);
     }
 
-    private void validateDefaultExpansion(Definition definition) {
+    private void validateDefaultExpansion(
+            Definition definition, ExpansionWorkBudget validationWork) {
         LinkedHashMap<String, RawAttribute> attrs = new LinkedHashMap<>();
         attrs.put("component", new RawAttribute(definition.name(), definition.origin()));
         for (Parameter parameter : definition.parameters().values()) {
@@ -411,7 +413,7 @@ final class ComponentCompiler {
         }
         RawElement invocation = new RawElement(
                 "use", attrs, "", fills, definition.origin(), List.of());
-        budget = new ExpansionBudget(maxFinalElements);
+        budget = new ExpansionBudget(maxFinalElements, validationWork);
         expandUse(invocation);
     }
 
@@ -1206,23 +1208,18 @@ final class ComponentCompiler {
 
     private static final class ExpansionBudget {
         private final int maxFinalElements;
+        private final ExpansionWorkBudget workBudget;
         private final List<String> componentStack = new ArrayList<>();
-        private int visits;
         private int concreteElements;
 
-        private ExpansionBudget(int maxFinalElements) {
+        private ExpansionBudget(int maxFinalElements, ExpansionWorkBudget workBudget) {
             this.maxFinalElements = maxFinalElements;
+            this.workBudget = workBudget;
         }
 
         private void visit(
                 MarkupSourceLocation origin, List<ComponentTraceFrame> trace) {
-            if (++visits > MarkupParser.MAX_EXPANSION_WORK) {
-                throw tooLarge(
-                        origin,
-                        "component expansion exceeds the " + MarkupParser.MAX_EXPANSION_WORK
-                                + "-visit limit",
-                        trace);
-            }
+            workBudget.visit(origin, trace);
         }
 
         private void addConcrete(
@@ -1259,6 +1256,21 @@ final class ComponentCompiler {
 
         private void exitComponent() {
             componentStack.removeLast();
+        }
+    }
+
+    private static final class ExpansionWorkBudget {
+        private int visits;
+
+        private void visit(
+                MarkupSourceLocation origin, List<ComponentTraceFrame> trace) {
+            if (++visits > MarkupParser.MAX_EXPANSION_WORK) {
+                throw tooLarge(
+                        origin,
+                        "component expansion exceeds the " + MarkupParser.MAX_EXPANSION_WORK
+                                + "-visit limit",
+                        trace);
+            }
         }
     }
 }
