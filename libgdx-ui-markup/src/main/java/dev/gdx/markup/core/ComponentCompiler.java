@@ -27,6 +27,7 @@ final class ComponentCompiler {
     private final int maxAttributeValue;
     private final int maxText;
     private final Map<String, Definition> definitions = new LinkedHashMap<>();
+    private ExpansionBudget budget;
 
     ComponentCompiler(int maxFinalElements, int maxAttributeValue, int maxText) {
         if (maxFinalElements < 1 || maxAttributeValue < 1 || maxText < 1) {
@@ -48,20 +49,20 @@ final class ComponentCompiler {
         if (components != null) {
             indexDefinitions(components);
         }
+        budget = new ExpansionBudget(maxFinalElements);
+        budget.addConcrete(documentRoot.origin(), documentRoot.componentTrace());
 
         List<RawElement> body = new ArrayList<>();
         for (RawElement child : documentRoot.children()) {
-            if (child == components) {
-                continue;
+            if (child != components) {
+                body.add(expandCallerNode(child, documentRoot.componentTrace(), false));
             }
-            body.add(expandBodyNode(child));
         }
-        if (1 + countConcrete(body) > maxFinalElements) {
-            throw tooLarge(
-                    documentRoot.origin(),
-                    "expanded document exceeds the " + maxFinalElements + "-element limit");
-        }
-        return copy(documentRoot, documentRoot.attrs(), documentRoot.text(), body,
+        return copy(
+                documentRoot,
+                documentRoot.attrs(),
+                documentRoot.text(),
+                body,
                 documentRoot.componentTrace());
     }
 
@@ -78,7 +79,8 @@ final class ComponentCompiler {
                             "<components> must be the first and only component block under <ui>",
                             "one optional first <components> child",
                             child.tag(),
-                            "");
+                            "",
+                            List.of());
                 }
                 block = child;
             }
@@ -87,7 +89,7 @@ final class ComponentCompiler {
     }
 
     private void indexDefinitions(RawElement block) {
-        requireOnlyAttributes(block, Set.of());
+        requireOnlyAttributes(block, Set.of(), List.of());
         if (!block.text().isEmpty()) {
             throw invalid(
                     block.origin(),
@@ -95,7 +97,8 @@ final class ComponentCompiler {
                     "<components> accepts only <component> children",
                     "component definitions",
                     "text content",
-                    "");
+                    "",
+                    List.of());
         }
         for (RawElement child : block.children()) {
             if (!"component".equals(child.tag())) {
@@ -105,17 +108,18 @@ final class ComponentCompiler {
                         "<components> accepts only <component> children",
                         "component",
                         child.tag(),
-                        "");
+                        "",
+                        List.of());
             }
             if (definitions.size() >= MarkupParser.MAX_COMPONENTS) {
                 throw tooLarge(
                         child.origin(),
                         "document exceeds the " + MarkupParser.MAX_COMPONENTS
-                                + "-component limit");
+                                + "-component limit",
+                        List.of());
             }
             Definition definition = definition(child);
-            Definition previous = definitions.putIfAbsent(definition.name(), definition);
-            if (previous != null) {
+            if (definitions.putIfAbsent(definition.name(), definition) != null) {
                 throw diagnostic(
                         MarkupException.Kind.DUPLICATE_COMPONENT,
                         child.origin(),
@@ -130,8 +134,8 @@ final class ComponentCompiler {
     }
 
     private Definition definition(RawElement component) {
-        requireOnlyAttributes(component, Set.of("name"));
-        RawAttribute nameAttribute = requireAttribute(component, "name");
+        requireOnlyAttributes(component, Set.of("name"), List.of());
+        RawAttribute nameAttribute = requireAttribute(component, "name", List.of());
         String name = nameAttribute.value();
         if (!COMPONENT_NAME.matcher(name).matches()) {
             throw invalid(
@@ -140,7 +144,8 @@ final class ComponentCompiler {
                     "invalid component name \"" + name + "\"",
                     "[A-Z][A-Za-z0-9]{0,63}",
                     name,
-                    "name");
+                    "name",
+                    List.of());
         }
 
         LinkedHashMap<String, Parameter> parameters = new LinkedHashMap<>();
@@ -151,7 +156,8 @@ final class ComponentCompiler {
                     throw tooLarge(
                             child.origin(),
                             "component \"" + name + "\" exceeds the "
-                                    + MarkupParser.MAX_COMPONENT_PARAMETERS + "-parameter limit");
+                                    + MarkupParser.MAX_COMPONENT_PARAMETERS + "-parameter limit",
+                            List.of());
                 }
                 Parameter parameter = parameter(child);
                 if (parameters.putIfAbsent(parameter.name(), parameter) != null) {
@@ -161,7 +167,8 @@ final class ComponentCompiler {
                             "duplicate parameter \"" + parameter.name() + "\"",
                             "a component-unique parameter name",
                             parameter.name(),
-                            "name");
+                            "name",
+                            List.of());
                 }
             } else {
                 if (templateRoot != null) {
@@ -171,7 +178,8 @@ final class ComponentCompiler {
                             "component \"" + name + "\" must declare exactly one template root",
                             "zero or more parameters followed by one actor root",
                             "multiple roots or a late parameter",
-                            "");
+                            "",
+                            List.of());
                 }
                 templateRoot = child;
             }
@@ -183,7 +191,8 @@ final class ComponentCompiler {
                     "component \"" + name + "\" has no template root",
                     "exactly one actor root",
                     "none",
-                    "");
+                    "",
+                    List.of());
         }
         if (INVALID_COMPONENT_ROOTS.contains(templateRoot.tag())) {
             throw invalid(
@@ -192,193 +201,371 @@ final class ComponentCompiler {
                     "<" + templateRoot.tag() + "> cannot be a component root",
                     "one actor tag or nested use",
                     templateRoot.tag(),
-                    "");
+                    "",
+                    List.of());
         }
 
         Map<String, Parameter> immutableParameters =
                 Collections.unmodifiableMap(new LinkedHashMap<>(parameters));
         validateReferences(templateRoot, immutableParameters);
-        return new Definition(name, immutableParameters, templateRoot, component.origin());
+        Map<String, Slot> slots = indexSlots(templateRoot);
+        return new Definition(name, immutableParameters, slots, templateRoot, component.origin());
     }
 
     private Parameter parameter(RawElement raw) {
-        requireOnlyAttributes(raw, Set.of("name", "required", "default"));
+        requireOnlyAttributes(raw, Set.of("name", "required", "default"), List.of());
         if (!raw.children().isEmpty() || !raw.text().isEmpty()) {
             throw invalid(
-                    raw.origin(),
-                    raw.origin().elementPath(),
-                    "<param> must be empty",
-                    "an empty parameter declaration",
-                    "content",
-                    "");
+                    raw.origin(), raw.origin().elementPath(), "<param> must be empty",
+                    "an empty parameter declaration", "content", "", List.of());
         }
-        RawAttribute nameAttribute = requireAttribute(raw, "name");
+        RawAttribute nameAttribute = requireAttribute(raw, "name", List.of());
         String name = nameAttribute.value();
         if (!PARAMETER_NAME.matcher(name).matches()) {
             throw invalid(
-                    nameAttribute.origin(),
-                    raw.origin().elementPath(),
+                    nameAttribute.origin(), raw.origin().elementPath(),
                     "invalid parameter name \"" + name + "\"",
-                    "[a-z][a-z0-9-]{0,63}",
-                    name,
-                    "name");
+                    "[a-z][a-z0-9-]{0,63}", name, "name", List.of());
         }
-        boolean required = false;
-        RawAttribute requiredAttribute = raw.attrs().get("required");
-        if (requiredAttribute != null) {
-            if (!"true".equals(requiredAttribute.value())
-                    && !"false".equals(requiredAttribute.value())) {
-                throw invalid(
-                        requiredAttribute.origin(),
-                        raw.origin().elementPath(),
-                        "invalid value for \"required\"",
-                        "true or false",
-                        requiredAttribute.value(),
-                        "required");
-            }
-            required = Boolean.parseBoolean(requiredAttribute.value());
-        }
+        boolean required = booleanAttribute(raw, "required", false, List.of());
         RawAttribute defaultAttribute = raw.attrs().get("default");
         String defaultValue = defaultAttribute == null ? null : defaultAttribute.value();
         if (required && defaultValue != null) {
             throw invalid(
-                    raw.origin(),
-                    raw.origin().elementPath(),
+                    raw.origin(), raw.origin().elementPath(),
                     "required parameter \"" + name + "\" cannot declare a default",
-                    "required or default, not both",
-                    "required and default",
-                    "default");
+                    "required or default, not both", "required and default", "default", List.of());
         }
         if (defaultValue != null && SUBSTITUTION.matcher(defaultValue).find()) {
             throw invalid(
-                    defaultAttribute.origin(),
-                    raw.origin().elementPath(),
+                    defaultAttribute.origin(), raw.origin().elementPath(),
                     "parameter default cannot contain component substitution",
-                    "literal default text",
-                    defaultValue,
-                    "default");
+                    "literal default text", defaultValue, "default", List.of());
         }
         return new Parameter(name, required, defaultValue);
     }
 
-    private RawElement expandBodyNode(RawElement raw) {
+    private Map<String, Slot> indexSlots(RawElement templateRoot) {
+        LinkedHashMap<String, Slot> slots = new LinkedHashMap<>();
+        indexSlots(templateRoot, slots);
+        return Collections.unmodifiableMap(slots);
+    }
+
+    private void indexSlots(RawElement raw, Map<String, Slot> slots) {
+        if ("slot".equals(raw.tag())) {
+            requireOnlyAttributes(raw, Set.of("name", "required"), List.of());
+            if (!raw.text().isEmpty()) {
+                throw invalid(
+                        raw.origin(), raw.origin().elementPath(), "<slot> accepts actor children only",
+                        "fallback elements", "text content", "", List.of());
+            }
+            String name = attribute(raw, "name", "");
+            if (!name.isEmpty() && !PARAMETER_NAME.matcher(name).matches()) {
+                throw invalid(
+                        raw.origin(), raw.origin().elementPath(),
+                        "invalid slot name \"" + name + "\"",
+                        "[a-z][a-z0-9-]{0,63}", name, "name", List.of());
+            }
+            boolean required = booleanAttribute(raw, "required", false, List.of());
+            if (required && !raw.children().isEmpty()) {
+                throw invalid(
+                        raw.origin(), raw.origin().elementPath(),
+                        "required slot cannot declare fallback children",
+                        "required slot or fallback children, not both",
+                        "required and fallback", "required", List.of());
+            }
+            if (slots.size() >= MarkupParser.MAX_COMPONENT_SLOTS) {
+                throw tooLarge(
+                        raw.origin(),
+                        "component exceeds the " + MarkupParser.MAX_COMPONENT_SLOTS
+                                + "-slot limit",
+                        List.of());
+            }
+            Slot slot = new Slot(name, required, raw.children(), raw.origin());
+            if (slots.putIfAbsent(name, slot) != null) {
+                throw diagnostic(
+                        MarkupException.Kind.DUPLICATE_SLOT,
+                        raw.origin(), raw.origin().elementPath(),
+                        "duplicate slot \"" + displaySlot(name) + "\"",
+                        "a component-unique slot name", displaySlot(name), "name", List.of());
+            }
+        }
+        for (RawElement child : raw.children()) {
+            indexSlots(child, slots);
+        }
+    }
+
+    private RawElement expandCallerNode(
+            RawElement raw, List<ComponentTraceFrame> trace, boolean countVisit) {
         if ("use".equals(raw.tag())) {
-            return expandUse(raw);
+            return expandUse(withTrace(raw, trace));
         }
-        if (DEFINITION_TAGS.contains(raw.tag()) || "param".equals(raw.tag())) {
+        if (DEFINITION_TAGS.contains(raw.tag())
+                || "slot".equals(raw.tag())
+                || "fill".equals(raw.tag())) {
             throw invalid(
-                    raw.origin(),
-                    raw.origin().elementPath(),
-                    "<" + raw.tag() + "> is only valid in the document component block",
-                    "ordinary actor content or <use>",
-                    raw.tag(),
-                    "");
+                    raw.origin(), raw.origin().elementPath(),
+                    "<" + raw.tag() + "> is not valid in ordinary document content",
+                    "ordinary actor content or <use>", raw.tag(), "", trace);
         }
+        if (countVisit) {
+            budget.visit(raw.origin(), trace);
+        }
+        budget.addConcrete(raw.origin(), trace);
         List<RawElement> children = new ArrayList<>(raw.children().size());
         for (RawElement child : raw.children()) {
-            children.add(expandBodyNode(child));
+            children.add(expandCallerNode(child, trace, countVisit));
         }
-        return copy(raw, raw.attrs(), raw.text(), children, raw.componentTrace());
+        return copy(raw, raw.attrs(), raw.text(), children, trace);
     }
 
     private RawElement expandUse(RawElement invocation) {
-        RawAttribute componentAttribute = requireAttribute(invocation, "component");
+        budget.visit(invocation.origin(), invocation.componentTrace());
+        RawAttribute componentAttribute =
+                requireAttribute(invocation, "component", invocation.componentTrace());
         Definition definition = definitions.get(componentAttribute.value());
         if (definition == null) {
             throw diagnostic(
                     MarkupException.Kind.UNKNOWN_COMPONENT,
-                    componentAttribute.origin(),
-                    invocation.origin().elementPath(),
+                    componentAttribute.origin(), invocation.origin().elementPath(),
                     "unknown component \"" + componentAttribute.value() + "\"",
-                    "a locally declared component name",
-                    componentAttribute.value(),
-                    "component",
+                    "a locally declared component name", componentAttribute.value(), "component",
                     invocation.componentTrace());
         }
-        if (!invocation.children().isEmpty() || !invocation.text().isEmpty()) {
-            throw invalid(
-                    invocation.origin(),
-                    invocation.origin().elementPath(),
-                    "<use> children must be supplied through <fill>",
-                    "an empty invocation until slots are supplied",
-                    "direct content",
-                    "");
-        }
 
-        LinkedHashMap<String, String> parameterValues = new LinkedHashMap<>();
-        LinkedHashMap<String, RawAttribute> overrides = new LinkedHashMap<>();
+        budget.enterComponent(definition.name(), invocation);
+        try {
+            List<ComponentTraceFrame> trace = appendTrace(
+                    invocation.componentTrace(),
+                    new ComponentTraceFrame(definition.name(), invocation.origin()));
+            Map<String, String> parameters = parameterValues(definition, invocation, trace);
+            Map<String, List<RawElement>> fills = fills(definition, invocation, trace);
+            ExpansionScope scope =
+                    new ExpansionScope(definition, invocation, parameters, fills, trace);
+            List<RawElement> roots = expandTemplateNode(definition.templateRoot(), scope);
+            if (roots.size() != 1) {
+                throw invalid(
+                        invocation.origin(), invocation.origin().elementPath(),
+                        "component \"" + definition.name()
+                                + "\" must expand to exactly one actor root",
+                        "exactly one actor root", Integer.toString(roots.size()), "component", trace);
+            }
+            return applyOverrides(roots.getFirst(), rootOverrides(definition, invocation, trace));
+        } finally {
+            budget.exitComponent();
+        }
+    }
+
+    private Map<String, String> parameterValues(
+            Definition definition, RawElement invocation, List<ComponentTraceFrame> trace) {
+        LinkedHashMap<String, String> values = new LinkedHashMap<>();
         for (Map.Entry<String, RawAttribute> entry : invocation.attrs().entrySet()) {
-            String attribute = entry.getKey();
-            if ("component".equals(attribute)) {
+            String attributeName = entry.getKey();
+            if ("component".equals(attributeName)) {
                 continue;
             }
-            boolean parameter = definition.parameters().containsKey(attribute);
-            boolean override = TagSpec.isCommonAttribute(attribute)
-                    || attribute.startsWith("data-");
+            boolean parameter = definition.parameters().containsKey(attributeName);
+            boolean override = isRootOverride(attributeName);
             if (!parameter && !override) {
                 throw diagnostic(
                         MarkupException.Kind.UNKNOWN_PARAMETER,
-                        entry.getValue().origin(),
-                        invocation.origin().elementPath(),
-                        "unknown parameter or root override \"" + attribute + "\"",
-                        "a declared parameter or common actor attribute",
-                        attribute,
-                        attribute,
-                        invocation.componentTrace());
+                        entry.getValue().origin(), invocation.origin().elementPath(),
+                        "unknown parameter or root override \"" + attributeName + "\"",
+                        "a declared parameter or common actor attribute", attributeName,
+                        attributeName, trace);
             }
             if (parameter) {
-                parameterValues.put(attribute, entry.getValue().value());
-            }
-            if (override) {
-                overrides.put(attribute, entry.getValue());
+                values.put(attributeName, entry.getValue().value());
             }
         }
         for (Parameter parameter : definition.parameters().values()) {
-            if (parameterValues.containsKey(parameter.name())) {
+            if (values.containsKey(parameter.name())) {
                 continue;
             }
             if (parameter.defaultValue() != null) {
-                parameterValues.put(parameter.name(), parameter.defaultValue());
+                values.put(parameter.name(), parameter.defaultValue());
             } else if (parameter.required()) {
                 throw diagnostic(
                         MarkupException.Kind.MISSING_PARAMETER,
-                        invocation.origin(),
-                        invocation.origin().elementPath(),
+                        invocation.origin(), invocation.origin().elementPath(),
                         "component \"" + definition.name() + "\" requires parameter \""
                                 + parameter.name() + "\"",
-                        "required parameter \"" + parameter.name() + "\"",
-                        "",
-                        parameter.name(),
-                        invocation.componentTrace());
+                        "required parameter \"" + parameter.name() + "\"", "",
+                        parameter.name(), trace);
             } else {
-                parameterValues.put(parameter.name(), "");
+                values.put(parameter.name(), "");
             }
         }
-
-        List<ComponentTraceFrame> trace = appendTrace(
-                invocation.componentTrace(),
-                new ComponentTraceFrame(definition.name(), invocation.origin()));
-        RawElement expanded = cloneTemplate(definition.templateRoot(), parameterValues, trace);
-        return applyOverrides(expanded, overrides);
+        return Collections.unmodifiableMap(values);
     }
 
-    private RawElement cloneTemplate(
+    private Map<String, RawAttribute> rootOverrides(
+            Definition definition, RawElement invocation, List<ComponentTraceFrame> trace) {
+        LinkedHashMap<String, RawAttribute> overrides = new LinkedHashMap<>();
+        for (Map.Entry<String, RawAttribute> entry : invocation.attrs().entrySet()) {
+            String name = entry.getKey();
+            if (!"component".equals(name) && isRootOverride(name)) {
+                overrides.put(name, entry.getValue());
+            } else if (!"component".equals(name)
+                    && !definition.parameters().containsKey(name)) {
+                throw diagnostic(
+                        MarkupException.Kind.UNKNOWN_PARAMETER,
+                        entry.getValue().origin(), invocation.origin().elementPath(),
+                        "unknown parameter or root override \"" + name + "\"",
+                        "a declared parameter or common actor attribute", name, name, trace);
+            }
+        }
+        return overrides;
+    }
+
+    private Map<String, List<RawElement>> fills(
+            Definition definition, RawElement invocation, List<ComponentTraceFrame> trace) {
+        if (!invocation.text().isEmpty()) {
+            throw invalid(
+                    invocation.origin(), invocation.origin().elementPath(),
+                    "<use> children must be supplied through <fill>",
+                    "direct <fill> children", "text content", "", trace);
+        }
+        LinkedHashMap<String, List<RawElement>> fills = new LinkedHashMap<>();
+        for (RawElement fill : invocation.children()) {
+            if (!"fill".equals(fill.tag())) {
+                throw invalid(
+                        fill.origin(), invocation.origin().elementPath(),
+                        "<use> children must be direct <fill> elements",
+                        "fill", fill.tag(), "", trace);
+            }
+            budget.visit(fill.origin(), trace);
+            requireOnlyAttributes(fill, Set.of("slot"), trace);
+            if (!fill.text().isEmpty()) {
+                throw invalid(
+                        fill.origin(), fill.origin().elementPath(),
+                        "<fill> accepts actor children only",
+                        "actor elements", "text content", "", trace);
+            }
+            String name = attribute(fill, "slot", "");
+            if (!name.isEmpty() && !PARAMETER_NAME.matcher(name).matches()) {
+                throw invalid(
+                        fill.origin(), fill.origin().elementPath(),
+                        "invalid fill slot name \"" + name + "\"",
+                        "[a-z][a-z0-9-]{0,63}", name, "slot", trace);
+            }
+            if (!definition.slots().containsKey(name)) {
+                throw diagnostic(
+                        MarkupException.Kind.UNKNOWN_SLOT,
+                        fill.origin(), fill.origin().elementPath(),
+                        "unknown slot \"" + displaySlot(name) + "\"",
+                        "a slot declared by component \"" + definition.name() + "\"",
+                        displaySlot(name), "slot", trace);
+            }
+            if (fills.putIfAbsent(name, fill.children()) != null) {
+                throw diagnostic(
+                        MarkupException.Kind.DUPLICATE_SLOT,
+                        fill.origin(), fill.origin().elementPath(),
+                        "duplicate fill for slot \"" + displaySlot(name) + "\"",
+                        "at most one fill per slot", displaySlot(name), "slot", trace);
+            }
+        }
+        for (Slot slot : definition.slots().values()) {
+            if (slot.required() && !fills.containsKey(slot.name())) {
+                throw diagnostic(
+                        MarkupException.Kind.MISSING_SLOT,
+                        invocation.origin(), invocation.origin().elementPath(),
+                        "component \"" + definition.name() + "\" requires slot \""
+                                + displaySlot(slot.name()) + "\"",
+                        "required slot fill", "", "slot", trace);
+            }
+        }
+        return Collections.unmodifiableMap(fills);
+    }
+
+    private List<RawElement> expandTemplateNode(RawElement raw, ExpansionScope scope) {
+        if ("slot".equals(raw.tag())) {
+            budget.visit(raw.origin(), scope.trace());
+            return expandSlot(raw, scope);
+        }
+        if ("use".equals(raw.tag())) {
+            RawElement invocation = substituteTree(raw, scope.parameters(), scope.trace());
+            return List.of(expandUse(invocation));
+        }
+        if (DEFINITION_TAGS.contains(raw.tag()) || "fill".equals(raw.tag())) {
+            throw invalid(
+                    raw.origin(), raw.origin().elementPath(),
+                    "<" + raw.tag() + "> is not valid at this template position",
+                    "an actor, slot, or nested use", raw.tag(), "", scope.trace());
+        }
+
+        budget.visit(raw.origin(), scope.trace());
+        budget.addConcrete(raw.origin(), scope.trace());
+        LinkedHashMap<String, RawAttribute> attrs = substituteAttributes(
+                raw.attrs(), scope.parameters(), scope.trace());
+        String text = substitute(
+                raw.text(), scope.parameters(), maxText, raw.origin(), scope.trace());
+        List<RawElement> children = new ArrayList<>();
+        for (RawElement child : raw.children()) {
+            children.addAll(expandTemplateNode(child, scope));
+        }
+        return List.of(copy(raw, attrs, text, children, scope.trace()));
+    }
+
+    private List<RawElement> expandSlot(RawElement raw, ExpansionScope scope) {
+        String name = attribute(raw, "name", "");
+        List<RawElement> fill = scope.fills().get(name);
+        if (fill != null) {
+            List<RawElement> expanded = new ArrayList<>();
+            for (RawElement child : fill) {
+                expanded.add(expandCallerNode(child, scope.trace(), true));
+            }
+            return expanded;
+        }
+        Slot declared = scope.definition().slots().get(name);
+        if (declared == null) {
+            throw diagnostic(
+                    MarkupException.Kind.UNKNOWN_SLOT,
+                    raw.origin(), raw.origin().elementPath(),
+                    "unknown slot declaration \"" + displaySlot(name) + "\"",
+                    "a slot indexed by this component", displaySlot(name), "name", scope.trace());
+        }
+        if (declared.required()) {
+            throw diagnostic(
+                    MarkupException.Kind.MISSING_SLOT,
+                    scope.invocation().origin(), scope.invocation().origin().elementPath(),
+                    "component \"" + scope.definition().name() + "\" requires slot \""
+                            + displaySlot(name) + "\"",
+                    "required slot fill", "", "slot", scope.trace());
+        }
+        List<RawElement> expanded = new ArrayList<>();
+        for (RawElement child : declared.fallback()) {
+            expanded.addAll(expandTemplateNode(child, scope));
+        }
+        return expanded;
+    }
+
+    private RawElement substituteTree(
             RawElement raw,
             Map<String, String> parameters,
             List<ComponentTraceFrame> trace) {
-        LinkedHashMap<String, RawAttribute> attrs = new LinkedHashMap<>();
-        for (Map.Entry<String, RawAttribute> entry : raw.attrs().entrySet()) {
-            String value = substitute(
-                    entry.getValue().value(), parameters, maxAttributeValue,
-                    entry.getValue().origin(), trace);
-            attrs.put(entry.getKey(), new RawAttribute(value, entry.getValue().origin()));
-        }
+        Map<String, RawAttribute> attrs =
+                substituteAttributes(raw.attrs(), parameters, trace);
         String text = substitute(raw.text(), parameters, maxText, raw.origin(), trace);
         List<RawElement> children = new ArrayList<>(raw.children().size());
         for (RawElement child : raw.children()) {
-            children.add(cloneTemplate(child, parameters, trace));
+            children.add(substituteTree(child, parameters, trace));
         }
         return copy(raw, attrs, text, children, trace);
+    }
+
+    private LinkedHashMap<String, RawAttribute> substituteAttributes(
+            Map<String, RawAttribute> raw,
+            Map<String, String> parameters,
+            List<ComponentTraceFrame> trace) {
+        LinkedHashMap<String, RawAttribute> attrs = new LinkedHashMap<>();
+        for (Map.Entry<String, RawAttribute> entry : raw.entrySet()) {
+            RawAttribute attribute = entry.getValue();
+            String value = substitute(
+                    attribute.value(), parameters, maxAttributeValue, attribute.origin(), trace);
+            attrs.put(entry.getKey(), new RawAttribute(value, attribute.origin()));
+        }
+        return attrs;
     }
 
     private RawElement applyOverrides(
@@ -417,19 +604,16 @@ final class ComponentCompiler {
                 throw tooLarge(
                         origin,
                         "value exceeds the " + MarkupParser.MAX_SUBSTITUTIONS_PER_VALUE
-                                + "-substitution limit");
+                                + "-substitution limit",
+                        List.of());
             }
             String name = matcher.group(1);
             if (!parameters.containsKey(name)) {
                 throw diagnostic(
                         MarkupException.Kind.UNKNOWN_PARAMETER,
-                        origin,
-                        origin.elementPath(),
+                        origin, origin.elementPath(),
                         "unknown parameter reference \"" + name + "\"",
-                        "a parameter declared by this component",
-                        name,
-                        name,
-                        List.of());
+                        "a parameter declared by this component", name, name, List.of());
             }
         }
     }
@@ -449,20 +633,18 @@ final class ComponentCompiler {
                 throw tooLarge(
                         origin,
                         "value exceeds the " + MarkupParser.MAX_SUBSTITUTIONS_PER_VALUE
-                                + "-substitution limit");
+                                + "-substitution limit",
+                        trace);
             }
             appendBounded(result, value, position, matcher.start(), maxLength, origin, trace);
             String replacement = parameters.get(matcher.group(1));
             if (replacement == null) {
                 throw diagnostic(
                         MarkupException.Kind.UNKNOWN_PARAMETER,
-                        origin,
-                        origin.elementPath(),
+                        origin, origin.elementPath(),
                         "unknown parameter reference \"" + matcher.group(1) + "\"",
-                        "a parameter declared by this component",
-                        matcher.group(1),
-                        matcher.group(1),
-                        trace);
+                        "a parameter declared by this component", matcher.group(1),
+                        matcher.group(1), trace);
             }
             appendBounded(result, replacement, 0, replacement.length(), maxLength, origin, trace);
             position = matcher.end();
@@ -482,13 +664,10 @@ final class ComponentCompiler {
         if (result.length() + end - start > maxLength) {
             throw diagnostic(
                     MarkupException.Kind.TOO_LARGE,
-                    origin,
-                    origin.elementPath(),
+                    origin, origin.elementPath(),
                     "expanded value exceeds the " + maxLength + "-character limit",
                     "at most " + maxLength + " characters",
-                    Integer.toString(result.length() + end - start),
-                    "",
-                    trace);
+                    Integer.toString(result.length() + end - start), "", trace);
         }
         result.append(value, start, end);
     }
@@ -501,85 +680,99 @@ final class ComponentCompiler {
     }
 
     private static void addClasses(Set<String> tokens, String value) {
-        if (value.isBlank()) {
-            return;
-        }
-        for (String token : value.strip().split("\\s+")) {
-            tokens.add(token.toLowerCase(Locale.ROOT));
+        if (!value.isBlank()) {
+            for (String token : value.strip().split("\\s+")) {
+                tokens.add(token.toLowerCase(Locale.ROOT));
+            }
         }
     }
 
-    private static RawAttribute requireAttribute(RawElement raw, String name) {
+    private static boolean isRootOverride(String attribute) {
+        return TagSpec.isCommonAttribute(attribute) || attribute.startsWith("data-");
+    }
+
+    private static String attribute(RawElement raw, String name, String defaultValue) {
+        RawAttribute attribute = raw.attrs().get(name);
+        return attribute == null ? defaultValue : attribute.value();
+    }
+
+    private static RawAttribute requireAttribute(
+            RawElement raw, String name, List<ComponentTraceFrame> trace) {
         RawAttribute attribute = raw.attrs().get(name);
         if (attribute == null) {
             throw diagnostic(
                     MarkupException.Kind.MISSING_ATTRIBUTE,
-                    raw.origin(),
-                    raw.origin().elementPath(),
+                    raw.origin(), raw.origin().elementPath(),
                     "<" + raw.tag() + "> requires attribute \"" + name + "\"",
-                    "required attribute \"" + name + "\"",
-                    "",
-                    name,
-                    raw.componentTrace());
+                    "required attribute \"" + name + "\"", "", name, trace);
         }
         return attribute;
     }
 
-    private static void requireOnlyAttributes(RawElement raw, Set<String> allowed) {
+    private static boolean booleanAttribute(
+            RawElement raw,
+            String name,
+            boolean defaultValue,
+            List<ComponentTraceFrame> trace) {
+        RawAttribute attribute = raw.attrs().get(name);
+        if (attribute == null) {
+            return defaultValue;
+        }
+        if (!"true".equals(attribute.value()) && !"false".equals(attribute.value())) {
+            throw invalid(
+                    attribute.origin(), raw.origin().elementPath(),
+                    "invalid value for \"" + name + "\"",
+                    "true or false", attribute.value(), name, trace);
+        }
+        return Boolean.parseBoolean(attribute.value());
+    }
+
+    private static void requireOnlyAttributes(
+            RawElement raw, Set<String> allowed, List<ComponentTraceFrame> trace) {
         for (String attribute : raw.attrs().keySet()) {
             if (!allowed.contains(attribute)) {
                 throw invalid(
-                        raw.attrs().get(attribute).origin(),
-                        raw.origin().elementPath(),
+                        raw.attrs().get(attribute).origin(), raw.origin().elementPath(),
                         "unknown attribute \"" + attribute + "\" on <" + raw.tag() + ">",
                         allowed.isEmpty() ? "no attributes" : String.join(", ", allowed),
-                        attribute,
-                        attribute);
+                        attribute, attribute, trace);
             }
         }
     }
 
     private static void rejectReservedTree(RawElement raw) {
-        if (DEFINITION_TAGS.contains(raw.tag()) || "use".equals(raw.tag())
-                || "slot".equals(raw.tag()) || "fill".equals(raw.tag())) {
+        if (DEFINITION_TAGS.contains(raw.tag())
+                || "use".equals(raw.tag())
+                || "slot".equals(raw.tag())
+                || "fill".equals(raw.tag())) {
             throw invalid(
-                    raw.origin(),
-                    raw.origin().elementPath(),
+                    raw.origin(), raw.origin().elementPath(),
                     "<" + raw.tag() + "> requires an <ui> document component context",
-                    "a concrete actor tag",
-                    raw.tag(),
-                    "");
+                    "a concrete actor tag", raw.tag(), "", List.of());
         }
         for (RawElement child : raw.children()) {
             rejectReservedTree(child);
         }
     }
 
-    private static int countConcrete(List<RawElement> roots) {
-        int count = 0;
-        for (RawElement root : roots) {
-            count += countConcrete(root);
-        }
-        return count;
-    }
-
-    private static int countConcrete(RawElement raw) {
-        int count = 1;
-        for (RawElement child : raw.children()) {
-            count += countConcrete(child);
-        }
-        return count;
-    }
-
     private static List<ComponentTraceFrame> appendTrace(
             List<ComponentTraceFrame> trace, ComponentTraceFrame frame) {
-        if (trace.size() >= 16) {
-            throw tooLarge(frame.invocation(), "component trace exceeds the 16-frame limit");
+        if (trace.size() >= MarkupParser.MAX_COMPONENT_EXPANSION_DEPTH) {
+            throw tooLarge(
+                    frame.invocation(),
+                    "component trace exceeds the "
+                            + MarkupParser.MAX_COMPONENT_EXPANSION_DEPTH + "-frame limit",
+                    trace);
         }
         List<ComponentTraceFrame> result = new ArrayList<>(trace.size() + 1);
         result.addAll(trace);
         result.add(frame);
         return List.copyOf(result);
+    }
+
+    private static RawElement withTrace(
+            RawElement raw, List<ComponentTraceFrame> trace) {
+        return copy(raw, raw.attrs(), raw.text(), raw.children(), trace);
     }
 
     private static RawElement copy(
@@ -591,34 +784,29 @@ final class ComponentCompiler {
         return new RawElement(raw.tag(), attrs, text, children, raw.origin(), trace);
     }
 
+    private static String displaySlot(String name) {
+        return name.isEmpty() ? "<default>" : name;
+    }
+
     private static MarkupException invalid(
             MarkupSourceLocation origin,
             String path,
             String message,
             String expected,
             String received,
-            String attribute) {
+            String attribute,
+            List<ComponentTraceFrame> trace) {
         return diagnostic(
                 MarkupException.Kind.INVALID_VALUE,
-                origin,
-                path,
-                message,
-                expected,
-                received,
-                attribute,
-                List.of());
+                origin, path, message, expected, received, attribute, trace);
     }
 
-    private static MarkupException tooLarge(MarkupSourceLocation origin, String message) {
+    private static MarkupException tooLarge(
+            MarkupSourceLocation origin, String message, List<ComponentTraceFrame> trace) {
         return diagnostic(
                 MarkupException.Kind.TOO_LARGE,
-                origin,
-                origin.elementPath(),
-                message,
-                "bounded component expansion",
-                "limit exceeded",
-                "",
-                List.of());
+                origin, origin.elementPath(), message,
+                "bounded component expansion", "limit exceeded", "", trace);
     }
 
     private static MarkupException diagnostic(
@@ -637,20 +825,92 @@ final class ComponentCompiler {
                 origin.column(),
                 message,
                 new MarkupDiagnosticContext(
-                        origin.source(),
-                        attribute,
-                        expected,
-                        received,
-                        "",
-                        "document rejected before Scene2D build",
-                        trace));
+                        origin.source(), attribute, expected, received, "",
+                        "document rejected before Scene2D build", trace));
     }
 
     private record Parameter(String name, boolean required, String defaultValue) {}
 
+    private record Slot(
+            String name,
+            boolean required,
+            List<RawElement> fallback,
+            MarkupSourceLocation origin) {
+        private Slot {
+            fallback = List.copyOf(fallback);
+            Objects.requireNonNull(origin, "origin");
+        }
+    }
+
     private record Definition(
             String name,
             Map<String, Parameter> parameters,
+            Map<String, Slot> slots,
             RawElement templateRoot,
             MarkupSourceLocation origin) {}
+
+    private record ExpansionScope(
+            Definition definition,
+            RawElement invocation,
+            Map<String, String> parameters,
+            Map<String, List<RawElement>> fills,
+            List<ComponentTraceFrame> trace) {}
+
+    private static final class ExpansionBudget {
+        private final int maxFinalElements;
+        private final List<String> componentStack = new ArrayList<>();
+        private int visits;
+        private int concreteElements;
+
+        private ExpansionBudget(int maxFinalElements) {
+            this.maxFinalElements = maxFinalElements;
+        }
+
+        private void visit(
+                MarkupSourceLocation origin, List<ComponentTraceFrame> trace) {
+            if (++visits > MarkupParser.MAX_EXPANSION_WORK) {
+                throw tooLarge(
+                        origin,
+                        "component expansion exceeds the " + MarkupParser.MAX_EXPANSION_WORK
+                                + "-visit limit",
+                        trace);
+            }
+        }
+
+        private void addConcrete(
+                MarkupSourceLocation origin, List<ComponentTraceFrame> trace) {
+            if (++concreteElements > maxFinalElements) {
+                throw tooLarge(
+                        origin,
+                        "expanded document exceeds the " + maxFinalElements + "-element limit",
+                        trace);
+            }
+        }
+
+        private void enterComponent(String name, RawElement invocation) {
+            if (componentStack.contains(name)) {
+                List<String> cycle = new ArrayList<>(componentStack.size() + 1);
+                cycle.addAll(componentStack);
+                cycle.add(name);
+                throw diagnostic(
+                        MarkupException.Kind.COMPONENT_CYCLE,
+                        invocation.origin(), invocation.origin().elementPath(),
+                        "component cycle: " + String.join(" -> ", cycle),
+                        "an acyclic component graph", String.join(" -> ", cycle),
+                        "component", invocation.componentTrace());
+            }
+            if (componentStack.size() >= MarkupParser.MAX_COMPONENT_EXPANSION_DEPTH) {
+                throw tooLarge(
+                        invocation.origin(),
+                        "component expansion exceeds the "
+                                + MarkupParser.MAX_COMPONENT_EXPANSION_DEPTH + "-level limit",
+                        invocation.componentTrace());
+            }
+            componentStack.add(name);
+        }
+
+        private void exitComponent() {
+            componentStack.removeLast();
+        }
+    }
 }

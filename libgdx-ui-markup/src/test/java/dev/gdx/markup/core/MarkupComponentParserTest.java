@@ -9,6 +9,13 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 final class MarkupComponentParserTest {
+    private static final String NESTED_COMPONENT_XML = """
+            <ui><components>
+              <component name="Action"><button text="Act"/></component>
+              <component name="Card"><table><label text="Card"/><use component="Action"/></table></component>
+            </components><use component="Card"/></ui>
+            """;
+
     private final MarkupParser parser = new MarkupParser();
 
     @Test
@@ -251,9 +258,322 @@ final class MarkupComponentParserTest {
         assertEquals("expand", failure.attribute());
     }
 
+    @Test
+    void fillsNamedAndDefaultSlotsAndUsesFallbacks() {
+        MarkupDocument filled = parser.parse("""
+                <ui><components><component name="Panel">
+                  <param name="title" required="true"/>
+                  <table class="panel">
+                    <label text="${title}"/>
+                    <slot/>
+                    <slot name="footer"><label text="Default footer"/></slot>
+                  </table>
+                </component></components>
+                <use component="Panel" title="Inventory">
+                  <fill><label id="item" text="Potion"/></fill>
+                  <fill slot="footer"><button id="close" text="Close"/></fill>
+                </use></ui>
+                """);
+        Element panel = filled.root().children().getFirst();
+        assertEquals(
+                List.of("Inventory", "Potion", "Close"),
+                panel.children().stream().map(Element::text).toList());
+
+        MarkupDocument fallback = parser.parse("""
+                <ui><components><component name="Panel">
+                  <param name="title" required="true"/>
+                  <table><label text="${title}"/>
+                    <slot name="footer"><label text="${title} footer"/></slot>
+                  </table>
+                </component></components><use component="Panel" title="Default"/></ui>
+                """);
+        assertEquals(
+                List.of("Default", "Default footer"),
+                fallback.root().children().getFirst().children().stream()
+                        .map(Element::text).toList());
+    }
+
+    @Test
+    void callerFillDoesNotInheritInvokedComponentParameters() {
+        MarkupDocument document = parser.parse("""
+                <ui><components><component name="Panel">
+                  <param name="title" required="true"/>
+                  <table><slot/></table>
+                </component></components>
+                <use component="Panel" title="Inventory">
+                  <fill><label text="${title}"/></fill>
+                </use></ui>
+                """);
+
+        assertEquals(
+                "${title}",
+                document.root().children().getFirst().children().getFirst().text());
+    }
+
+    @Test
+    void nestedComponentsExpandDepthFirst() {
+        MarkupDocument document = parser.parse(NESTED_COMPONENT_XML);
+
+        assertEquals(
+                List.of("label", "button"),
+                document.root().children().getFirst().children().stream()
+                        .map(Element::tag).toList());
+    }
+
+    @Test
+    void outerParametersResolveBeforeNestedInvocation() {
+        MarkupDocument document = parser.parse("""
+                <ui><components>
+                  <component name="Action"><param name="text" required="true"/>
+                    <button text="${text}"/></component>
+                  <component name="Card"><param name="action" required="true"/>
+                    <use component="Action" text="${action}"/></component>
+                </components><use component="Card" action="Save"/></ui>
+                """);
+
+        assertEquals("Save", document.root().children().getFirst().text());
+    }
+
+    @Test
+    void slotDeclarationsMustBeNamedUniqueAndConsistent() {
+        assertKind(
+                MarkupException.Kind.DUPLICATE_SLOT,
+                """
+                <ui><components><component name="Panel"><table>
+                  <slot/><slot/>
+                </table></component></components></ui>
+                """);
+        assertKind(
+                MarkupException.Kind.DUPLICATE_SLOT,
+                """
+                <ui><components><component name="Panel"><table>
+                  <slot name="footer"/><slot name="footer"/>
+                </table></component></components></ui>
+                """);
+        assertKind(
+                MarkupException.Kind.INVALID_VALUE,
+                """
+                <ui><components><component name="Panel"><table>
+                  <slot name="Bad_Name"/>
+                </table></component></components></ui>
+                """);
+        assertKind(
+                MarkupException.Kind.INVALID_VALUE,
+                """
+                <ui><components><component name="Panel"><table>
+                  <slot name="footer" required="true"><label/></slot>
+                </table></component></components></ui>
+                """);
+    }
+
+    @Test
+    void fillsMustTargetKnownSlotsExactlyOnce() {
+        String definition = """
+                <components><component name="Panel"><table>
+                  <slot/><slot name="footer"/>
+                </table></component></components>
+                """;
+        assertKind(
+                MarkupException.Kind.UNKNOWN_SLOT,
+                "<ui>" + definition
+                        + "<use component=\"Panel\"><fill slot=\"header\"><label/></fill></use></ui>");
+        assertKind(
+                MarkupException.Kind.DUPLICATE_SLOT,
+                "<ui>" + definition
+                        + "<use component=\"Panel\"><fill><label/></fill><fill><button/></fill></use></ui>");
+        assertKind(
+                MarkupException.Kind.INVALID_VALUE,
+                "<ui>" + definition
+                        + "<use component=\"Panel\"><label/></use></ui>");
+    }
+
+    @Test
+    void requiredSlotMustBeFilled() {
+        assertKind(
+                MarkupException.Kind.MISSING_SLOT,
+                """
+                <ui><components><component name="Dialog"><table>
+                  <slot name="actions" required="true"/>
+                </table></component></components><use component="Dialog"/></ui>
+                """);
+    }
+
+    @Test
+    void directAndIndirectCyclesFailWithCompleteBoundedChain() {
+        MarkupException direct = assertFailure("""
+                <ui><components><component name="Menu">
+                  <use component="Menu"/>
+                </component></components><use component="Menu"/></ui>
+                """);
+        assertEquals(MarkupException.Kind.COMPONENT_CYCLE, direct.kind());
+        assertTrue(direct.getMessage().contains("Menu -> Menu"));
+
+        MarkupException indirect = assertFailure("""
+                <ui><components>
+                  <component name="Menu"><use component="MenuItem"/></component>
+                  <component name="MenuItem"><use component="Menu"/></component>
+                </components><use component="Menu"/></ui>
+                """);
+        assertEquals(MarkupException.Kind.COMPONENT_CYCLE, indirect.kind());
+        assertTrue(indirect.getMessage().contains("Menu -> MenuItem -> Menu"));
+    }
+
+    @Test
+    void componentExpansionDepthIsBoundedAtSixteen() {
+        StringBuilder xml = new StringBuilder("<ui><components>");
+        for (int index = 0; index < 17; index++) {
+            xml.append("<component name=\"C").append(index).append("\">");
+            if (index == 16) {
+                xml.append("<label/>");
+            } else {
+                xml.append("<use component=\"C").append(index + 1).append("\"/>");
+            }
+            xml.append("</component>");
+        }
+        xml.append("</components><use component=\"C0\"/></ui>");
+
+        assertKind(MarkupException.Kind.TOO_LARGE, xml.toString());
+    }
+
+    @Test
+    void componentParameterAndSlotDeclarationCountsAreBounded() {
+        StringBuilder components = new StringBuilder("<ui><components>");
+        for (int index = 0; index < 257; index++) {
+            components.append("<component name=\"C").append(index)
+                    .append("\"><label/></component>");
+        }
+        components.append("</components></ui>");
+        assertKind(MarkupException.Kind.TOO_LARGE, components.toString());
+
+        StringBuilder parameters = new StringBuilder(
+                "<ui><components><component name=\"Many\">");
+        for (int index = 0; index < 65; index++) {
+            parameters.append("<param name=\"p").append(index).append("\"/>");
+        }
+        parameters.append("<label/></component></components></ui>");
+        assertKind(MarkupException.Kind.TOO_LARGE, parameters.toString());
+
+        StringBuilder slots = new StringBuilder(
+                "<ui><components><component name=\"Many\"><table>");
+        for (int index = 0; index < 33; index++) {
+            slots.append("<slot name=\"s").append(index).append("\"/>");
+        }
+        slots.append("</table></component></components></ui>");
+        assertKind(MarkupException.Kind.TOO_LARGE, slots.toString());
+    }
+
+    @Test
+    void substitutionsPerValueAreBounded() {
+        String references = "${p}".repeat(33);
+        assertKind(
+                MarkupException.Kind.TOO_LARGE,
+                "<ui><components><component name=\"Many\"><param name=\"p\"/>"
+                        + "<label text=\"" + references
+                        + "\"/></component></components></ui>");
+    }
+
+    @Test
+    void finalConcreteElementCountIsBoundedAfterExpansion() {
+        StringBuilder xml = new StringBuilder("""
+                <ui><components><component name="Triplet">
+                  <table><label/><label/></table>
+                </component></components>
+                """);
+        for (int index = 0; index < 3_334; index++) {
+            xml.append("<use component=\"Triplet\"/>");
+        }
+        xml.append("</ui>");
+
+        assertKind(MarkupException.Kind.TOO_LARGE, xml.toString());
+    }
+
+    @Test
+    void totalExpansionWorkIsBoundedIndependentlyOfFinalElements() {
+        StringBuilder xml = new StringBuilder(
+                "<ui><components><component name=\"Sparse\"><table>");
+        for (int index = 0; index < 30; index++) {
+            xml.append("<slot name=\"s").append(index).append("\"/>");
+        }
+        xml.append("</table></component></components>");
+        for (int index = 0; index < 3_334; index++) {
+            xml.append("<use component=\"Sparse\"/>");
+        }
+        xml.append("</ui>");
+
+        MarkupException failure = assertFailure(xml.toString());
+        assertEquals(MarkupException.Kind.TOO_LARGE, failure.kind());
+        assertTrue(failure.getMessage().contains("visit"));
+    }
+
+    @Test
+    void exactDeclarationAndDepthLimitsRemainAccepted() {
+        StringBuilder components = new StringBuilder("<ui><components>");
+        for (int index = 0; index < 256; index++) {
+            components.append("<component name=\"C").append(index)
+                    .append("\"><label/></component>");
+        }
+        components.append("</components></ui>");
+        assertEquals("ui", parser.parse(components.toString()).root().tag());
+
+        StringBuilder bounded = new StringBuilder(
+                "<ui><components><component name=\"Bounded\">");
+        for (int index = 0; index < 64; index++) {
+            bounded.append("<param name=\"p").append(index).append("\"/>");
+        }
+        bounded.append("<table>");
+        for (int index = 0; index < 32; index++) {
+            bounded.append("<slot name=\"s").append(index).append("\"/>");
+        }
+        bounded.append("<label text=\"").append("${p0}".repeat(32))
+                .append("\"/></table></component></components></ui>");
+        assertEquals("ui", parser.parse(bounded.toString()).root().tag());
+
+        StringBuilder depth = new StringBuilder("<ui><components>");
+        for (int index = 0; index < 16; index++) {
+            depth.append("<component name=\"D").append(index).append("\">");
+            if (index == 15) {
+                depth.append("<label text=\"deep\"/>");
+            } else {
+                depth.append("<use component=\"D").append(index + 1).append("\"/>");
+            }
+            depth.append("</component>");
+        }
+        depth.append("</components><use component=\"D0\"/></ui>");
+        assertEquals("deep", parser.parse(depth.toString()).root().children().getFirst().text());
+    }
+
+    @Test
+    void exactFinalElementAndExpansionWorkLimitsRemainAccepted() {
+        StringBuilder elements = new StringBuilder("""
+                <ui><components><component name="Triplet">
+                  <table><label/><label/></table>
+                </component></components>
+                """);
+        for (int index = 0; index < 3_333; index++) {
+            elements.append("<use component=\"Triplet\"/>");
+        }
+        elements.append("</ui>");
+        assertEquals(3_333, parser.parse(elements.toString()).root().children().size());
+
+        StringBuilder work = new StringBuilder(
+                "<ui><components><component name=\"Sparse\"><table>");
+        for (int index = 0; index < 30; index++) {
+            work.append("<slot name=\"s").append(index).append("\"/>");
+        }
+        work.append("</table></component></components>");
+        for (int index = 0; index < 3_125; index++) {
+            work.append("<use component=\"Sparse\"/>");
+        }
+        work.append("</ui>");
+        assertEquals(3_125, parser.parse(work.toString()).root().children().size());
+    }
+
     private void assertKind(MarkupException.Kind kind, String xml) {
-        MarkupException failure =
-                assertThrows(MarkupException.class, () -> parser.parse(xml), xml);
+        MarkupException failure = assertFailure(xml);
         assertEquals(kind, failure.kind(), failure.formatted());
+    }
+
+    private MarkupException assertFailure(String xml) {
+        return assertThrows(MarkupException.class, () -> parser.parse(xml), xml);
     }
 }
