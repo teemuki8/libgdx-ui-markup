@@ -5,7 +5,7 @@ This cookbook gives coding agents the shortest source-backed path through common
 the linked implementation or test when you need the complete contract. Commands run from the
 repository root.
 
-The examples describe the current tested stack: libgdx-ui-markup 0.5.0, libGDX 1.14.2,
+The examples describe the current tested stack: libgdx-ui-markup 0.6.0, libGDX 1.14.2,
 libgdx-ui-harness 1.2.0, and libgdx-agent-runtime 2.0.0 on Java 25.
 
 ## Choose a recipe
