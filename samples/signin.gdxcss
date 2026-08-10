@@ -1,7 +1,7 @@
 /* GDXCSS: bounded Scene2D styling, structural selectors, and global design tokens. */
 :root { --panel-pad: 28px; --control-pad: 12px; }
 .panel { padding: var(--panel-pad); }
-.title { font-color: accent; }
+.signin-dialog .title { font-color: accent; }
 button { padding: var(--control-pad); }
 button.primary { background: accent; font-size: 20px; }
 button.primary:hover { background: accent-over; }

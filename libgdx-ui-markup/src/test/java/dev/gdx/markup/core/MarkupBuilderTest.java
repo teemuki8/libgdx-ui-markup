@@ -21,6 +21,7 @@ import com.badlogic.gdx.scenes.scene2d.Touchable;
 import com.badlogic.gdx.scenes.scene2d.ui.CheckBox;
 import com.badlogic.gdx.scenes.scene2d.ui.Image;
 import com.badlogic.gdx.scenes.scene2d.ui.Label;
+import com.badlogic.gdx.scenes.scene2d.ui.ProgressBar;
 import com.badlogic.gdx.scenes.scene2d.ui.ScrollPane;
 import com.badlogic.gdx.scenes.scene2d.ui.SelectBox;
 import com.badlogic.gdx.scenes.scene2d.ui.Skin;
@@ -46,6 +47,18 @@ import org.junit.jupiter.api.Test;
 
 /** Render-thread builder tests; run with {@code xvfb-run} for a real GL context. */
 final class MarkupBuilderTest {
+    private static final String COMPONENT_HUD_XML = """
+            <ui><components><component name="HealthBar">
+              <param name="id" required="true"/>
+              <param name="current" required="true"/>
+              <table class="health-bar">
+                <progressbar id="${id}-bar" min="0" max="100" value="${current}"/>
+              </table>
+            </component></components>
+            <use component="HealthBar" id="player-health" current="72"/>
+            </ui>
+            """;
+
     private final MarkupParser markup = new MarkupParser();
     private final CssParser css = new CssParser();
 
@@ -100,6 +113,38 @@ final class MarkupBuilderTest {
             assertEquals("checkbox", sink.roles.get("remember"));
             assertEquals("action", sink.properties.get("save").get("kind"));
             assertNull(sink.roles.get("table"), "tables emit no role");
+        });
+    }
+
+    @Test
+    void componentGeneratedHudUsesConcreteCssLayoutAndSemantics() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            try {
+                FakeSink sink = new FakeSink();
+                MarkupDocument document = markup.parse(COMPONENT_HUD_XML, "hud.xml");
+                BuiltUi built = MarkupBuilder.build(
+                        document,
+                        css.parse(".health-bar progressbar { width: 100%; }"),
+                        skin,
+                        sink);
+                Table health = built.root().findActor("player-health");
+                ProgressBar bar = built.root().findActor("player-health-bar");
+                assertNotNull(health);
+                assertNotNull(bar);
+                assertEquals("progressbar", sink.roles.get("player-health-bar"));
+
+                health.setSize(400f, 100f);
+                health.validate();
+                assertEquals(400f, health.getCell(bar).getPrefWidth(), 0.1f);
+                health.setSize(640f, 100f);
+                health.invalidate();
+                health.validate();
+                assertEquals(640f, health.getCell(bar).getPrefWidth(), 0.1f,
+                        "percentage width remains a live Scene2D cell constraint");
+            } finally {
+                skin.dispose();
+            }
         });
     }
 

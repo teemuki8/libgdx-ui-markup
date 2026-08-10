@@ -247,6 +247,27 @@ final class PreviewAppTest {
         assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
     }
 
+    @Test
+    @Timeout(120)
+    void componentExpansionFailureKeepsLastGoodRuntimeAndRecovers() throws Exception {
+        requireGl();
+        Path ui = tempDir.resolve("component-reload.xml");
+        Path css = tempDir.resolve("component-reload.gdxcss");
+        Files.writeString(css, "/* component reload */", StandardCharsets.UTF_8);
+        try (PreviewTestProcess child = PreviewTestProcess.launch(
+                "component-reload", ui, css, null, Duration.ofSeconds(60))) {
+            int exit = child.await();
+            String stderr = child.stderr();
+            assertEquals(0, exit, stderr);
+            assertTrue(child.stdout().contains("preview-child: component-reload ok"));
+            assertTrue(stderr.contains("\"schemaVersion\":3"), stderr);
+            assertTrue(stderr.contains("\"kind\":\"UNKNOWN_PARAMETER\""), stderr);
+            assertTrue(stderr.contains("\"received\":\"vale\""), stderr);
+            assertTrue(stderr.contains("\"suggestion\":\"value\""), stderr);
+        }
+        assertNull(Gdx.app, "the parent test JVM never creates a GL backend");
+    }
+
     /**
      * The first build fails: the typed error overlay must be visible on screen (staged), no
      * skin or actors may be committed, the overlay must draw without any scene resources, and

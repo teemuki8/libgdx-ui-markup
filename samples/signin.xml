@@ -1,22 +1,45 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Canonical sample and E2E fixture: mirrors the harness ReferenceScreen sign-in panel. -->
+<!-- Canonical sample and E2E fixture: reusable components compile to the same 10 actors. -->
 <ui>
+  <components>
+    <component name="SigninDialog">
+      <param name="title" default="Sign in"/>
+      <window class="signin-dialog" title="${title}">
+        <table id="signin-form"><slot required="true"/></table>
+      </window>
+    </component>
+    <component name="RuntimeTextField">
+      <param name="id" required="true"/>
+      <param name="label" required="true"/>
+      <param name="entity" required="true"/>
+      <textfield id="${id}" label="${label}" data-runtime-entity="${entity}"/>
+    </component>
+    <component name="PrimaryButton">
+      <param name="id" required="true"/>
+      <param name="text" required="true"/>
+      <param name="name" required="true"/>
+      <button id="${id}" class="primary" text="${text}" name="${name}"/>
+    </component>
+  </components>
+
   <table id="signin-panel" class="panel" width="500" height="300">
-    <window id="signin-window" title="Sign in" expand="true" fill="true">
-      <table id="signin-form">
+    <use component="SigninDialog" id="signin-window" title="Sign in"
+         expand="true" fill="true">
+      <fill>
         <row/>
         <label id="signin-title" class="title" font="inter" font-size="28" text="Sign in"/>
         <row/>
         <label id="username-label" text="Username"/>
-        <textfield id="username" label="Username" data-runtime-entity="user"/>
+        <use component="RuntimeTextField" id="username" label="Username" entity="user"/>
         <row/>
         <label id="password-label" text="Password"/>
         <textfield id="password" label="Password"/>
         <row/>
         <checkbox id="remember" text="Remember me" label="Remember me"/>
         <row/>
-        <button id="save" class="primary" text="Save" name="Save" width="180" align="left"/>
-      </table>
-    </window>
+        <use component="PrimaryButton" id="save" text="Save" name="Save"
+             width="180" align="left"/>
+      </fill>
+    </use>
   </table>
 </ui>

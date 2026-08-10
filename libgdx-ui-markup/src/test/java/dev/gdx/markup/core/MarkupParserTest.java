@@ -9,7 +9,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -55,6 +57,50 @@ final class MarkupParserTest {
         assertEquals("action", button.attr("data-role"));
         assertEquals("center center", button.attr("align"));
         assertEquals("false", button.attr("disabled"));
+    }
+
+    @Test
+    void componentFreeDocumentKeepsItsConcreteShapeAndSemantics() {
+        MarkupDocument document = parser.parse("""
+                <ui>
+                  <table id="panel" class="Panel primary">
+                    <button id="save" text="Save" name="Save"/>
+                  </table>
+                </ui>
+                """, "screen.xml");
+
+        Element panel = document.root().children().getFirst();
+        Element save = panel.children().getFirst();
+        assertEquals("screen.xml", document.source());
+        assertEquals("panel", panel.id());
+        assertEquals(List.of("panel", "primary"), panel.classes());
+        assertEquals("Save", save.text());
+        assertEquals("Save", save.name());
+        assertEquals(3, save.line());
+        ElementProvenance provenance = document.provenanceFor("ui/table/button");
+        assertEquals("screen.xml", provenance.origin().source());
+        assertEquals("screen.xml", provenance.locationFor("id").source());
+    }
+
+    @Test
+    void pathParseUsesAbsoluteNormalizedSourceIdentity() throws Exception {
+        Path file = tempDir.resolve("nested").resolve("..").resolve("screen.xml");
+        Files.createDirectories(tempDir.resolve("nested"));
+        Files.writeString(tempDir.resolve("screen.xml"), "<ui/>");
+
+        MarkupDocument document = parser.parse(file);
+
+        assertEquals(file.toAbsolutePath().normalize().toString(), document.source());
+    }
+
+    @Test
+    void malformedDocumentRetainsExplicitSourceIdentity() {
+        MarkupException failure = assertThrows(
+                MarkupException.class,
+                () -> parser.parse("<ui><", "broken-screen.xml"));
+
+        assertEquals(MarkupException.Kind.MALFORMED_XML, failure.kind());
+        assertEquals("broken-screen.xml", failure.source());
     }
 
     @Test
@@ -128,6 +174,35 @@ final class MarkupParserTest {
                 "<ui><button disabled=\"maybe\"/></ui>"));
         assertEquals(MarkupException.Kind.INVALID_VALUE, failure.kind());
         assertTrue(failure.getMessage().contains("disabled"));
+    }
+
+    @Test
+    void concreteFailureAddsStructuredSourceWithoutChangingLegacyCoordinates() {
+        MarkupException failure = assertThrows(
+                MarkupException.class,
+                () -> parser.parse("<ui><button disabled=\"maybe\"/></ui>", "screen.xml"));
+
+        assertEquals(MarkupException.Kind.INVALID_VALUE, failure.kind());
+        assertEquals("ui/button", failure.elementPath());
+        assertEquals(1, failure.line());
+        assertTrue(failure.column() > 0);
+        assertEquals("screen.xml", failure.source());
+        assertEquals("disabled", failure.attribute());
+        assertEquals("true or false", failure.expected());
+        assertEquals("maybe", failure.received());
+        assertTrue(failure.componentTrace().isEmpty());
+    }
+
+    @Test
+    void unknownConcreteTagRetainsCallerSource() {
+        MarkupException failure = assertThrows(
+                MarkupException.class,
+                () -> parser.parse("<ui><bogus/></ui>", "screen.xml"));
+
+        assertEquals(MarkupException.Kind.UNKNOWN_TAG, failure.kind());
+        assertEquals("ui/bogus", failure.elementPath());
+        assertEquals("screen.xml", failure.source());
+        assertEquals("bogus", failure.received());
     }
 
     @Test
@@ -254,6 +329,45 @@ final class MarkupParserTest {
                 "<ui><button text=\"" + huge + "\"/></ui>"));
         assertEquals(MarkupException.Kind.TOO_LARGE, failure.kind());
         assertTrue(failure.getMessage().contains("attribute"));
+    }
+
+    @Test
+    void oversizedElementAndAttributeNamesAreRejectedWithTypedDiagnostics() {
+        String huge = "x".repeat(MarkupParser.MAX_NAME_LENGTH + 1);
+
+        MarkupException elementFailure = assertThrows(
+                MarkupException.class,
+                () -> parser.parse("<ui><" + huge + "/></ui>"));
+        assertEquals(MarkupException.Kind.TOO_LARGE, elementFailure.kind());
+        assertEquals("ui/<element>", elementFailure.elementPath());
+        assertTrue(elementFailure.getMessage().contains("element name"));
+
+        MarkupException attributeFailure = assertThrows(
+                MarkupException.class,
+                () -> parser.parse("<ui><label " + huge + "=\"value\"/></ui>"));
+        assertEquals(MarkupException.Kind.TOO_LARGE, attributeFailure.kind());
+        assertEquals("ui/label", attributeFailure.elementPath());
+        assertTrue(attributeFailure.getMessage().contains("attribute name"));
+    }
+
+    @Test
+    void customTagConfigurationHasBoundedNamesAndCandidateCount() {
+        String exactName = "x".repeat(MarkupParser.MAX_NAME_LENGTH);
+        assertEquals(exactName, new MarkupParser(Set.of(exactName))
+                .parse("<ui><" + exactName + "/></ui>")
+                .root().children().getFirst().tag());
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new MarkupParser(Set.of(exactName + "x")));
+
+        Set<String> exactCount = new LinkedHashSet<>();
+        for (int index = 0; index < MarkupParser.MAX_EXTRA_TAGS; index++) {
+            exactCount.add("x" + index);
+        }
+        new MarkupParser(exactCount);
+        exactCount.add("overflow");
+        assertThrows(IllegalArgumentException.class, () -> new MarkupParser(exactCount));
     }
 
     @Test

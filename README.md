@@ -9,7 +9,7 @@ come from the markup, so libgdx-ui-harness locators stop depending on inference.
 
 | Module | Responsibility |
 |---|---|
-| `libgdx-ui-markup` | Core: hardened XML parser → immutable model, CSS-subset parser, tag registry, render-thread builder, programmatic default Skin, `SemanticSink` SPI |
+| `libgdx-ui-markup` | Core: hardened XML parser → bounded component expansion → immutable concrete model, CSS-subset parser, tag registry, render-thread builder, programmatic default Skin, `SemanticSink` SPI |
 | `libgdx-ui-markup-harness` | Adapter: `HarnessSemanticSink` maps markup semantics into the harness `Semantics` facade; end-to-end test drives a markup UI through the harness MCP |
 | `libgdx-ui-markup-runtime` | Adapter: `MarkupRuntimeSource` registers `data-runtime-entity` actors with explicit value authority — authoritative (domain-supplied), bindings-only (app-owned entities), or widget-mirror (preview convenience, non-authoritative) — plus native UI bindings |
 | `libgdx-ui-markup-preview` | Standalone LWJGL3 app: hot-reloads `--ui`/`--css`, typed error overlay, CI flags, optional `--mcp` harness server |
@@ -101,6 +101,97 @@ BuiltUi ui = MarkupBuilder.build(
         new NoopSink());            // HarnessSemanticSink for harness metadata
 stage.addActor(ui.root());
 ```
+
+## Reusable markup components
+
+Components are document-local, parse-time templates. Put one optional `<components>` block first
+under `<ui>`, then invoke definitions explicitly with `<use>`. This complete example demonstrates
+a required parameter, a literal default, interpolation, a required default slot, a named slot
+with fallback, and caller overrides on the generated root:
+
+```xml
+<ui>
+  <components>
+    <component name="Card">
+      <param name="id" required="true"/>
+      <param name="title" default="Untitled"/>
+      <table class="card" id="${id}">
+        <label id="${id}-title" text="${title}"/>
+        <row/>
+        <slot required="true"/>
+        <row/>
+        <table class="footer"><slot name="footer">
+          <label text="No actions"/>
+        </slot></table>
+      </table>
+    </component>
+  </components>
+
+  <use component="Card" id="inventory" title="Inventory"
+       class="wide" data-screen="inventory">
+    <fill><label id="inventory-count" text="3 items"/></fill>
+    <fill slot="footer"><button id="close" text="Close"/></fill>
+  </use>
+</ui>
+```
+
+`id="inventory"` is both the declared `id` parameter and a common root override. All common
+actor attributes and `data-*` attributes supplied on `<use>` override the generated root.
+`class` is the exception: caller tokens are appended and de-duplicated, so the final root keeps
+the stable `card` class and also has `wide`. That stable class provides ordinary bounded GDXCSS
+scoping; component names are not selectors:
+
+```css
+.card { padding: 16px; }
+.card .footer { margin-top: 8px; }
+.card.wide { width: 100%; }
+```
+
+Expansion is GL-free and produces only ordinary concrete elements. `MarkupDocument.root()`,
+`MarkupBuilder`, `SemanticSink`, the harness, and runtime integration never see `<component>`,
+`<use>`, `<slot>`, or `<fill>`. Parameter substitution is textual and then the normal target-tag
+grammar is authoritative. In particular, components preserve an opaque future runtime expression
+such as `{player.health}` only where its target attribute permits that text; substituting it into
+today's numeric-only `progressbar value` fails with `INVALID_VALUE`. Components do not evaluate
+runtime expressions.
+
+Component compilation adds these exact limits to the parser's existing 1 MiB UTF-8 input,
+10,000 raw-element, depth-64, 4,096-character attribute-value, 4,096-character text,
+256-character XML-name, and 256 custom-tag limits:
+
+| Resource | Limit |
+|---|---:|
+| component definitions per document | 256 |
+| parameters per component | 64 |
+| slots per component | 32 |
+| substitutions per attribute or text value | 32 |
+| nested component expansion depth | 16 |
+| final concrete elements | 10,000 |
+| total expansion visits | 100,000 |
+| diagnostic invocation-trace frames | 16 |
+
+Definitions cannot import files, URLs, packages, or other documents. There is deliberately no
+component discovery, dynamic tag syntax, loop, conditional, arithmetic, script, reflection,
+multiple-root fragment, implicit ID namespace, runtime-state ownership, or arbitrary Java call.
+This no-import boundary keeps one watched XML file reproducible and prevents component expansion
+from becoming an unrestricted filesystem or execution surface.
+
+The executable component-backed reference is [`samples/signin.xml`](samples/signin.xml), styled
+by [`samples/signin.gdxcss`](samples/signin.gdxcss). Parsing and building it uses the same public
+API shown above; the preview and harness commands in this README exercise that exact fixture.
+
+Preview diagnostics use `markup-status` schema 3. A component failure is one bounded JSON line,
+for example (line and column depend on the source):
+
+```text
+markup-status: {"schemaVersion":3,"ok":false,"kind":"UNKNOWN_COMPONENT","source":"/app/ui.xml","elementPath":"ui/use","line":18,"column":31,"attribute":"component","expected":"one of [Card]","received":"Crd","suggestion":"Card","consequence":"document rejected before Scene2D build","componentTrace":[],"message":"unknown component \"Crd\""}
+```
+
+Each string is capped at 2,000 UTF-16 units; component traces are capped at 16 frames and 16,384
+aggregate UTF-16 units. Success carries only schema, `ok`, and the concrete actor count, for
+example `markup-status: {"schemaVersion":3,"ok":true,"nodes":10}`. Hot reload is
+transactional: a rejected candidate leaves the last-good actor tree, Skin, runtime registration,
+and harness session live; a later valid edit replaces them with one fully built fresh candidate.
 
 ## Responsive GDXCSS layout
 
@@ -328,8 +419,10 @@ from Disk):
 Manual session: open `samples/signin.xml`, open the "Markup Preview" tool window (right
 anchor), press **Launch** — a native window shows the sign-in form. Edit button text in the
 XML → the preview updates within about a second (the preview hot-reloads; the **Watch** toggle
-adds a plugin-side polled reload). Break the XML → a red overlay shows `elementPath:line:
-message` and the tool window status turns red with the same text.
+adds a plugin-side polled reload). Break the XML → a red overlay and the tool window show the
+schema-v3 source/line/column, typed message, expected/received values, suggestion, consequence,
+and bounded component invocation trace when those fields apply. The last-good preview remains
+interactive until a valid edit commits a fresh candidate.
 
 ## Verification ladder
 

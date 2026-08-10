@@ -17,6 +17,7 @@ import com.badlogic.gdx.backends.lwjgl3.Lwjgl3ApplicationConfiguration;
 import com.badlogic.gdx.graphics.GL20;
 import com.badlogic.gdx.graphics.Texture;
 import com.badlogic.gdx.graphics.g2d.BitmapFont;
+import com.badlogic.gdx.scenes.scene2d.Actor;
 import com.badlogic.gdx.scenes.scene2d.ui.Label;
 import com.badlogic.gdx.scenes.scene2d.Stage;
 import com.badlogic.gdx.scenes.scene2d.ui.Skin;
@@ -143,6 +144,30 @@ public final class PreviewTestChild {
             </table>
             """;
 
+    /** Component-generated runtime field used to prove parse-failure rollback and recovery. */
+    private static final String COMPONENT_GOOD_UI_A = """
+            <ui><components><component name="RuntimeField">
+              <param name="value" required="true"/>
+              <textfield id="user" data-runtime-entity="user" text="${value}"/>
+            </component></components><use component="RuntimeField" value="A"/></ui>
+            """;
+
+    /** Unknown parameter edit; component expansion fails before candidate scene allocation. */
+    private static final String COMPONENT_BAD_UI = """
+            <ui><components><component name="RuntimeField">
+              <param name="value" required="true"/>
+              <textfield id="user" data-runtime-entity="user" text="${value}"/>
+            </component></components><use component="RuntimeField" vale="B"/></ui>
+            """;
+
+    /** Corrected component edit used to prove a fresh scene/runtime commit. */
+    private static final String COMPONENT_GOOD_UI_B = """
+            <ui><components><component name="RuntimeField">
+              <param name="value" required="true"/>
+              <textfield id="user" data-runtime-entity="user" text="${value}"/>
+            </component></components><use component="RuntimeField" value="B"/></ui>
+            """;
+
     private PreviewTestChild() {
     }
 
@@ -176,6 +201,7 @@ public final class PreviewTestChild {
                 case "stuck" -> runStuck();
                 case "failing" -> runFailing();
                 case "bad-after-good" -> runBadAfterGood(ui, css);
+                case "component-reload" -> runComponentReload(ui, css);
                 case "initial-bad" -> runInitialBad(ui, css);
                 case "mcp-attach" -> runMcpAttach(ui, css);
                 case "swap-failure" -> runSwapFailure(ui, css);
@@ -350,6 +376,82 @@ public final class PreviewTestChild {
                                     "the second recovery commits a fresh skin");
                             assertTrue(app.stageContains("title"), "the recovered scene staged");
                             app.render();
+                            Gdx.app.exit();
+                        }
+                        default -> {
+                        }
+                    }
+                } catch (Throwable thrown) {
+                    fail(messageOf(thrown));
+                }
+            }
+
+            @Override public void dispose() {
+                app.dispose();
+            }
+        });
+    }
+
+    /** Component parse failure retains the exact last-good scene and runtime, then recovers. */
+    private static void runComponentReload(Path ui, Path css) {
+        writeFixture(ui, css, COMPONENT_GOOD_UI_A);
+        PreviewApp app = new PreviewApp(CliOptions.parse(new String[] {
+                "--ui", ui.toString(), "--css", css.toString(), "--mcp"}));
+        launch(new ApplicationAdapter() {
+            private int frame;
+            private Skin committedSkin;
+            private Actor committedActor;
+            private MarkupRuntimeSource committedRuntime;
+
+            @Override public void create() {
+                app.create();
+            }
+
+            @Override public void render() {
+                try {
+                    frame++;
+                    switch (frame) {
+                        case 1 -> {
+                            app.render();
+                            committedSkin = app.skin();
+                            committedActor = app.actor("user");
+                            committedRuntime = app.mcp().runtimeSource();
+                            assertNotNull(committedSkin, "good component commits a skin");
+                            assertNotNull(committedActor, "good component commits its actor");
+                            assertNotNull(committedRuntime, "good component commits runtime owner");
+                            assertEquals(List.of("user"), committedRuntime.registeredEntities());
+                            assertFrameHasOnly("user", app);
+                        }
+                        case 2 -> {
+                            writeUi(ui, COMPONENT_BAD_UI);
+                            app.rebuild();
+                            assertTrue(app.errorOverlayVisible(),
+                                    "component expansion failure shows the overlay");
+                            assertSame(committedSkin, app.skin(),
+                                    "component parse failure retains the exact skin");
+                            assertSame(committedActor, app.actor("user"),
+                                    "component parse failure retains the exact actor");
+                            assertSame(committedRuntime, app.mcp().runtimeSource(),
+                                    "component parse failure retains the exact runtime owner");
+                            app.render();
+                            assertFrameHasOnly("user", app);
+                        }
+                        case 3 -> {
+                            writeUi(ui, COMPONENT_GOOD_UI_B);
+                            app.rebuild();
+                            assertFalse(app.errorOverlayVisible(),
+                                    "corrected component hides the overlay");
+                            assertNotSame(committedSkin, app.skin(),
+                                    "recovery commits a fresh skin");
+                            assertNotSame(committedActor, app.actor("user"),
+                                    "recovery commits a fresh actor");
+                            assertNotSame(committedRuntime, app.mcp().runtimeSource(),
+                                    "recovery commits a fresh runtime owner");
+                            assertEquals(
+                                    List.of("user"),
+                                    app.mcp().runtimeSource().registeredEntities());
+                            app.render();
+                            assertFrameHasOnly("user", app);
                             Gdx.app.exit();
                         }
                         default -> {
