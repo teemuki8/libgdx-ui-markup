@@ -329,7 +329,10 @@ final class ComponentCompiler {
                     MarkupException.Kind.UNKNOWN_COMPONENT,
                     componentAttribute.origin(), invocation.origin().elementPath(),
                     "unknown component \"" + componentAttribute.value() + "\"",
-                    "a locally declared component name", componentAttribute.value(), "component",
+                    NearestSuggestion.expected(definitions.keySet()),
+                    componentAttribute.value(), "component",
+                    NearestSuggestion.unique(componentAttribute.value(), definitions.keySet())
+                            .orElse(""),
                     invocation.componentTrace());
         }
 
@@ -367,12 +370,14 @@ final class ComponentCompiler {
             boolean parameter = definition.parameters().containsKey(attributeName);
             boolean override = isRootOverride(attributeName);
             if (!parameter && !override) {
+                Set<String> candidates = invocationNames(definition);
                 throw diagnostic(
                         MarkupException.Kind.UNKNOWN_PARAMETER,
                         entry.getValue().origin(), invocation.origin().elementPath(),
                         "unknown parameter or root override \"" + attributeName + "\"",
-                        "a declared parameter or common actor attribute", attributeName,
-                        attributeName, trace);
+                        NearestSuggestion.expected(candidates), attributeName,
+                        attributeName,
+                        NearestSuggestion.unique(attributeName, candidates).orElse(""), trace);
             }
             if (parameter) {
                 values.put(attributeName, entry.getValue().value());
@@ -408,11 +413,13 @@ final class ComponentCompiler {
                 overrides.put(name, entry.getValue());
             } else if (!"component".equals(name)
                     && !definition.parameters().containsKey(name)) {
+                Set<String> candidates = invocationNames(definition);
                 throw diagnostic(
                         MarkupException.Kind.UNKNOWN_PARAMETER,
                         entry.getValue().origin(), invocation.origin().elementPath(),
                         "unknown parameter or root override \"" + name + "\"",
-                        "a declared parameter or common actor attribute", name, name, trace);
+                        NearestSuggestion.expected(candidates), name, name,
+                        NearestSuggestion.unique(name, candidates).orElse(""), trace);
             }
         }
         return overrides;
@@ -454,8 +461,10 @@ final class ComponentCompiler {
                         MarkupException.Kind.UNKNOWN_SLOT,
                         fill.origin(), fill.origin().elementPath(),
                         "unknown slot \"" + displaySlot(name) + "\"",
-                        "a slot declared by component \"" + definition.name() + "\"",
-                        displaySlot(name), "slot", trace);
+                        NearestSuggestion.expected(definition.slots().keySet()),
+                        displaySlot(name), "slot",
+                        NearestSuggestion.unique(name, definition.slots().keySet()).orElse(""),
+                        trace);
             }
             if (fills.putIfAbsent(name, fill.children()) != null) {
                 throw diagnostic(
@@ -523,7 +532,10 @@ final class ComponentCompiler {
                     MarkupException.Kind.UNKNOWN_SLOT,
                     raw.origin(), raw.origin().elementPath(),
                     "unknown slot declaration \"" + displaySlot(name) + "\"",
-                    "a slot indexed by this component", displaySlot(name), "name", scope.trace());
+                    NearestSuggestion.expected(scope.definition().slots().keySet()),
+                    displaySlot(name), "name",
+                    NearestSuggestion.unique(name, scope.definition().slots().keySet()).orElse(""),
+                    scope.trace());
         }
         if (declared.required()) {
             throw diagnostic(
@@ -613,7 +625,8 @@ final class ComponentCompiler {
                         MarkupException.Kind.UNKNOWN_PARAMETER,
                         origin, origin.elementPath(),
                         "unknown parameter reference \"" + name + "\"",
-                        "a parameter declared by this component", name, name, List.of());
+                        NearestSuggestion.expected(parameters.keySet()), name, name,
+                        NearestSuggestion.unique(name, parameters.keySet()).orElse(""), List.of());
             }
         }
     }
@@ -643,8 +656,10 @@ final class ComponentCompiler {
                         MarkupException.Kind.UNKNOWN_PARAMETER,
                         origin, origin.elementPath(),
                         "unknown parameter reference \"" + matcher.group(1) + "\"",
-                        "a parameter declared by this component", matcher.group(1),
-                        matcher.group(1), trace);
+                        NearestSuggestion.expected(parameters.keySet()), matcher.group(1),
+                        matcher.group(1),
+                        NearestSuggestion.unique(matcher.group(1), parameters.keySet()).orElse(""),
+                        trace);
             }
             appendBounded(result, replacement, 0, replacement.length(), maxLength, origin, trace);
             position = matcher.end();
@@ -689,6 +704,13 @@ final class ComponentCompiler {
 
     private static boolean isRootOverride(String attribute) {
         return TagSpec.isCommonAttribute(attribute) || attribute.startsWith("data-");
+    }
+
+    private static Set<String> invocationNames(Definition definition) {
+        LinkedHashSet<String> names = new LinkedHashSet<>(definition.parameters().keySet());
+        names.addAll(TagSpec.commonAttributeNames());
+        names.add("data-*");
+        return names;
     }
 
     private static String attribute(RawElement raw, String name, String defaultValue) {
@@ -818,6 +840,20 @@ final class ComponentCompiler {
             String received,
             String attribute,
             List<ComponentTraceFrame> trace) {
+        return diagnostic(
+                kind, origin, path, message, expected, received, attribute, "", trace);
+    }
+
+    private static MarkupException diagnostic(
+            MarkupException.Kind kind,
+            MarkupSourceLocation origin,
+            String path,
+            String message,
+            String expected,
+            String received,
+            String attribute,
+            String suggestion,
+            List<ComponentTraceFrame> trace) {
         return new MarkupException(
                 kind,
                 path,
@@ -825,7 +861,7 @@ final class ComponentCompiler {
                 origin.column(),
                 message,
                 new MarkupDiagnosticContext(
-                        origin.source(), attribute, expected, received, "",
+                        origin.source(), attribute, expected, received, suggestion,
                         "document rejected before Scene2D build", trace));
     }
 

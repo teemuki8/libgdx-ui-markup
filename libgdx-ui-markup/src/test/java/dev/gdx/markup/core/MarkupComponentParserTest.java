@@ -432,7 +432,9 @@ final class MarkupComponentParserTest {
         }
         xml.append("</components><use component=\"C0\"/></ui>");
 
-        assertKind(MarkupException.Kind.TOO_LARGE, xml.toString());
+        MarkupException failure = assertFailure(xml.toString());
+        assertEquals(MarkupException.Kind.TOO_LARGE, failure.kind());
+        assertEquals(16, failure.componentTrace().size());
     }
 
     @Test
@@ -566,6 +568,132 @@ final class MarkupComponentParserTest {
         }
         work.append("</ui>");
         assertEquals(3_125, parser.parse(work.toString()).root().children().size());
+    }
+
+    @Test
+    void substitutedConcreteFailureCarriesTemplateOriginAndInvocationTrace() {
+        MarkupException failure = assertThrows(
+                MarkupException.class,
+                () -> parser.parse("""
+                        <ui><components><component name="HealthBar">
+                          <param name="current" required="true"/>
+                          <progressbar min="0" max="100" value="${current}"/>
+                        </component></components>
+                        <table><use component="HealthBar" current="fast"/></table></ui>
+                        """, "hud.xml"));
+
+        assertEquals(MarkupException.Kind.INVALID_VALUE, failure.kind());
+        assertEquals("ui/table/progressbar", failure.elementPath());
+        assertEquals("hud.xml", failure.source());
+        assertEquals("value", failure.attribute());
+        assertEquals("finite float", failure.expected());
+        assertEquals("fast", failure.received());
+        assertEquals("document rejected before Scene2D build", failure.consequence());
+        assertEquals(
+                List.of("HealthBar"),
+                failure.componentTrace().stream().map(ComponentTraceFrame::component).toList());
+        assertEquals(3, failure.line(), "the template attribute origin is reported");
+    }
+
+    @Test
+    void rootOverrideAndFallbackFailuresChooseTheirExactOrigins() {
+        MarkupException rootOverride = assertThrows(
+                MarkupException.class,
+                () -> parser.parse("""
+                        <ui><components><component name="Badge">
+                          <label text="Ready"/>
+                        </component></components>
+                        <use component="Badge" expand="diagonal"/>
+                        </ui>
+                        """, "screen.xml"));
+        assertEquals(4, rootOverride.line(), "root override originates at the invocation");
+        assertEquals(List.of("Badge"), rootOverride.componentTrace().stream()
+                .map(ComponentTraceFrame::component).toList());
+
+        MarkupException fallback = assertThrows(
+                MarkupException.class,
+                () -> parser.parse("""
+                        <ui><components><component name="Panel"><table>
+                          <slot><progressbar min="0" max="1" value="fast"/></slot>
+                        </table></component></components>
+                        <use component="Panel"/>
+                        </ui>
+                        """, "screen.xml"));
+        assertEquals(2, fallback.line(), "fallback failure originates in the template");
+        assertEquals("ui/table/progressbar", fallback.elementPath());
+        assertEquals(List.of("Panel"), fallback.componentTrace().stream()
+                .map(ComponentTraceFrame::component).toList());
+    }
+
+    @Test
+    void slotFillFailuresUseCallerOriginAndNestedTracesAreOutermostFirst() {
+        MarkupException unknownSlot = assertThrows(
+                MarkupException.class,
+                () -> parser.parse("""
+                        <ui><components><component name="Panel"><table>
+                          <slot name="footer"/>
+                        </table></component></components>
+                        <use component="Panel">
+                          <fill slot="foote"><label/></fill>
+                        </use></ui>
+                        """, "screen.xml"));
+        assertEquals(MarkupException.Kind.UNKNOWN_SLOT, unknownSlot.kind());
+        assertEquals(5, unknownSlot.line());
+        assertEquals("footer", unknownSlot.suggestion());
+
+        MarkupException nested = assertThrows(
+                MarkupException.class,
+                () -> parser.parse("""
+                        <ui><components>
+                          <component name="Inner"><progressbar min="0" max="1" value="bad"/></component>
+                          <component name="Outer"><use component="Inner"/></component>
+                        </components><use component="Outer"/></ui>
+                        """, "screen.xml"));
+        assertEquals(
+                List.of("Outer", "Inner"),
+                nested.componentTrace().stream().map(ComponentTraceFrame::component).toList());
+    }
+
+    @Test
+    void unknownComponentAndParameterOfferOnlyUniqueNearestNames() {
+        String definition = """
+                <components><component name="HealthBar">
+                  <param name="current" required="true"/>
+                  <label text="${current}"/>
+                </component></components>
+                """;
+        MarkupException component = assertFailure(
+                "<ui>" + definition + "<use component=\"HealthBr\" current=\"1\"/></ui>");
+        assertEquals("HealthBar", component.suggestion());
+
+        MarkupException parameter = assertFailure(
+                "<ui>" + definition
+                        + "<use component=\"HealthBar\" curent=\"1\"/></ui>");
+        assertEquals("current", parameter.suggestion());
+    }
+
+    @Test
+    void expandedProvenanceSeparatesTemplateOverridesAndCallerFills() {
+        MarkupDocument document = parser.parse("""
+                <ui><components><component name="Panel">
+                  <table class="panel"><slot/></table>
+                </component></components>
+                <use component="Panel" id="inventory">
+                  <fill><label id="item" text="Potion"/></fill>
+                </use></ui>
+                """, "screen.xml");
+
+        ElementProvenance panel = document.provenanceFor("ui/table");
+        assertEquals(2, panel.origin().line());
+        assertEquals(4, panel.locationFor("id").line());
+        assertEquals(List.of("Panel"), panel.componentTrace().stream()
+                .map(ComponentTraceFrame::component).toList());
+
+        ElementProvenance item = document.provenanceFor("ui/table/label");
+        assertEquals(5, item.origin().line());
+        assertEquals(5, item.locationFor("id").line());
+        assertEquals(List.of("Panel"), item.componentTrace().stream()
+                .map(ComponentTraceFrame::component).toList());
     }
 
     private void assertKind(MarkupException.Kind kind, String xml) {

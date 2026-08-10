@@ -126,6 +126,27 @@ public final class TagSpec {
         return COMMON_KINDS.containsKey(attribute);
     }
 
+    static Set<String> commonAttributeNames() {
+        return COMMON;
+    }
+
+    /** Returns the stable expected-value phrase for structured diagnostics. */
+    static String expected(ValueKind kind) {
+        return switch (kind) {
+            case BOOLEAN -> "true or false";
+            case BOOLEAN_OR_AXIS -> "true, false, x, or y";
+            case ALIGN -> "space-separated top, bottom, left, right, or center tokens";
+            case POSITIVE_INT -> "positive integer";
+            case NON_NEGATIVE_FLOAT -> "non-negative finite float";
+            case PAD -> "one or four comma-separated non-negative finite floats";
+            case FLOAT -> "finite float";
+            case ITEMS -> "non-blank comma-separated items";
+            case TEXT -> "non-blank text";
+            case FONT_SIZE -> "integer from " + MIN_FONT_SIZE + " through " + MAX_FONT_SIZE;
+            case DATA_PREFIX -> "valid data-* suffix";
+        };
+    }
+
     /** Validates one attribute value against its grammar; returns the failure or {@code null}. */
     public static String validate(ValueKind kind, String value) {
         Objects.requireNonNull(value, "value");

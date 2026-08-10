@@ -33,6 +33,7 @@ final class ConcreteElementCompiler {
         if (!"ui".equals(root.tag()) && !"table".equals(root.tag())) {
             throw failure(
                     MarkupException.Kind.INVALID_VALUE,
+                    rawRoot,
                     rawRoot.origin(),
                     root.tag(),
                     "root element must be <ui> or <table>, got <" + root.tag() + ">",
@@ -48,18 +49,14 @@ final class ConcreteElementCompiler {
             if (++elements > maxElements) {
                 throw failure(
                         MarkupException.Kind.TOO_LARGE,
+                        raw,
                         raw.origin(),
                         path,
                         "document exceeds the " + maxElements + "-element limit",
                         "at most " + maxElements + " concrete elements",
                         Integer.toString(elements));
             }
-            TagSpec spec = TagSpec.require(
-                    raw.tag(),
-                    extraTags,
-                    path,
-                    raw.origin().line(),
-                    raw.origin().column());
+            TagSpec spec = requireTag(raw, path);
             LinkedHashMap<String, String> attrs = validateAttributes(raw, spec, path);
             requireAttributes(raw, spec, attrs, path);
             rejectDuplicateId(raw, attrs.get("id"), path);
@@ -71,6 +68,7 @@ final class ConcreteElementCompiler {
             if (!raw.text().isEmpty() && !children.isEmpty()) {
                 throw failure(
                         MarkupException.Kind.INVALID_VALUE,
+                        raw,
                         raw.origin(),
                         path,
                         "mixed text content is not supported in <" + raw.tag() + ">",
@@ -86,6 +84,29 @@ final class ConcreteElementCompiler {
         }
     }
 
+    private TagSpec requireTag(RawElement raw, String path) {
+        try {
+            return TagSpec.require(
+                    raw.tag(), extraTags, path, raw.origin().line(), raw.origin().column());
+        } catch (MarkupException failure) {
+            if (failure.kind() != MarkupException.Kind.UNKNOWN_TAG) {
+                throw failure;
+            }
+            List<String> candidates = new ArrayList<>(TagSpec.tagNames());
+            candidates.addAll(extraTags);
+            throw failure(
+                    MarkupException.Kind.UNKNOWN_TAG,
+                    raw,
+                    raw.origin(),
+                    path,
+                    failure.getMessage(),
+                    NearestSuggestion.expected(candidates),
+                    raw.tag(),
+                    "",
+                    NearestSuggestion.unique(raw.tag(), candidates).orElse(""));
+        }
+    }
+
     private LinkedHashMap<String, String> validateAttributes(
             RawElement raw, TagSpec spec, String path) {
         LinkedHashMap<String, String> attrs = new LinkedHashMap<>();
@@ -95,22 +116,25 @@ final class ConcreteElementCompiler {
             if (!spec.allows(name)) {
                 throw failure(
                         MarkupException.Kind.UNKNOWN_ATTRIBUTE,
+                        raw,
                         attribute.origin(),
                         path,
                         "unknown attribute \"" + name + "\" on <" + raw.tag() + ">",
-                        "an attribute supported by <" + raw.tag() + ">",
+                        NearestSuggestion.expected(spec.attributes().keySet()),
                         name,
-                        name);
+                        name,
+                        NearestSuggestion.unique(name, spec.attributes().keySet()).orElse(""));
             }
             TagSpec.ValueKind kind = spec.attributes().get(name);
             String validation = kind == null ? null : TagSpec.validate(kind, attribute.value());
             if (validation != null) {
                 throw failure(
                         MarkupException.Kind.INVALID_VALUE,
+                        raw,
                         attribute.origin(),
                         path,
                         "invalid value for \"" + name + "\": " + validation,
-                        kind.name().toLowerCase(Locale.ROOT),
+                        TagSpec.expected(kind),
                         attribute.value(),
                         name);
             }
@@ -125,6 +149,7 @@ final class ConcreteElementCompiler {
             if (!attrs.containsKey(required)) {
                 throw failure(
                         MarkupException.Kind.MISSING_ATTRIBUTE,
+                        raw,
                         raw.origin(),
                         path,
                         "<" + raw.tag() + "> requires attribute \"" + required + "\"",
@@ -139,6 +164,7 @@ final class ConcreteElementCompiler {
         if (id != null && !ids.add(id)) {
             throw failure(
                     MarkupException.Kind.DUPLICATE_ID,
+                    raw,
                     raw.attrs().get("id").origin(),
                     path,
                     "duplicate id \"" + id + "\"",
@@ -188,22 +214,37 @@ final class ConcreteElementCompiler {
 
     private static MarkupException failure(
             MarkupException.Kind kind,
+            RawElement raw,
             MarkupSourceLocation location,
             String path,
             String message,
             String expected,
             String received) {
-        return failure(kind, location, path, message, expected, received, "");
+        return failure(kind, raw, location, path, message, expected, received, "", "");
     }
 
     private static MarkupException failure(
             MarkupException.Kind kind,
+            RawElement raw,
             MarkupSourceLocation location,
             String path,
             String message,
             String expected,
             String received,
             String attribute) {
+        return failure(kind, raw, location, path, message, expected, received, attribute, "");
+    }
+
+    private static MarkupException failure(
+            MarkupException.Kind kind,
+            RawElement raw,
+            MarkupSourceLocation location,
+            String path,
+            String message,
+            String expected,
+            String received,
+            String attribute,
+            String suggestion) {
         return new MarkupException(
                 kind,
                 path,
@@ -215,8 +256,8 @@ final class ConcreteElementCompiler {
                         attribute,
                         expected,
                         received,
-                        "",
+                        suggestion,
                         "document rejected before Scene2D build",
-                        List.of()));
+                        raw.componentTrace()));
     }
 }

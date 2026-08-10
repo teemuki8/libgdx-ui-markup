@@ -175,6 +175,35 @@ final class MarkupParserTest {
     }
 
     @Test
+    void concreteFailureAddsStructuredSourceWithoutChangingLegacyCoordinates() {
+        MarkupException failure = assertThrows(
+                MarkupException.class,
+                () -> parser.parse("<ui><button disabled=\"maybe\"/></ui>", "screen.xml"));
+
+        assertEquals(MarkupException.Kind.INVALID_VALUE, failure.kind());
+        assertEquals("ui/button", failure.elementPath());
+        assertEquals(1, failure.line());
+        assertTrue(failure.column() > 0);
+        assertEquals("screen.xml", failure.source());
+        assertEquals("disabled", failure.attribute());
+        assertEquals("true or false", failure.expected());
+        assertEquals("maybe", failure.received());
+        assertTrue(failure.componentTrace().isEmpty());
+    }
+
+    @Test
+    void unknownConcreteTagRetainsCallerSource() {
+        MarkupException failure = assertThrows(
+                MarkupException.class,
+                () -> parser.parse("<ui><bogus/></ui>", "screen.xml"));
+
+        assertEquals(MarkupException.Kind.UNKNOWN_TAG, failure.kind());
+        assertEquals("ui/bogus", failure.elementPath());
+        assertEquals("screen.xml", failure.source());
+        assertEquals("bogus", failure.received());
+    }
+
+    @Test
     void invalidAlignTokenFails() {
         MarkupException failure = assertThrows(MarkupException.class, () -> parser.parse(
                 "<ui><button align=\"diagonal\"/></ui>"));

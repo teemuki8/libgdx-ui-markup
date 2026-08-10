@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 final class MarkupDiagnosticTest {
@@ -144,5 +145,24 @@ final class MarkupDiagnosticTest {
                 new MarkupDiagnosticContext(null, null, null, null, null, null, List.of());
         assertEquals("", normalized.source());
         assertEquals("", normalized.attribute());
+    }
+
+    @Test
+    void uniqueNearestSuggestionUsesSpecifiedThresholdAndTieRule() {
+        assertEquals(
+                Optional.of("HealthBar"),
+                NearestSuggestion.unique("HealthBr", List.of("HealthBar", "ManaBar")));
+        assertEquals(
+                Optional.empty(),
+                NearestSuggestion.unique("Cat", List.of("Bat", "Hat")));
+        assertEquals(
+                Optional.empty(),
+                NearestSuggestion.unique("unrelated", List.of("HealthBar")));
+        assertEquals("one of [Alpha, Beta]", NearestSuggestion.expected(List.of("Beta", "Alpha")));
+        assertTrue(NearestSuggestion.expected(
+                        java.util.stream.IntStream.range(0, 256)
+                                .mapToObj(index -> "N" + index + "x".repeat(60))
+                                .toList())
+                .length() <= 4096);
     }
 }
