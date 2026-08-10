@@ -160,9 +160,8 @@ final class ComponentCompiler {
             validateDefinitionCycles(definition.name(), states, new ArrayList<>());
         }
         for (Definition definition : definitions.values()) {
-            if (!reachable.contains(definition.name())
-                    && !hasDynamicComponentTarget(definition.templateRoot())) {
-                validateUnusedExpansion(definition);
+            if (!hasDynamicComponentTarget(definition.templateRoot())) {
+                validateDefaultExpansion(definition);
             }
         }
     }
@@ -392,7 +391,7 @@ final class ComponentCompiler {
         states.put(name, 2);
     }
 
-    private void validateUnusedExpansion(Definition definition) {
+    private void validateDefaultExpansion(Definition definition) {
         LinkedHashMap<String, RawAttribute> attrs = new LinkedHashMap<>();
         attrs.put("component", new RawAttribute(definition.name(), definition.origin()));
         for (Parameter parameter : definition.parameters().values()) {

@@ -185,6 +185,28 @@ final class MarkupComponentParserTest {
     }
 
     @Test
+    void unselectedFallbackExpansionStillUsesTheRealDepth() {
+        StringBuilder xml = new StringBuilder("<ui><components>");
+        for (int index = 0; index < 17; index++) {
+            xml.append("<component name=\"W").append(index)
+                    .append("\"><table><slot/></table></component>");
+        }
+        xml.append("<component name=\"Panel\"><table><slot>");
+        for (int index = 0; index < 17; index++) {
+            xml.append("<use component=\"W").append(index).append("\"><fill>");
+        }
+        xml.append("<label text=\"Fallback\"/>");
+        for (int index = 0; index < 17; index++) {
+            xml.append("</fill></use>");
+        }
+        xml.append("</slot></table></component></components>")
+                .append("<use component=\"Panel\"><fill><label text=\"Selected\"/></fill></use>")
+                .append("</ui>");
+
+        assertKind(MarkupException.Kind.TOO_LARGE, xml.toString());
+    }
+
+    @Test
     void componentNamesAreRequiredPascalCaseAndUnique() {
         assertKind(
                 MarkupException.Kind.MISSING_ATTRIBUTE,
