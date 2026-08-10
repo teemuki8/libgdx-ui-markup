@@ -113,7 +113,7 @@ public record MarkupStatus(
         }
     }
 
-    /** Compatibility constructor for the schema-v2-shaped Java call site. */
+    /** Compatibility constructor for the legacy-shaped Java call site. */
     public MarkupStatus(
             int schemaVersion,
             boolean ok,

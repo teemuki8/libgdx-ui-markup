@@ -14,6 +14,7 @@ libgdx-ui-harness 1.2.0, and libgdx-agent-runtime 2.0.0 on Java 25.
 |---|---|
 | See an XML/CSS change and get a bounded screenshot | [Preview a document](#1-preview-a-document) |
 | Validate untrusted markup without a GL context | [Parse without GL](#2-parse-without-gl) |
+| Reuse a bounded local UI structure | [Define reusable components](#2a-define-reusable-components) |
 | Add the UI to an application-owned Stage | [Build on the render thread](#3-build-on-the-render-thread) |
 | Make a Table UI follow its parent or viewport | [Use responsive GDXCSS layout](#3a-use-responsive-gdxcss-layout) |
 | Style paint, text, images, input, or Actor transforms | [Use bounded Scene2D styling](#3b-use-bounded-scene2d-styling) |
@@ -31,6 +32,8 @@ libgdx-ui-harness 1.2.0, and libgdx-agent-runtime 2.0.0 on Java 25.
 - Call `MarkupBuilder.build(...)` only on the render thread.
 - Treat unknown tags, attributes, CSS properties, and selectors as typed failures. Do not add a
   permissive fallback around the bounded dialect.
+- Treat components as GL-free, document-local syntax that must disappear before the public
+  concrete model. Do not expose template constructs to actors, semantics, or runtime state.
 - Use markup-declared `id`/`name`/`label` semantics and strict locator resolution. A zero-match
   failure and a multiple-match failure are different defects and must remain distinct.
 - Use authoritative runtime values when the assertion is meant to validate displayed domain
@@ -56,9 +59,16 @@ xvfb-run -a ./gradlew :libgdx-ui-markup-preview:run \
   --args='--ui samples/signin.xml --css samples/signin.gdxcss --frames 5 --screenshot build/signin.png --exit'
 ```
 
-A successful run emits a schema-versioned `markup-status` JSON line and exits 0. A markup or CSS
-failure emits a typed status with `kind`, `elementPath`, `line`, `column`, and `message`, and
-`--exit` exits 2. CLI usage errors exit 1 before creating a GL context.
+A successful run emits schema-v3 `markup-status` with only `schemaVersion`, `ok`, and the final
+concrete `nodes` count, then exits 0. A markup or CSS failure emits `kind`, `source`,
+`elementPath`, `line`, `column`, `attribute`, `expected`, `received`, `suggestion`,
+`consequence`, `componentTrace`, and `message`; `--exit` exits 2. Every string is bounded to
+2,000 UTF-16 units and the trace to 16 frames/16,384 aggregate UTF-16 units. CLI usage errors
+exit 1 before creating a GL context.
+
+Reload is transactional. A failed component expansion or concrete build leaves the last-good
+actor tree, Skin, runtime registration, and harness session live. A later valid edit commits one
+fully prepared fresh candidate; no partially expanded tree becomes visible.
 
 Reference: [`CliOptions`](../../libgdx-ui-markup-preview/src/main/java/dev/gdx/markup/preview/CliOptions.java),
 [`MarkupStatus`](../../libgdx-ui-markup-preview/src/main/java/dev/gdx/markup/preview/MarkupStatus.java),
@@ -86,9 +96,12 @@ CssDocument css = new CssParser().parse(Path.of("ui/menu.gdxcss"));
 Do not create a `Skin`, actor, Stage, backend, or libGDX collection in the parse phase. Pass the
 immutable `MarkupDocument` and `CssDocument` to the render thread when it is time to build.
 
-Unknown tags and attributes, malformed XML, invalid values, oversized input, unknown CSS
-properties, and unparseable selectors fail as `MarkupException` with a stable `Kind` and source
-location. Do not catch that exception and retry with relaxed parsing.
+Component definitions are indexed and expanded between the bounded SAX read and ordinary
+concrete validation. `document.root()` is therefore still an immutable concrete `Element` tree;
+`document.provenance()` maps its final paths to source locations and bounded component invocation
+traces. Unknown tags and attributes, malformed XML, invalid values, oversized input, unknown CSS
+properties, and unparseable selectors fail as `MarkupException` with a stable `Kind` and
+structured source context. Do not catch that exception and retry with relaxed parsing.
 
 Narrow verification:
 
@@ -99,6 +112,107 @@ Narrow verification:
 Reference: [`MarkupParser`](../../libgdx-ui-markup/src/main/java/dev/gdx/markup/core/MarkupParser.java),
 [`CssParser`](../../libgdx-ui-markup/src/main/java/dev/gdx/markup/core/style/CssParser.java), and
 [`MarkupException`](../../libgdx-ui-markup/src/main/java/dev/gdx/markup/core/MarkupException.java).
+
+## 2a. Define reusable components
+
+Use document-local components for repeated declarative actor structure. The optional
+`<components>` block must be the first child of `<ui>`. Each definition has exactly one actor
+root (or nested `<use>`), and each invocation remains explicit:
+
+```xml
+<ui>
+  <components>
+    <component name="Card">
+      <param name="id" required="true"/>
+      <param name="title" default="Untitled"/>
+      <table class="card" id="${id}">
+        <label id="${id}-title" text="${title}"/>
+        <row/>
+        <slot required="true"/>
+        <row/>
+        <table class="footer"><slot name="footer">
+          <label text="No actions"/>
+        </slot></table>
+      </table>
+    </component>
+  </components>
+
+  <use component="Card" id="inventory" title="Inventory"
+       class="wide" data-screen="inventory">
+    <fill><label id="inventory-count" text="3 items"/></fill>
+    <fill slot="footer"><button id="close" text="Close"/></fill>
+  </use>
+</ui>
+```
+
+Parameter names and named slots match `[a-z][a-z0-9-]{0,63}`; component names match
+`[A-Z][A-Za-z0-9]{0,63}`. A parameter can be required, have a literal default, or resolve to an
+empty string. `${name}` substitution is lexical and textual. It runs in the template and fallback
+content, while caller fill content retains its caller scope. Required slots cannot have fallback;
+an optional omitted slot expands its fallback children or nothing.
+
+Attributes on `<use>` are declared parameters, common actor root overrides, or `data-*` root
+overrides. A name that is both a parameter and common override supplies both. `class` merges
+caller tokens after template tokens and de-duplicates them; every other override replaces the
+template-root value and then undergoes normal concrete-tag validation. Scope styles through the
+template root's stable class:
+
+```css
+.card { padding: 16px; }
+.card .footer { margin-top: 8px; }
+.card.wide { width: 100%; }
+```
+
+Components are transparent to layout, CSS, semantics, harness queries, and runtime correlation.
+They can carry an opaque runtime expression such as `{player.health}` only through an attribute
+whose grammar allows it. Substituting that text into today's numeric-only `progressbar value`
+still fails `INVALID_VALUE`; component interpolation is not runtime evaluation.
+
+The exact component limits are:
+
+| Resource | Limit |
+|---|---:|
+| definitions per document | 256 |
+| parameters per component | 64 |
+| slots per component | 32 |
+| substitutions per attribute/text value | 32 |
+| nested invocation depth | 16 |
+| final concrete elements | 10,000 |
+| expansion visits | 100,000 |
+| diagnostic invocation-trace frames | 16 |
+
+These sit on top of the existing 1,048,576-byte UTF-8 input, 10,000 raw-element, depth-64,
+4,096-character attribute, and 4,096-character text limits. Component files cannot import URLs,
+filesystem paths, packages, or other documents. Dynamic element names, discovery, loops,
+conditionals, arithmetic, scripts, reflection, arbitrary Java calls, multiple-root fragments,
+implicit ID namespaces, and runtime/gameplay-state ownership are intentional non-goals.
+
+A schema-v3 failure is actionable without parsing prose:
+
+```text
+markup-status: {"schemaVersion":3,"ok":false,"kind":"UNKNOWN_COMPONENT","source":"/app/ui.xml","elementPath":"ui/use","line":18,"column":31,"attribute":"component","expected":"Card","received":"Crd","suggestion":"Card","consequence":"document rejected before Scene2D build","componentTrace":[],"message":"unknown component \"Crd\"","nodes":0}
+```
+
+Use the committed component-backed sign-in fixture as the executable parse/build/harness recipe:
+
+```java
+MarkupDocument document = new MarkupParser().parse(Path.of("samples/signin.xml"));
+CssDocument css = new CssParser().parse(Path.of("samples/signin.gdxcss"));
+// Pass both immutable values to the render thread, then use recipe 3.
+```
+
+```bash
+./gradlew :libgdx-ui-markup:test --tests '*MarkupParserTest' --warning-mode=fail
+xvfb-run -a ./gradlew :libgdx-ui-markup:test --tests '*MarkupBuilderTest' --warning-mode=fail
+xvfb-run -a ./gradlew :libgdx-ui-markup-harness:test \
+  --tests '*MarkupHarnessEndToEndTest.markupDeclaredUiIsDrivableThroughTheHarnessMcp' \
+  --warning-mode=fail
+```
+
+Reference: the executable [`signin.xml`](../../samples/signin.xml) /
+[`signin.gdxcss`](../../samples/signin.gdxcss),
+[`ComponentCompiler`](../../libgdx-ui-markup/src/main/java/dev/gdx/markup/core/ComponentCompiler.java),
+and [`MarkupParserTest`](../../libgdx-ui-markup/src/test/java/dev/gdx/markup/core/MarkupParserTest.java).
 
 ## 3. Build on the render thread
 
@@ -115,9 +229,10 @@ built.root().setSize(
 stage.addActor(built.root());
 ```
 
-The application owns `skin` and must dispose it on the render thread. Size the root to the
-viewport: harness actionability checks parent intersection, so a zero-sized root makes children
-non-actionable even if they draw.
+The builder receives only the expanded concrete tree; component definitions and invocations do
+not create actors or hidden layout nodes. The application owns `skin` and must dispose it on the
+render thread. Size the root to the viewport: harness actionability checks parent intersection,
+so a zero-sized root makes children non-actionable even if they draw.
 
 For a reload, build a complete candidate actor tree and Skin before replacing the live tree.
 Only after the Stage swap succeeds should the application remove the old root and dispose the old
@@ -345,7 +460,8 @@ Prefer the narrowest stable locator, usually the declared test id. Use the harne
 contract is absent; multiple matches means it is ambiguous. Do not convert either result into
 “pick the first actor.”
 
-The executable proof queries `role=button, name=Save`, asserts exactly one `testId=save`, clicks,
+The executable proof uses the component-backed `samples/signin.xml`, queries
+`role=button, name=Save`, asserts exactly one `testId=save`, clicks,
 waits, fills a text field, compares runtime state, and captures a screenshot through the real MCP
 protocol.
 
@@ -362,7 +478,9 @@ and [`MarkupHarnessEndToEndTest`](../../libgdx-ui-markup-harness/src/test/java/d
 
 ## 5. Choose runtime value authority
 
-First declare the correlation in markup. `data-runtime-property` defaults to `value`:
+First declare the correlation in markup. A component may interpolate or carry this `data-*`
+attribute, but expansion does not read or own its value. `data-runtime-property` defaults to
+`value`:
 
 ```xml
 <textfield id="username" name="Username" data-runtime-entity="user"/>
@@ -452,10 +570,11 @@ Use this bounded sequence:
 4. Call `ui_runtime_compare` when the element declares `data-runtime-entity`.
 5. Capture a bounded in-memory screenshot.
 
-The repository intentionally does not ship a shell MCP client. Copy the protocol request shapes
-from `MarkupMcpClient`, and use the end-to-end test as the executable orchestration example. The
-preview advertises `snapshot`, `query`, `action`, `wait`, `screenshot`, and
-`ui_runtime_compare` capabilities.
+The committed sign-in fixture expands to exactly 10 concrete actors; definitions and template
+syntax are absent from query results and node counts. The repository intentionally does not ship
+a shell MCP client. Copy the protocol request shapes from `MarkupMcpClient`, and use the
+end-to-end test as the executable orchestration example. The preview advertises `snapshot`,
+`query`, `action`, `wait`, `screenshot`, and `ui_runtime_compare` capabilities.
 
 Narrow verification:
 
@@ -520,12 +639,16 @@ to a bare exception message.
 |---|---|
 | `MALFORMED_XML` | Inspect the reported line/column; confirm the input is strict UTF-8 and contains no DOCTYPE or external entity. |
 | `UNKNOWN_TAG` / `UNKNOWN_ATTRIBUTE` | Compare the source with `TagSpec`; for a custom tag, verify both the parser allow-list and registry. |
+| `DUPLICATE_COMPONENT` / `UNKNOWN_COMPONENT` | Fix the document-local definition/name; use the schema-v3 suggestion only when present. |
+| `MISSING_PARAMETER` / `UNKNOWN_PARAMETER` | Compare the `<use>` attributes with declared parameters and permitted root overrides. |
+| `DUPLICATE_SLOT` / `UNKNOWN_SLOT` / `MISSING_SLOT` | Match each direct `<fill>` to one declared default or named slot and satisfy required slots. |
+| `COMPONENT_CYCLE` | Follow `componentTrace` and remove the direct or indirect recursive invocation. |
 | `DUPLICATE_ID` / `MISSING_ATTRIBUTE` / `INVALID_VALUE` | Fix the exact element path; do not add inference or a default that weakens the dialect. |
 | `TOO_LARGE` | Reduce the bounded input/tree or explicitly review the trust-boundary limit; do not retry unbounded. |
 | `STYLE_ERROR` | Check the selector and property whitelist; there is no CSS layout engine or selector combinator support. |
 | `UNRESOLVED_STYLE` | Check the requested Skin style, drawable, color, or font at the reported element. |
 | Preview exit 1 | Fix CLI usage; `--ui` and `--css` are required. |
-| Preview exit 2 | Parse the emitted `markup-status` record and fix its typed diagnostic. |
+| Preview exit 2 | Parse schema-v3 `markup-status`; use source, expected/received, suggestion, consequence, and component trace. The last-good scene remains live during reload. |
 | Runtime `MISSING` | Verify `data-runtime-entity`, the `HarnessSemanticSink`, and the UI binding. |
 | Runtime `UNAVAILABLE` | Verify the runtime is started and the sink correlation token exactly matches the latest recorded `UiFrameCorrelation`. |
 | Runtime `STALE` | Drain scheduled comparisons before advancing the deterministic clock; compare against the last correlated frame. |

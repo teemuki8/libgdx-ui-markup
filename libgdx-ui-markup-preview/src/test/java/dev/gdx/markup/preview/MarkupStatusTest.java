@@ -15,7 +15,7 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
- * Schema v2 contract for the bounded {@code markup-status} line: versioned, typed fields,
+ * Schema v3 contract for the bounded {@code markup-status} line: versioned, typed fields,
  * JSON-escape-safe strings, and raw messages that never duplicate the element path or source
  * coordinates already carried in their own fields.
  */

@@ -98,9 +98,9 @@ final class PreviewProcess implements AutoCloseable {
     /** Asserts the preview printed a successful status line on stderr. */
     void awaitOkStatus(Duration timeout) throws Exception {
         String tail = stderrTail.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
-        assertTrue(tail.contains("markup-status: {\"nodes\":10,\"ok\":true}") || tail.contains(
-                        "\"ok\":true"),
-                "stderr carries a successful markup-status, got: " + tail);
+        assertTrue(tail.contains(
+                        "markup-status: {\"schemaVersion\":3,\"ok\":true,\"nodes\":10}"),
+                "stderr proves exactly 10 expanded concrete actors, got: " + tail);
     }
 
     void awaitCleanExit() throws Exception {
