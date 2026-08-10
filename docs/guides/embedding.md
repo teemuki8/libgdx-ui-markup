@@ -14,15 +14,15 @@ records the design decision behind the correlation contract.
 
 ## Dependencies
 
-All coordinates are published artifacts. The current tested stack is markup 0.4.1, harness 1.2.0,
+All coordinates are published artifacts. The current tested stack is markup 0.5.0, harness 1.2.0,
 and agent-runtime 2.0.0; the independently executed minimum compatibility profile uses harness
 1.1.0 and agent-runtime 1.0.0.
 
 | Coordinate | Version | Provides |
 |---|---|---|
-| `io.github.teemuki8:libgdx-ui-markup` | 0.4.1 | `MarkupBuilder`, parser, CSS engine, `DefaultSkin`, exact-size FreeType manager |
-| `io.github.teemuki8:libgdx-ui-markup-harness` | 0.4.1 | `HarnessSemanticSink` |
-| `io.github.teemuki8:libgdx-ui-markup-runtime` | 0.4.1 | `MarkupRuntimeSource` |
+| `io.github.teemuki8:libgdx-ui-markup` | 0.5.0 | `MarkupBuilder`, parser, CSS engine, `DefaultSkin`, exact-size FreeType manager |
+| `io.github.teemuki8:libgdx-ui-markup-harness` | 0.5.0 | `HarnessSemanticSink` |
+| `io.github.teemuki8:libgdx-ui-markup-runtime` | 0.5.0 | `MarkupRuntimeSource` |
 | `io.github.teemuki8:harness-core` / `harness-scene2d` / `harness-lwjgl3` | 1.2.0 | `RuntimeComparator`, `Scene2dSession`, `RenderThreadScheduler`, `ControlledStageClock`, capture |
 | `io.github.teemuki8:harness-agent-runtime` | 1.2.0 | `AgentRuntimeObservationSource` |
 | `io.github.teemuki8:harness-protocol` / `harness-mcp` | 1.2.0 | `HarnessProtocolService`, `HarnessMcpServer` (only if you serve MCP) |
