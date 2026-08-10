@@ -121,6 +121,11 @@ public final class TagSpec {
                         attribute.substring("data-".length())).matches());
     }
 
+    /** Returns whether an invocation may apply this common attribute to its expanded root. */
+    static boolean isCommonAttribute(String attribute) {
+        return COMMON_KINDS.containsKey(attribute);
+    }
+
     /** Validates one attribute value against its grammar; returns the failure or {@code null}. */
     public static String validate(ValueKind kind, String value) {
         Objects.requireNonNull(value, "value");

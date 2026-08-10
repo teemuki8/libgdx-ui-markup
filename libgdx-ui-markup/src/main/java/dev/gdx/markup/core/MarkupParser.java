@@ -45,6 +45,18 @@ public final class MarkupParser {
     public static final int MAX_ATTRIBUTE_VALUE = 4_096;
     /** Maximum text content length in characters. */
     public static final int MAX_TEXT = 4_096;
+    /** Maximum document-local component definitions. */
+    public static final int MAX_COMPONENTS = 256;
+    /** Maximum parameters declared by one component. */
+    public static final int MAX_COMPONENT_PARAMETERS = 64;
+    /** Maximum slots declared by one component. */
+    public static final int MAX_COMPONENT_SLOTS = 32;
+    /** Maximum parameter substitutions in one attribute or text value. */
+    public static final int MAX_SUBSTITUTIONS_PER_VALUE = 32;
+    /** Maximum nested component invocation depth. */
+    public static final int MAX_COMPONENT_EXPANSION_DEPTH = 16;
+    /** Maximum total nodes visited during component expansion. */
+    public static final int MAX_EXPANSION_WORK = 100_000;
 
     private final int maxInputBytes;
     private final int maxElements;
@@ -134,8 +146,10 @@ public final class MarkupParser {
     /** Shared parse body for in-bounds UTF-8 markup, whether from a String or a file. */
     private MarkupDocument parseUtf8(int byteLength, String xml, String source) {
         RawElement raw = readRaw(xml, source);
+        RawElement expanded =
+                new ComponentCompiler(maxElements, maxAttributeValue, maxText).expand(raw);
         return new ConcreteElementCompiler(extraTags, maxElements)
-                .compile(raw, byteLength, source);
+                .compile(expanded, byteLength, source);
     }
 
     /** Reads bounded raw XML without applying the concrete markup dialect. */
