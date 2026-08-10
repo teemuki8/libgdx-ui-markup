@@ -66,7 +66,7 @@ class PreviewProcessOwnerTest {
         try {
             supervisor.replace(listOf("preview"))
             assertTrue(launcher.firstLaunch.await(5, TimeUnit.SECONDS), "first launch")
-            repeat(200) { fake.writeStdout("markup-status: {\"schemaVersion\":2,\"ok\":true,\"nodes\":$it}\n") }
+            repeat(200) { fake.writeStdout("markup-status: {\"schemaVersion\":3,\"ok\":true,\"nodes\":$it}\n") }
             repeat(150) { fake.writeStdout("[LWJGL] noise $it\n") }
             repeat(120) { fake.writeStderr("stderr line $it\n") }
             // Every written line must be consumed by the drains before the child is killed.
@@ -109,7 +109,7 @@ class PreviewProcessOwnerTest {
         try {
             supervisor.replace(listOf("first"))
             assertTrue(launcher.firstLaunch.await(5, TimeUnit.SECONDS))
-            fake.writeStdout("markup-status: {\"schemaVersion\":2,\"ok\":true,\"nodes\":1}\n")
+            fake.writeStdout("markup-status: {\"schemaVersion\":3,\"ok\":true,\"nodes\":1}\n")
             fake.selfExit()
             assertTrue(exitLatch.await(5, TimeUnit.SECONDS), "self exit must be observed")
             assertEquals(listOf(ExitCause.SELF), exits)
@@ -120,7 +120,7 @@ class PreviewProcessOwnerTest {
             assertTrue(launcher.allLaunched.await(5, TimeUnit.SECONDS))
             assertEquals(0, fake.destroyCalls.get(), "dead child is never re-terminated")
             launcher.launched[1].writeStdout(
-                "markup-status: {\"schemaVersion\":2,\"ok\":true,\"nodes\":7}\n")
+                "markup-status: {\"schemaVersion\":3,\"ok\":true,\"nodes\":7}\n")
             assertTrue(secondStatus.await(5, TimeUnit.SECONDS), "new child must forward status")
             disposeAndAssertNoThreads(supervisor, executor)
         } finally {
@@ -154,7 +154,7 @@ class PreviewProcessOwnerTest {
         try {
             supervisor.replace(listOf("first"))
             assertTrue(launcher.firstLaunch.await(5, TimeUnit.SECONDS))
-            fake1.writeStdout("markup-status: {\"schemaVersion\":2,\"ok\":true,\"nodes\":1}\n")
+            fake1.writeStdout("markup-status: {\"schemaVersion\":3,\"ok\":true,\"nodes\":1}\n")
             supervisor.replace(listOf("second"))
             assertTrue(launcher.allLaunched.await(5, TimeUnit.SECONDS), "second launch after kill")
             assertEquals(listOf("destroy", "destroyForcibly"), calls,
@@ -162,7 +162,7 @@ class PreviewProcessOwnerTest {
             assertEquals(1, fake1.forceKillCalls.get())
             assertTrue(exitLatch.await(5, TimeUnit.SECONDS), "replaced child exit observed")
             assertTrue(exits.contains(ExitCause.TERMINATED), "replaced child exits as terminated")
-            fake2.writeStdout("markup-status: {\"schemaVersion\":2,\"ok\":true,\"nodes\":3}\n")
+            fake2.writeStdout("markup-status: {\"schemaVersion\":3,\"ok\":true,\"nodes\":3}\n")
             assertTrue(secondStatus.await(5, TimeUnit.SECONDS), "new child must forward status")
             disposeAndAssertNoThreads(supervisor, executor)
         } finally {
@@ -304,7 +304,7 @@ class PreviewProcessOwnerTest {
         try {
             supervisor.replace(listOf("preview"))
             assertTrue(launcher.firstLaunch.await(5, TimeUnit.SECONDS))
-            fake.writeStdout("markup-status: {\"schemaVersion\":2,\"ok\":true,\"nodes\":4}\n")
+            fake.writeStdout("markup-status: {\"schemaVersion\":3,\"ok\":true,\"nodes\":4}\n")
             assertTrue(statusLatch.await(5, TimeUnit.SECONDS), "child must be demonstrably live")
             supervisor.dispose()
             assertTrue(exitLatch.await(5, TimeUnit.SECONDS), "exit must fire on disposal")
@@ -350,13 +350,13 @@ class PreviewProcessOwnerTest {
         try {
             supervisor.replace(listOf("first"))
             assertTrue(launcher.firstLaunch.await(5, TimeUnit.SECONDS))
-            fake1.writeStdout("markup-status: {\"schemaVersion\":2,\"ok\":true,\"nodes\":1}\n")
+            fake1.writeStdout("markup-status: {\"schemaVersion\":3,\"ok\":true,\"nodes\":1}\n")
             assertTrue(firstStatus.await(5, TimeUnit.SECONDS), "first child forwards status")
             supervisor.replace(listOf("second"))
             assertTrue(launcher.allLaunched.await(5, TimeUnit.SECONDS))
             assertEquals(1, fake1.destroyCalls.get())
             assertEquals(0, fake1.forceKillCalls.get(), "graceful child needs no force-kill")
-            fake2.writeStdout("markup-status: {\"schemaVersion\":2,\"ok\":true,\"nodes\":2}\n")
+            fake2.writeStdout("markup-status: {\"schemaVersion\":3,\"ok\":true,\"nodes\":2}\n")
             assertTrue(secondStatus.await(5, TimeUnit.SECONDS), "second child forwards status")
             assertTrue(exitLatch.await(5, TimeUnit.SECONDS), "replaced child exit observed")
             assertEquals(listOf(ExitCause.TERMINATED), exits,
@@ -445,7 +445,7 @@ class PreviewProcessOwnerTest {
         try {
             supervisor.replace(listOf("first"))
             assertTrue(launcher.firstLaunch.await(5, TimeUnit.SECONDS))
-            fake1.writeStdout("markup-status: {\"schemaVersion\":2,\"ok\":true,\"nodes\":1}\n")
+            fake1.writeStdout("markup-status: {\"schemaVersion\":3,\"ok\":true,\"nodes\":1}\n")
             supervisor.replace(listOf("second"))
             assertTrue(failureLatch.await(5, TimeUnit.SECONDS),
                 "a child that survives SIGKILL must be reported")
@@ -537,7 +537,7 @@ class PreviewProcessOwnerTest {
         try {
             supervisor.replace(listOf("preview"))
             assertTrue(launcher.firstLaunch.await(5, TimeUnit.SECONDS))
-            fake.writeStdout("markup-status: {\"schemaVersion\":2,\"ok\":true,\"nodes\":1}\n")
+            fake.writeStdout("markup-status: {\"schemaVersion\":3,\"ok\":true,\"nodes\":1}\n")
             supervisor.dispose()
             assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS),
                 "executor must terminate once the retry confirms the exit")

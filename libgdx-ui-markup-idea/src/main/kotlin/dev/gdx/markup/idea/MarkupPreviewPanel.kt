@@ -101,18 +101,7 @@ class MarkupPreviewPanel(private val project: Project, private val toolWindow: T
     }
 
     private fun showStatus(parsed: MarkupStatusLine) {
-        val text = when {
-            parsed.ok -> "ok (${parsed.nodes} actors)"
-            else -> {
-                val location = if (parsed.line != null && parsed.line > 0) {
-                    " at ${parsed.line}:${parsed.column ?: 0}"
-                } else {
-                    ""
-                }
-                (parsed.message ?: "build failed") + location
-            }
-        }
-        setStatus(text.take(MAX_STATUS_LENGTH), parsed.ok)
+        setStatus(MarkupStatusPresentation.text(parsed).take(MAX_STATUS_LENGTH), parsed.ok)
     }
 
     private fun setStatus(text: String, ok: Boolean) {
