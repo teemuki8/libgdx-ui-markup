@@ -164,5 +164,17 @@ final class MarkupDiagnosticTest {
                                 .mapToObj(index -> "N" + index + "x".repeat(60))
                                 .toList())
                 .length() <= 4096);
+        assertEquals(
+                Optional.empty(),
+                NearestSuggestion.unique(
+                        "x".repeat(MarkupParser.MAX_NAME_LENGTH + 1), List.of("x")));
+        assertEquals(
+                Optional.empty(),
+                NearestSuggestion.unique(
+                        "Exact",
+                        java.util.stream.IntStream.rangeClosed(
+                                        0, NearestSuggestion.MAX_CANDIDATES)
+                                .mapToObj(index -> index == 0 ? "Exact" : "N" + index)
+                                .toList()));
     }
 }

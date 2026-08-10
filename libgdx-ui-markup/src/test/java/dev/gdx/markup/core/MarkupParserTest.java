@@ -9,7 +9,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -327,6 +329,45 @@ final class MarkupParserTest {
                 "<ui><button text=\"" + huge + "\"/></ui>"));
         assertEquals(MarkupException.Kind.TOO_LARGE, failure.kind());
         assertTrue(failure.getMessage().contains("attribute"));
+    }
+
+    @Test
+    void oversizedElementAndAttributeNamesAreRejectedWithTypedDiagnostics() {
+        String huge = "x".repeat(MarkupParser.MAX_NAME_LENGTH + 1);
+
+        MarkupException elementFailure = assertThrows(
+                MarkupException.class,
+                () -> parser.parse("<ui><" + huge + "/></ui>"));
+        assertEquals(MarkupException.Kind.TOO_LARGE, elementFailure.kind());
+        assertEquals("ui/<element>", elementFailure.elementPath());
+        assertTrue(elementFailure.getMessage().contains("element name"));
+
+        MarkupException attributeFailure = assertThrows(
+                MarkupException.class,
+                () -> parser.parse("<ui><label " + huge + "=\"value\"/></ui>"));
+        assertEquals(MarkupException.Kind.TOO_LARGE, attributeFailure.kind());
+        assertEquals("ui/label", attributeFailure.elementPath());
+        assertTrue(attributeFailure.getMessage().contains("attribute name"));
+    }
+
+    @Test
+    void customTagConfigurationHasBoundedNamesAndCandidateCount() {
+        String exactName = "x".repeat(MarkupParser.MAX_NAME_LENGTH);
+        assertEquals(exactName, new MarkupParser(Set.of(exactName))
+                .parse("<ui><" + exactName + "/></ui>")
+                .root().children().getFirst().tag());
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new MarkupParser(Set.of(exactName + "x")));
+
+        Set<String> exactCount = new LinkedHashSet<>();
+        for (int index = 0; index < MarkupParser.MAX_EXTRA_TAGS; index++) {
+            exactCount.add("x" + index);
+        }
+        new MarkupParser(exactCount);
+        exactCount.add("overflow");
+        assertThrows(IllegalArgumentException.class, () -> new MarkupParser(exactCount));
     }
 
     @Test

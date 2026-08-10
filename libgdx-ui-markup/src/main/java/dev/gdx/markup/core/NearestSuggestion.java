@@ -9,15 +9,25 @@ import java.util.Optional;
 /** Deterministic bounded nearest-name lookup for actionable diagnostics. */
 final class NearestSuggestion {
     private static final int MAX_EXPECTED_LENGTH = 4096;
+    static final int MAX_CANDIDATES =
+            MarkupParser.MAX_EXTRA_TAGS + MarkupParser.MAX_COMPONENTS;
 
     private NearestSuggestion() {}
 
     static Optional<String> unique(String received, Collection<String> candidates) {
         Objects.requireNonNull(received, "received");
         Objects.requireNonNull(candidates, "candidates");
+        if (received.length() > MarkupParser.MAX_NAME_LENGTH
+                || candidates.size() > MAX_CANDIDATES) {
+            return Optional.empty();
+        }
         List<String> sorted = new ArrayList<>(candidates.size());
         for (String candidate : candidates) {
-            sorted.add(Objects.requireNonNull(candidate, "candidate"));
+            String name = Objects.requireNonNull(candidate, "candidate");
+            if (name.length() > MarkupParser.MAX_NAME_LENGTH) {
+                return Optional.empty();
+            }
+            sorted.add(name);
         }
         sorted.sort(String::compareTo);
 

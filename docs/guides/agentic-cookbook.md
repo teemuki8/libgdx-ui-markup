@@ -182,15 +182,16 @@ The exact component limits are:
 | diagnostic invocation-trace frames | 16 |
 
 These sit on top of the existing 1,048,576-byte UTF-8 input, 10,000 raw-element, depth-64,
-4,096-character attribute, and 4,096-character text limits. Component files cannot import URLs,
-filesystem paths, packages, or other documents. Dynamic element names, discovery, loops,
-conditionals, arithmetic, scripts, reflection, arbitrary Java calls, multiple-root fragments,
-implicit ID namespaces, and runtime/gameplay-state ownership are intentional non-goals.
+4,096-character attribute-value, 4,096-character text, 256-character XML-name, and 256 custom-tag
+limits. Component files cannot import URLs, filesystem paths, packages, or other documents.
+Dynamic element names, discovery, loops, conditionals, arithmetic, scripts, reflection, arbitrary
+Java calls, multiple-root fragments, implicit ID namespaces, and runtime/gameplay-state ownership
+are intentional non-goals.
 
 A schema-v3 failure is actionable without parsing prose:
 
 ```text
-markup-status: {"schemaVersion":3,"ok":false,"kind":"UNKNOWN_COMPONENT","source":"/app/ui.xml","elementPath":"ui/use","line":18,"column":31,"attribute":"component","expected":"Card","received":"Crd","suggestion":"Card","consequence":"document rejected before Scene2D build","componentTrace":[],"message":"unknown component \"Crd\""}
+markup-status: {"schemaVersion":3,"ok":false,"kind":"UNKNOWN_COMPONENT","source":"/app/ui.xml","elementPath":"ui/use","line":18,"column":31,"attribute":"component","expected":"one of [Card]","received":"Crd","suggestion":"Card","consequence":"document rejected before Scene2D build","componentTrace":[],"message":"unknown component \"Crd\""}
 ```
 
 Use the committed component-backed sign-in fixture as the executable parse/build/harness recipe:
@@ -608,9 +609,10 @@ The factory runs during render-thread build. It may create/configure its actor f
 Stage, run input, or start a second lifecycle. The builder still applies common attributes, CSS,
 cell constraints, `id`/`name`/`label`, and `data-*` semantics.
 
-Custom tags accept the common actor attributes and bounded `data-*` properties. Adding new
-tag-specific XML attributes changes the dialect and belongs in the core `TagSpec` vocabulary with
-parser and builder tests; a factory cannot bypass parse-time validation.
+Custom tags accept the common actor attributes and bounded `data-*` properties. One parser accepts
+at most 256 custom tags, and each custom tag, XML element, and XML attribute name is capped at 256
+characters. Adding new tag-specific XML attributes changes the dialect and belongs in the core
+`TagSpec` vocabulary with parser and builder tests; a factory cannot bypass parse-time validation.
 
 Narrow verification:
 

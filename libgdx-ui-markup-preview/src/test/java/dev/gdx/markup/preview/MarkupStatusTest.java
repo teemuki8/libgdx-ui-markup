@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.gdx.markup.core.ComponentTraceFrame;
 import dev.gdx.markup.core.MarkupDiagnosticContext;
 import dev.gdx.markup.core.MarkupException;
+import dev.gdx.markup.core.MarkupParser;
 import dev.gdx.markup.core.MarkupSourceLocation;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -59,6 +60,25 @@ final class MarkupStatusTest {
                 .path("component").asText());
         assertEquals("ui/use", node.path("componentTrace").get(0)
                 .path("elementPath").asText());
+    }
+
+    @Test
+    void unknownComponentStatusPinsThePublishedExpectedValue() throws Exception {
+        MarkupException failure = assertThrows(MarkupException.class, () -> new MarkupParser()
+                .parse("""
+                        <ui>
+                          <components>
+                            <component name="Card"><table/></component>
+                          </components>
+                          <use component="Crd"/>
+                        </ui>
+                        """, "/app/ui.xml"));
+
+        JsonNode node = JSON.readTree(MarkupStatus.error(failure).json());
+        assertEquals("UNKNOWN_COMPONENT", node.path("kind").asText());
+        assertEquals("one of [Card]", node.path("expected").asText());
+        assertEquals("Crd", node.path("received").asText());
+        assertEquals("Card", node.path("suggestion").asText());
     }
 
     @Test

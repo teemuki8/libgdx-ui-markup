@@ -45,6 +45,10 @@ public final class MarkupParser {
     public static final int MAX_ATTRIBUTE_VALUE = 4_096;
     /** Maximum text content length in characters. */
     public static final int MAX_TEXT = 4_096;
+    /** Maximum XML element, attribute, or custom-tag name length in characters. */
+    public static final int MAX_NAME_LENGTH = 256;
+    /** Maximum custom tags accepted by one parser configuration. */
+    public static final int MAX_EXTRA_TAGS = 256;
     /** Maximum document-local component definitions. */
     public static final int MAX_COMPONENTS = 256;
     /** Maximum parameters declared by one component. */
@@ -92,7 +96,7 @@ public final class MarkupParser {
         this.maxDepth = maxDepth;
         this.maxAttributeValue = maxAttributeValue;
         this.maxText = maxText;
-        this.extraTags = Set.copyOf(Objects.requireNonNull(extraTags, "extraTags"));
+        this.extraTags = boundedExtraTags(extraTags);
     }
 
     /**
@@ -101,6 +105,22 @@ public final class MarkupParser {
      */
     public MarkupDocument parse(String xml) {
         return parse(xml, "<memory>");
+    }
+
+    private static Set<String> boundedExtraTags(Set<String> extraTags) {
+        Set<String> tags = Objects.requireNonNull(extraTags, "extraTags");
+        if (tags.size() > MAX_EXTRA_TAGS) {
+            throw new IllegalArgumentException(
+                    "extraTags exceeds " + MAX_EXTRA_TAGS + " entries");
+        }
+        for (String tag : tags) {
+            Objects.requireNonNull(tag, "extraTags entry");
+            if (tag.length() > MAX_NAME_LENGTH) {
+                throw new IllegalArgumentException(
+                        "extra tag name exceeds " + MAX_NAME_LENGTH + " characters");
+            }
+        }
+        return Set.copyOf(tags);
     }
 
     /** Parses one bounded in-memory document with an explicit diagnostic source identity. */
@@ -313,6 +333,15 @@ public final class MarkupParser {
             String tag = qName;
             int line = locator == null ? 0 : locator.getLineNumber();
             int column = locator == null ? 0 : locator.getColumnNumber();
+            if (tag.length() > MAX_NAME_LENGTH) {
+                String parent = paths.current();
+                String path = parent.isEmpty() ? "<element>" : parent + "/<element>";
+                throw tooLarge(
+                        "element name exceeds the " + MAX_NAME_LENGTH + "-character limit",
+                        path,
+                        line,
+                        column);
+            }
             String path = paths.enter(tag);
             if (++elements > maxElements) {
                 throw tooLarge("document exceeds the " + maxElements + "-element limit", path,
@@ -328,6 +357,14 @@ public final class MarkupParser {
             for (int index = 0; index < attributes.getLength(); index++) {
                 String name = attributes.getQName(index);
                 String value = attributes.getValue(index);
+                if (name.length() > MAX_NAME_LENGTH) {
+                    throw tooLarge(
+                            "attribute name exceeds the " + MAX_NAME_LENGTH
+                                    + "-character limit",
+                            path,
+                            line,
+                            column);
+                }
                 if (value.length() > maxAttributeValue) {
                     throw tooLarge("attribute \"" + name + "\" exceeds the "
                             + maxAttributeValue + "-character limit", path, line, column);

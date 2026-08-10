@@ -56,7 +56,8 @@ stable component scoping class cannot be erased; other overrides replace the tem
 are validated against the final root tag. IDs have no implicit namespace.
 
 The existing parser limits remain 1,048,576 UTF-8 input bytes, 10,000 raw elements, nesting depth
-64, 4,096 characters per attribute value, and 4,096 characters per text value. Definitions count
+64, 4,096 characters per attribute value, 4,096 characters per text value, 256 characters per XML
+element/attribute/custom-tag name, and 256 custom tags per parser configuration. Definitions count
 toward the raw limits. Component compilation additionally enforces:
 
 | Resource | Limit |

@@ -156,7 +156,8 @@ today's numeric-only `progressbar value` fails with `INVALID_VALUE`. Components 
 runtime expressions.
 
 Component compilation adds these exact limits to the parser's existing 1 MiB UTF-8 input,
-10,000 raw-element, depth-64, 4,096-character attribute, and 4,096-character text limits:
+10,000 raw-element, depth-64, 4,096-character attribute-value, 4,096-character text,
+256-character XML-name, and 256 custom-tag limits:
 
 | Resource | Limit |
 |---|---:|
@@ -183,7 +184,7 @@ Preview diagnostics use `markup-status` schema 3. A component failure is one bou
 for example (line and column depend on the source):
 
 ```text
-markup-status: {"schemaVersion":3,"ok":false,"kind":"UNKNOWN_COMPONENT","source":"/app/ui.xml","elementPath":"ui/use","line":18,"column":31,"attribute":"component","expected":"Card","received":"Crd","suggestion":"Card","consequence":"document rejected before Scene2D build","componentTrace":[],"message":"unknown component \"Crd\""}
+markup-status: {"schemaVersion":3,"ok":false,"kind":"UNKNOWN_COMPONENT","source":"/app/ui.xml","elementPath":"ui/use","line":18,"column":31,"attribute":"component","expected":"one of [Card]","received":"Crd","suggestion":"Card","consequence":"document rejected before Scene2D build","componentTrace":[],"message":"unknown component \"Crd\""}
 ```
 
 Each string is capped at 2,000 UTF-16 units; component traces are capped at 16 frames and 16,384
