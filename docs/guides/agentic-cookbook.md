@@ -190,7 +190,7 @@ implicit ID namespaces, and runtime/gameplay-state ownership are intentional non
 A schema-v3 failure is actionable without parsing prose:
 
 ```text
-markup-status: {"schemaVersion":3,"ok":false,"kind":"UNKNOWN_COMPONENT","source":"/app/ui.xml","elementPath":"ui/use","line":18,"column":31,"attribute":"component","expected":"Card","received":"Crd","suggestion":"Card","consequence":"document rejected before Scene2D build","componentTrace":[],"message":"unknown component \"Crd\"","nodes":0}
+markup-status: {"schemaVersion":3,"ok":false,"kind":"UNKNOWN_COMPONENT","source":"/app/ui.xml","elementPath":"ui/use","line":18,"column":31,"attribute":"component","expected":"Card","received":"Crd","suggestion":"Card","consequence":"document rejected before Scene2D build","componentTrace":[],"message":"unknown component \"Crd\""}
 ```
 
 Use the committed component-backed sign-in fixture as the executable parse/build/harness recipe:

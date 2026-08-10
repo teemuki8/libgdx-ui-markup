@@ -147,7 +147,8 @@ public final class MarkupParser {
     private MarkupDocument parseUtf8(int byteLength, String xml, String source) {
         RawElement raw = readRaw(xml, source);
         RawElement expanded =
-                new ComponentCompiler(maxElements, maxAttributeValue, maxText).expand(raw);
+                new ComponentCompiler(maxElements, maxAttributeValue, maxText, extraTags)
+                        .expand(raw);
         return new ConcreteElementCompiler(extraTags, maxElements)
                 .compile(expanded, byteLength, source);
     }

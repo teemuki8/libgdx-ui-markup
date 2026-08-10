@@ -241,6 +241,34 @@ final class MarkupStatusTest {
     }
 
     @Test
+    void markupFailureProjectionBoundsAggregateTraceInsteadOfThrowing() {
+        List<ComponentTraceFrame> trace = java.util.stream.IntStream.range(0, 16)
+                .mapToObj(index -> new ComponentTraceFrame(
+                        "Panel" + index,
+                        new MarkupSourceLocation(
+                                "s".repeat(1_100), "p".repeat(1_100), index + 1, 1)))
+                .toList();
+        MarkupException failure = new MarkupException(
+                MarkupException.Kind.INVALID_VALUE,
+                "ui/label",
+                1,
+                1,
+                "invalid generated value",
+                new MarkupDiagnosticContext(
+                        "screen.xml", "text", "bounded text", "bad", "", "", trace));
+
+        MarkupStatus status = MarkupStatus.error(failure);
+
+        assertEquals(16, status.componentTrace().size());
+        assertTrue(status.componentTrace().stream()
+                        .mapToInt(frame -> frame.component().length()
+                                + frame.invocation().source().length()
+                                + frame.invocation().elementPath().length())
+                        .sum()
+                <= MarkupStatus.MAX_TRACE_LENGTH);
+    }
+
+    @Test
     void successCannotCarryStructuredErrorContext() {
         assertThrows(IllegalArgumentException.class, () -> new MarkupStatus(
                 MarkupStatus.SCHEMA_VERSION,

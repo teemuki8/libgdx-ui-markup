@@ -98,6 +98,59 @@ final class MarkupComponentParserTest {
     }
 
     @Test
+    void unusedDefinitionsStillValidateVocabularyReferencesAndCycles() {
+        assertKind(
+                MarkupException.Kind.UNKNOWN_TAG,
+                """
+                <ui><components><component name="Unused"><bogus/></component></components>
+                  <label text="Ready"/>
+                </ui>
+                """);
+        assertKind(
+                MarkupException.Kind.UNKNOWN_COMPONENT,
+                """
+                <ui><components><component name="Unused">
+                  <use component="Missing"/>
+                </component></components><label text="Ready"/></ui>
+                """);
+        assertKind(
+                MarkupException.Kind.UNKNOWN_PARAMETER,
+                """
+                <ui><components>
+                  <component name="Target"><param name="value"/><label text="${value}"/></component>
+                  <component name="Unused"><use component="Target" vale="bad"/></component>
+                </components><label text="Ready"/></ui>
+                """);
+        assertKind(
+                MarkupException.Kind.COMPONENT_CYCLE,
+                """
+                <ui><components>
+                  <component name="First"><use component="Second"/></component>
+                  <component name="Second"><use component="First"/></component>
+                </components><label text="Ready"/></ui>
+                """);
+        assertKind(
+                MarkupException.Kind.UNKNOWN_TAG,
+                """
+                <ui><components><component name="Panel"><table>
+                  <slot><bogus/></slot>
+                </table></component></components>
+                <use component="Panel"><fill><label text="Used"/></fill></use></ui>
+                """);
+    }
+
+    @Test
+    void unusedDefinitionsHonorCustomTagAdmission() {
+        MarkupDocument document = new MarkupParser(Set.of("inventory-slot")).parse("""
+                <ui><components><component name="Unused">
+                  <inventory-slot data-owner="inventory"/>
+                </component></components><label text="Ready"/></ui>
+                """);
+
+        assertEquals("label", document.root().children().getFirst().tag());
+    }
+
+    @Test
     void componentNamesAreRequiredPascalCaseAndUnique() {
         assertKind(
                 MarkupException.Kind.MISSING_ATTRIBUTE,

@@ -177,7 +177,7 @@ public record MarkupStatus(
                 failure.received(),
                 failure.suggestion(),
                 failure.consequence(),
-                failure.componentTrace(),
+                projectTrace(failure.componentTrace()),
                 failure.getMessage(),
                 0);
     }
@@ -216,15 +216,59 @@ public record MarkupStatus(
      * surrogate pair. Package-visible so other preview output applies the identical bound.
      */
     static String bound(String value) {
-        if (value == null || value.length() <= MAX_STRING_LENGTH) {
+        return bound(value, MAX_STRING_LENGTH);
+    }
+
+    private static String bound(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
             return value;
         }
-        int cut = MAX_STRING_LENGTH;
+        if (maxLength == 0) {
+            return "";
+        }
+        int cut = maxLength;
         if (Character.isHighSurrogate(value.charAt(cut - 1))
                 && Character.isLowSurrogate(value.charAt(cut))) {
             cut--;
         }
         return value.substring(0, cut);
+    }
+
+    /**
+     * Projects every valid core trace into the stricter wire aggregate without dropping frames.
+     * Each frame receives an equal share of the remaining aggregate budget; component and source
+     * retain nonblank placeholders if their useful content starts beyond that share.
+     */
+    private static List<ComponentTraceFrame> projectTrace(List<ComponentTraceFrame> trace) {
+        List<ComponentTraceFrame> supplied = List.copyOf(trace);
+        if (supplied.size() > MAX_TRACE_FRAMES) {
+            throw new IllegalArgumentException(
+                    "componentTrace exceeds " + MAX_TRACE_FRAMES + " frames");
+        }
+        List<ComponentTraceFrame> projected = new ArrayList<>(supplied.size());
+        int remaining = MAX_TRACE_LENGTH;
+        for (int index = 0; index < supplied.size(); index++) {
+            ComponentTraceFrame frame = supplied.get(index);
+            int frameBudget = remaining / (supplied.size() - index);
+            String component = nonblank(bound(frame.component(), frameBudget - 1));
+            int locationBudget = frameBudget - component.length();
+            int sourceBudget = Math.max(1, (locationBudget + 1) / 2);
+            String source = nonblank(bound(frame.invocation().source(), sourceBudget));
+            int pathBudget = locationBudget - source.length();
+            String path = bound(frame.invocation().elementPath(), pathBudget);
+            MarkupSourceLocation invocation = new MarkupSourceLocation(
+                    source,
+                    path,
+                    frame.invocation().line(),
+                    frame.invocation().column());
+            projected.add(new ComponentTraceFrame(component, invocation));
+            remaining -= component.length() + source.length() + path.length();
+        }
+        return List.copyOf(projected);
+    }
+
+    private static String nonblank(String value) {
+        return value.isBlank() ? "?" : value;
     }
 
     private static String empty(String value) {

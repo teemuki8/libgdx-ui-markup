@@ -124,6 +124,13 @@ class MarkupStatusLineParserTest {
             error(trace = "[${List(16) { largeFrame }.joinToString()}]"),
         ))
 
+        val largeComponent = "P".repeat(1_100)
+        val componentHeavyFrame = "{\"component\":\"$largeComponent\"," +
+            "\"source\":\"screen.xml\",\"elementPath\":\"ui/use\",\"line\":1,\"column\":1}"
+        assertNull(MarkupStatusLineParser.parse(
+            error(trace = "[${List(16) { componentHeavyFrame }.joinToString()}]"),
+        ))
+
         val nestedFrame = "{\"component\":\"Panel\",\"source\":\"screen.xml\"," +
             "\"elementPath\":\"ui/use\",\"line\":1,\"column\":1,\"extra\":{}}"
         assertNull(MarkupStatusLineParser.parse(error(trace = "[$nestedFrame]")))

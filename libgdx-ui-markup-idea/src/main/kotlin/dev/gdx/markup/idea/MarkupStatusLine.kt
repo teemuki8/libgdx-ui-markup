@@ -141,7 +141,9 @@ object MarkupStatusLineParser {
             MarkupStatusTraceFrame(component, source, elementPath, line, column)
         }
         return frames.takeIf {
-            it.sumOf { frame -> frame.source.length + frame.elementPath.length } <= MAX_TRACE_LENGTH
+            it.sumOf { frame ->
+                frame.component.length + frame.source.length + frame.elementPath.length
+            } <= MAX_TRACE_LENGTH
         }
     }
 

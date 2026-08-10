@@ -26,16 +26,22 @@ final class ComponentCompiler {
     private final int maxFinalElements;
     private final int maxAttributeValue;
     private final int maxText;
+    private final Set<String> extraTags;
     private final Map<String, Definition> definitions = new LinkedHashMap<>();
     private ExpansionBudget budget;
 
-    ComponentCompiler(int maxFinalElements, int maxAttributeValue, int maxText) {
+    ComponentCompiler(
+            int maxFinalElements,
+            int maxAttributeValue,
+            int maxText,
+            Set<String> extraTags) {
         if (maxFinalElements < 1 || maxAttributeValue < 1 || maxText < 1) {
             throw new IllegalArgumentException("component compiler limits must be positive");
         }
         this.maxFinalElements = maxFinalElements;
         this.maxAttributeValue = maxAttributeValue;
         this.maxText = maxText;
+        this.extraTags = Set.copyOf(Objects.requireNonNull(extraTags, "extraTags"));
     }
 
     RawElement expand(RawElement documentRoot) {
@@ -48,6 +54,7 @@ final class ComponentCompiler {
         RawElement components = findComponentsBlock(documentRoot);
         if (components != null) {
             indexDefinitions(components);
+            validateDefinitions(documentRoot, components);
         }
         budget = new ExpansionBudget(maxFinalElements);
         budget.addConcrete(documentRoot.origin(), documentRoot.componentTrace());
@@ -130,6 +137,277 @@ final class ComponentCompiler {
                         "name",
                         List.of());
             }
+        }
+    }
+
+    /**
+     * Validates every declaration body. Literal values in reachable templates remain deferred to
+     * concrete expansion so their diagnostics retain the complete invocation trace.
+     */
+    private void validateDefinitions(RawElement documentRoot, RawElement components) {
+        Set<String> reachable = new LinkedHashSet<>();
+        for (RawElement child : documentRoot.children()) {
+            if (child != components) {
+                addReachableDefinitions(child, reachable);
+            }
+        }
+        for (Definition definition : definitions.values()) {
+            validateTemplateNode(
+                    definition.templateRoot(), !reachable.contains(definition.name()));
+        }
+        Map<String, Integer> states = new LinkedHashMap<>();
+        Map<String, Integer> depths = new LinkedHashMap<>();
+        for (Definition definition : definitions.values()) {
+            validateDefinitionGraph(definition.name(), states, depths, new ArrayList<>());
+        }
+        for (Definition definition : definitions.values()) {
+            if (!reachable.contains(definition.name())
+                    && depths.get(definition.name())
+                            > MarkupParser.MAX_COMPONENT_EXPANSION_DEPTH) {
+                throw tooLarge(
+                        definition.origin(),
+                        "component expansion exceeds the "
+                                + MarkupParser.MAX_COMPONENT_EXPANSION_DEPTH + "-level limit",
+                        List.of());
+            }
+        }
+    }
+
+    private void addReachableDefinitions(RawElement raw, Set<String> reachable) {
+        if ("use".equals(raw.tag())) {
+            RawAttribute component = raw.attrs().get("component");
+            Definition definition = component == null ? null : definitions.get(component.value());
+            if (definition != null && reachable.add(definition.name())) {
+                addReachableDefinitions(definition.templateRoot(), reachable);
+            }
+        }
+        for (RawElement child : raw.children()) {
+            addReachableDefinitions(child, reachable);
+        }
+    }
+
+    private void validateTemplateNode(RawElement raw, boolean validateLiteralValues) {
+        if ("slot".equals(raw.tag())) {
+            for (RawElement child : raw.children()) {
+                validateTemplateNode(child, validateLiteralValues);
+            }
+            return;
+        }
+        if ("use".equals(raw.tag())) {
+            validateDeclaredInvocation(raw, validateLiteralValues);
+            return;
+        }
+        if (DEFINITION_TAGS.contains(raw.tag()) || "fill".equals(raw.tag())) {
+            throw invalid(
+                    raw.origin(), raw.origin().elementPath(),
+                    "<" + raw.tag() + "> is not valid at this template position",
+                    "an actor, slot, or nested use", raw.tag(), "", List.of());
+        }
+
+        TagSpec spec;
+        try {
+            spec = TagSpec.require(
+                    raw.tag(), extraTags, raw.origin().elementPath(),
+                    raw.origin().line(), raw.origin().column());
+        } catch (MarkupException failure) {
+            List<String> candidates = new ArrayList<>(TagSpec.tagNames());
+            candidates.addAll(extraTags);
+            throw diagnostic(
+                    MarkupException.Kind.UNKNOWN_TAG,
+                    raw.origin(), raw.origin().elementPath(), failure.getMessage(),
+                    NearestSuggestion.expected(candidates), raw.tag(), "",
+                    NearestSuggestion.unique(raw.tag(), candidates).orElse(""), List.of());
+        }
+        for (Map.Entry<String, RawAttribute> entry : raw.attrs().entrySet()) {
+            String name = entry.getKey();
+            RawAttribute attribute = entry.getValue();
+            if (!spec.allows(name)) {
+                throw diagnostic(
+                        MarkupException.Kind.UNKNOWN_ATTRIBUTE,
+                        attribute.origin(), raw.origin().elementPath(),
+                        "unknown attribute \"" + name + "\" on <" + raw.tag() + ">",
+                        NearestSuggestion.expected(spec.attributes().keySet()), name, name,
+                        NearestSuggestion.unique(name, spec.attributes().keySet()).orElse(""),
+                        List.of());
+            }
+            TagSpec.ValueKind kind = spec.attributes().get(name);
+            if (validateLiteralValues
+                    && kind != null
+                    && !SUBSTITUTION.matcher(attribute.value()).find()) {
+                String failure = TagSpec.validate(kind, attribute.value());
+                if (failure != null) {
+                    throw diagnostic(
+                            MarkupException.Kind.INVALID_VALUE,
+                            attribute.origin(), raw.origin().elementPath(),
+                            "invalid value for \"" + name + "\": " + failure,
+                            TagSpec.expected(kind), attribute.value(), name, List.of());
+                }
+            }
+        }
+        for (String required : spec.required()) {
+            if (!raw.attrs().containsKey(required)) {
+                throw diagnostic(
+                        MarkupException.Kind.MISSING_ATTRIBUTE,
+                        raw.origin(), raw.origin().elementPath(),
+                        "<" + raw.tag() + "> requires attribute \"" + required + "\"",
+                        "required attribute \"" + required + "\"", "", required, List.of());
+            }
+        }
+        for (RawElement child : raw.children()) {
+            validateTemplateNode(child, validateLiteralValues);
+        }
+    }
+
+    private void validateDeclaredInvocation(
+            RawElement invocation, boolean validateLiteralValues) {
+        RawAttribute componentAttribute =
+                requireAttribute(invocation, "component", List.of());
+        Definition target = SUBSTITUTION.matcher(componentAttribute.value()).find()
+                ? null : definitions.get(componentAttribute.value());
+        if (target == null && !SUBSTITUTION.matcher(componentAttribute.value()).find()) {
+            throw diagnostic(
+                    MarkupException.Kind.UNKNOWN_COMPONENT,
+                    componentAttribute.origin(), invocation.origin().elementPath(),
+                    "unknown component \"" + componentAttribute.value() + "\"",
+                    NearestSuggestion.expected(definitions.keySet()), componentAttribute.value(),
+                    "component",
+                    NearestSuggestion.unique(componentAttribute.value(), definitions.keySet())
+                            .orElse(""),
+                    List.of());
+        }
+
+        if (target != null) {
+            for (Map.Entry<String, RawAttribute> entry : invocation.attrs().entrySet()) {
+                String name = entry.getKey();
+                if (!"component".equals(name)
+                        && !target.parameters().containsKey(name)
+                        && !isRootOverride(name)) {
+                    Set<String> candidates = invocationNames(target);
+                    throw diagnostic(
+                            MarkupException.Kind.UNKNOWN_PARAMETER,
+                            entry.getValue().origin(), invocation.origin().elementPath(),
+                            "unknown parameter or root override \"" + name + "\"",
+                            NearestSuggestion.expected(candidates), name, name,
+                            NearestSuggestion.unique(name, candidates).orElse(""), List.of());
+                }
+            }
+            for (Parameter parameter : target.parameters().values()) {
+                if (parameter.required() && !invocation.attrs().containsKey(parameter.name())) {
+                    throw diagnostic(
+                            MarkupException.Kind.MISSING_PARAMETER,
+                            invocation.origin(), invocation.origin().elementPath(),
+                            "component \"" + target.name() + "\" requires parameter \""
+                                    + parameter.name() + "\"",
+                            "required parameter \"" + parameter.name() + "\"", "",
+                            parameter.name(), List.of());
+                }
+            }
+        }
+
+        if (!invocation.text().isEmpty()) {
+            throw invalid(
+                    invocation.origin(), invocation.origin().elementPath(),
+                    "<use> children must be supplied through <fill>",
+                    "direct <fill> children", "text content", "", List.of());
+        }
+        Set<String> suppliedSlots = new LinkedHashSet<>();
+        for (RawElement fill : invocation.children()) {
+            if (!"fill".equals(fill.tag())) {
+                throw invalid(
+                        fill.origin(), invocation.origin().elementPath(),
+                        "<use> children must be direct <fill> elements",
+                        "fill", fill.tag(), "", List.of());
+            }
+            requireOnlyAttributes(fill, Set.of("slot"), List.of());
+            if (!fill.text().isEmpty()) {
+                throw invalid(
+                        fill.origin(), fill.origin().elementPath(),
+                        "<fill> accepts actor children only",
+                        "actor elements", "text content", "", List.of());
+            }
+            String slot = attribute(fill, "slot", "");
+            if (target != null && !target.slots().containsKey(slot)) {
+                throw diagnostic(
+                        MarkupException.Kind.UNKNOWN_SLOT,
+                        fill.origin(), fill.origin().elementPath(),
+                        "unknown slot \"" + displaySlot(slot) + "\"",
+                        NearestSuggestion.expected(target.slots().keySet()), displaySlot(slot),
+                        "slot", NearestSuggestion.unique(slot, target.slots().keySet()).orElse(""),
+                        List.of());
+            }
+            if (!suppliedSlots.add(slot)) {
+                throw diagnostic(
+                        MarkupException.Kind.DUPLICATE_SLOT,
+                        fill.origin(), fill.origin().elementPath(),
+                        "duplicate fill for slot \"" + displaySlot(slot) + "\"",
+                        "at most one fill per slot", displaySlot(slot), "slot", List.of());
+            }
+            for (RawElement child : fill.children()) {
+                validateTemplateNode(child, validateLiteralValues);
+            }
+        }
+        if (target != null) {
+            for (Slot slot : target.slots().values()) {
+                if (slot.required() && !suppliedSlots.contains(slot.name())) {
+                    throw diagnostic(
+                            MarkupException.Kind.MISSING_SLOT,
+                            invocation.origin(), invocation.origin().elementPath(),
+                            "component \"" + target.name() + "\" requires slot \""
+                                    + displaySlot(slot.name()) + "\"",
+                            "required slot fill", "", "slot", List.of());
+                }
+            }
+        }
+    }
+
+    private int validateDefinitionGraph(
+            String name,
+            Map<String, Integer> states,
+            Map<String, Integer> depths,
+            List<String> stack) {
+        if (states.getOrDefault(name, 0) == 2) {
+            return depths.get(name);
+        }
+        states.put(name, 1);
+        stack.add(name);
+        int depth = 1;
+        for (RawElement use : declaredUses(definitions.get(name).templateRoot())) {
+            String target = use.attrs().get("component").value();
+            if (SUBSTITUTION.matcher(target).find()) {
+                continue;
+            }
+            if (states.getOrDefault(target, 0) == 1) {
+                int cycleStart = stack.indexOf(target);
+                List<String> cycle = new ArrayList<>(stack.subList(cycleStart, stack.size()));
+                cycle.add(target);
+                throw diagnostic(
+                        MarkupException.Kind.COMPONENT_CYCLE,
+                        use.origin(), use.origin().elementPath(),
+                        "component cycle: " + String.join(" -> ", cycle),
+                        "an acyclic component graph", String.join(" -> ", cycle),
+                        "component", List.of());
+            }
+            int targetDepth = validateDefinitionGraph(target, states, depths, stack);
+            depth = Math.max(depth, 1 + targetDepth);
+        }
+        stack.removeLast();
+        states.put(name, 2);
+        depths.put(name, depth);
+        return depth;
+    }
+
+    private static List<RawElement> declaredUses(RawElement raw) {
+        List<RawElement> uses = new ArrayList<>();
+        collectDeclaredUses(raw, uses);
+        return uses;
+    }
+
+    private static void collectDeclaredUses(RawElement raw, List<RawElement> uses) {
+        if ("use".equals(raw.tag())) {
+            uses.add(raw);
+        }
+        for (RawElement child : raw.children()) {
+            collectDeclaredUses(child, uses);
         }
     }
 
