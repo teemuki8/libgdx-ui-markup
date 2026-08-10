@@ -13,10 +13,8 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Deque;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 import javax.xml.XMLConstants;
@@ -90,14 +88,16 @@ public final class MarkupParser {
      * UTF-8 byte length is checked against the configured limit before parsing.
      */
     public MarkupDocument parse(String xml) {
+        return parse(xml, "<memory>");
+    }
+
+    /** Parses one bounded in-memory document with an explicit diagnostic source identity. */
+    public MarkupDocument parse(String xml, String sourceName) {
+        String source = MarkupSourceLocation.validateSource(sourceName);
         Objects.requireNonNull(xml, "xml");
         byte[] utf8 = xml.getBytes(StandardCharsets.UTF_8);
-        if (utf8.length > maxInputBytes) {
-            throw new MarkupException(MarkupException.Kind.TOO_LARGE, "", 0, 0,
-                    "markup input of " + utf8.length + " bytes exceeds the "
-                            + maxInputBytes + "-byte limit");
-        }
-        return parseUtf8(utf8.length, xml);
+        requireInputLimit(utf8.length, source);
+        return parseUtf8(utf8.length, xml, source);
     }
 
     /**
@@ -113,38 +113,74 @@ public final class MarkupParser {
      */
     public MarkupDocument parse(Path path) throws IOException {
         Objects.requireNonNull(path, "path");
+        String source = MarkupSourceLocation.validateSource(
+                path.toAbsolutePath().normalize().toString());
         byte[] utf8;
         try (InputStream in = Files.newInputStream(path)) {
             utf8 = readBounded(in, maxInputBytes);
         }
         if (utf8.length > maxInputBytes) {
-            throw new MarkupException(MarkupException.Kind.TOO_LARGE, "", 0, 0,
+            throw diagnostic(
+                    MarkupException.Kind.TOO_LARGE,
+                    source,
+                    "",
+                    0,
+                    0,
                     "markup input exceeds the " + maxInputBytes + "-byte limit");
         }
-        return parseUtf8(utf8.length, decodeUtf8(utf8));
+        return parseUtf8(utf8.length, decodeUtf8(utf8, source), source);
     }
 
     /** Shared parse body for in-bounds UTF-8 markup, whether from a String or a file. */
-    private MarkupDocument parseUtf8(int byteLength, String xml) {
+    private MarkupDocument parseUtf8(int byteLength, String xml, String source) {
+        RawElement raw = readRaw(xml, source);
+        return new ConcreteElementCompiler(extraTags, maxElements)
+                .compile(raw, byteLength, source);
+    }
+
+    /** Reads bounded raw XML without applying the concrete markup dialect. */
+    private RawElement readRaw(String xml, String source) {
         try {
-            Handler handler = new Handler(byteLength);
+            Handler handler = new Handler(source);
             XMLReader reader = reader();
             reader.setContentHandler(handler);
             reader.setErrorHandler(handler);
             reader.parse(new InputSource(new StringReader(xml)));
-            return handler.document();
+            return handler.root();
         } catch (SAXParseException failure) {
-            throw new MarkupException(MarkupException.Kind.MALFORMED_XML,
-                    "", failure.getLineNumber(), failure.getColumnNumber(),
+            throw diagnostic(
+                    MarkupException.Kind.MALFORMED_XML,
+                    source,
+                    "",
+                    failure.getLineNumber(),
+                    failure.getColumnNumber(),
                     failure.getMessage());
         } catch (SAXException failure) {
             if (failure.getCause() instanceof MarkupException markup) {
                 throw markup;
             }
-            throw new MarkupException(MarkupException.Kind.MALFORMED_XML, "", 0, 0,
+            throw diagnostic(
+                    MarkupException.Kind.MALFORMED_XML,
+                    source,
+                    "",
+                    0,
+                    0,
                     failure.getMessage());
         } catch (IOException | ParserConfigurationException impossible) {
             throw new IllegalStateException("SAX parser unavailable", impossible);
+        }
+    }
+
+    private void requireInputLimit(int byteLength, String source) {
+        if (byteLength > maxInputBytes) {
+            throw diagnostic(
+                    MarkupException.Kind.TOO_LARGE,
+                    source,
+                    "",
+                    0,
+                    0,
+                    "markup input of " + byteLength + " bytes exceeds the "
+                            + maxInputBytes + "-byte limit");
         }
     }
 
@@ -181,7 +217,7 @@ public final class MarkupParser {
     }
 
     /** Decodes strict UTF-8; malformed or truncated input fails with a typed diagnostic. */
-    private static String decodeUtf8(byte[] utf8) {
+    private static String decodeUtf8(byte[] utf8, String source) {
         try {
             return StandardCharsets.UTF_8.newDecoder()
                     .onMalformedInput(CodingErrorAction.REPORT)
@@ -189,9 +225,38 @@ public final class MarkupParser {
                     .decode(ByteBuffer.wrap(utf8))
                     .toString();
         } catch (CharacterCodingException failure) {
-            throw new MarkupException(MarkupException.Kind.MALFORMED_XML, "", 0, 0,
+            throw diagnostic(
+                    MarkupException.Kind.MALFORMED_XML,
+                    source,
+                    "",
+                    0,
+                    0,
                     "markup input is not valid UTF-8: " + failure.getMessage());
         }
+    }
+
+    private static MarkupException diagnostic(
+            MarkupException.Kind kind,
+            String source,
+            String path,
+            int line,
+            int column,
+            String message) {
+        String safeMessage = message == null ? kind.name() : message;
+        return new MarkupException(
+                kind,
+                path,
+                line,
+                column,
+                safeMessage,
+                new MarkupDiagnosticContext(
+                        source,
+                        "",
+                        "",
+                        "",
+                        "",
+                        "document rejected before Scene2D build",
+                        List.of()));
     }
 
     private static XMLReader reader()
@@ -210,19 +275,18 @@ public final class MarkupParser {
         return parser.getXMLReader();
     }
 
-    /** SAX handler that builds the validated element tree and enforces every bound. */
+    /** SAX handler that builds bounded raw XML nodes without applying the concrete dialect. */
     private final class Handler extends DefaultHandler {
-        private final int byteLength;
+        private final String source;
         private final Deque<Frame> stack = new ArrayDeque<>();
-        private final Set<String> ids = new HashSet<>();
-        private final List<Element> roots = new ArrayList<>();
+        private final List<RawElement> roots = new ArrayList<>();
         private final ElementPathTracker paths = new ElementPathTracker();
         private Locator locator;
-        private Element root;
+        private RawElement root;
         private int elements;
 
-        private Handler(int byteLength) {
-            this.byteLength = byteLength;
+        private Handler(String source) {
+            this.source = source;
         }
 
         @Override public void setDocumentLocator(Locator newLocator) {
@@ -243,8 +307,9 @@ public final class MarkupParser {
                 throw tooLarge("nesting exceeds the " + maxDepth + "-level limit", path,
                         line, column);
             }
-            TagSpec spec = TagSpec.require(tag, extraTags, path, line, column);
-            LinkedHashMap<String, String> attrs = new LinkedHashMap<>();
+            MarkupSourceLocation origin =
+                    new MarkupSourceLocation(source, path, line, column);
+            LinkedHashMap<String, RawAttribute> attrs = new LinkedHashMap<>();
             for (int index = 0; index < attributes.getLength(); index++) {
                 String name = attributes.getQName(index);
                 String value = attributes.getValue(index);
@@ -252,31 +317,9 @@ public final class MarkupParser {
                     throw tooLarge("attribute \"" + name + "\" exceeds the "
                             + maxAttributeValue + "-character limit", path, line, column);
                 }
-                if (!spec.allows(name)) {
-                    throw new MarkupException(MarkupException.Kind.UNKNOWN_ATTRIBUTE, path, line,
-                            column, "unknown attribute \"" + name + "\" on <" + tag + ">");
-                }
-                // data-* attributes carry no value grammar beyond the allows() suffix gate.
-                TagSpec.ValueKind kind = spec.attributes().get(name);
-                String failure = kind == null ? null : TagSpec.validate(kind, value);
-                if (failure != null) {
-                    throw new MarkupException(MarkupException.Kind.INVALID_VALUE, path, line,
-                            column, "invalid value for \"" + name + "\": " + failure);
-                }
-                attrs.put(name, value);
+                attrs.put(name, new RawAttribute(value, origin));
             }
-            for (String required : spec.required()) {
-                if (!attrs.containsKey(required)) {
-                    throw new MarkupException(MarkupException.Kind.MISSING_ATTRIBUTE, path, line,
-                            column, "<" + tag + "> requires attribute \"" + required + "\"");
-                }
-            }
-            String id = attrs.get("id");
-            if (id != null && !ids.add(id)) {
-                throw new MarkupException(MarkupException.Kind.DUPLICATE_ID, path, line, column,
-                        "duplicate id \"" + id + "\"");
-            }
-            stack.push(new Frame(tag, path, attrs, line, column));
+            stack.push(new Frame(tag, path, attrs, origin));
         }
 
         @Override public void characters(char[] ch, int start, int length) throws SAXException {
@@ -287,9 +330,13 @@ public final class MarkupParser {
             if (!frame.children.isEmpty()) {
                 String text = new String(ch, start, length);
                 if (!text.isBlank()) {
-                    throw new MarkupException(MarkupException.Kind.INVALID_VALUE, frame.path,
-                            line(), column(), "mixed text content is not supported in <"
-                                    + frame.tag + ">");
+                    throw diagnostic(
+                            MarkupException.Kind.INVALID_VALUE,
+                            source,
+                            frame.path,
+                            line(),
+                            column(),
+                            "mixed text content is not supported in <" + frame.tag + ">");
                 }
                 return;
             }
@@ -304,7 +351,7 @@ public final class MarkupParser {
                 throws SAXException {
             Frame frame = stack.pop();
             paths.exit();
-            Element element = frame.build(ids);
+            RawElement element = frame.build();
             if (stack.isEmpty()) {
                 roots.add(element);
             } else {
@@ -314,25 +361,29 @@ public final class MarkupParser {
 
         @Override public void endDocument() throws SAXException {
             if (roots.isEmpty()) {
-                throw new MarkupException(MarkupException.Kind.MALFORMED_XML, "", line(), column(),
+                throw diagnostic(
+                        MarkupException.Kind.MALFORMED_XML,
+                        source,
+                        "",
+                        line(),
+                        column(),
                         "document contains no root element");
             }
-            Element documentRoot = roots.get(0);
-            if (!"ui".equals(documentRoot.tag()) && !"table".equals(documentRoot.tag())) {
-                throw new MarkupException(MarkupException.Kind.INVALID_VALUE, documentRoot.tag(),
-                        documentRoot.line(), documentRoot.column(),
-                        "root element must be <ui> or <table>, got <" + documentRoot.tag() + ">");
-            }
             if (roots.size() > 1) {
-                throw new MarkupException(MarkupException.Kind.MALFORMED_XML, documentRoot.tag(),
-                        documentRoot.line(), documentRoot.column(),
+                RawElement documentRoot = roots.get(0);
+                throw diagnostic(
+                        MarkupException.Kind.MALFORMED_XML,
+                        source,
+                        documentRoot.tag(),
+                        documentRoot.origin().line(),
+                        documentRoot.origin().column(),
                         "document contains multiple root elements");
             }
-            root = documentRoot;
+            root = roots.get(0);
         }
 
-        MarkupDocument document() {
-            return new MarkupDocument(root, byteLength);
+        RawElement root() {
+            return root;
         }
 
         @Override public void error(SAXParseException failure) throws SAXException {
@@ -344,8 +395,8 @@ public final class MarkupParser {
         }
 
         private MarkupException tooLarge(String message, String path, int line, int column) {
-            return new MarkupException(MarkupException.Kind.TOO_LARGE, path, line, column,
-                    message);
+            return diagnostic(
+                    MarkupException.Kind.TOO_LARGE, source, path, line, column, message);
         }
 
         private int line() {
@@ -361,48 +412,34 @@ public final class MarkupParser {
     private static final class Frame {
         private final String tag;
         private final String path;
-        private final LinkedHashMap<String, String> attrs;
-        private final List<Element> children = new ArrayList<>();
+        private final LinkedHashMap<String, RawAttribute> attrs;
+        private final List<RawElement> children = new ArrayList<>();
         private final StringBuilder text = new StringBuilder();
-        private final int line;
-        private final int column;
+        private final MarkupSourceLocation origin;
 
-        private Frame(String tag, String path, LinkedHashMap<String, String> attrs,
-                int line, int column) {
+        private Frame(
+                String tag,
+                String path,
+                LinkedHashMap<String, RawAttribute> attrs,
+                MarkupSourceLocation origin) {
             this.tag = tag;
             this.path = path;
             this.attrs = attrs;
-            this.line = line;
-            this.column = column;
+            this.origin = origin;
         }
 
-        private Element build(Set<String> ids) {
+        private RawElement build() {
             String content = text.toString().strip();
             if (!content.isEmpty() && !children.isEmpty()) {
-                throw new MarkupException(MarkupException.Kind.INVALID_VALUE, path, line, column,
+                throw diagnostic(
+                        MarkupException.Kind.INVALID_VALUE,
+                        origin.source(),
+                        path,
+                        origin.line(),
+                        origin.column(),
                         "mixed text content is not supported in <" + tag + ">");
             }
-            String declaredText = attrs.get("text");
-            String textValue = content.isEmpty() ? declaredText : content;
-            String id = attrs.get("id");
-            String name = attrs.get("name");
-            String label = attrs.get("label");
-            LinkedHashMap<String, String> semanticAttrs = new LinkedHashMap<>(attrs);
-            if (content.isEmpty() && declaredText != null) {
-                semanticAttrs.put("text", declaredText);
-            } else if (!content.isEmpty()) {
-                semanticAttrs.put("text", content);
-            }
-            List<String> classes = splitClasses(attrs.get("class"));
-            return new Element(tag, id, name, label, textValue, semanticAttrs, classes,
-                    List.copyOf(children), line, column);
-        }
-
-        private static List<String> splitClasses(String value) {
-            if (value == null || value.isBlank()) {
-                return List.of();
-            }
-            return List.of(value.toLowerCase(Locale.ROOT).split("\\s+"));
+            return new RawElement(tag, attrs, content, children, origin, List.of());
         }
     }
 }

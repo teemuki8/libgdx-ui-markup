@@ -58,6 +58,50 @@ final class MarkupParserTest {
     }
 
     @Test
+    void componentFreeDocumentKeepsItsConcreteShapeAndSemantics() {
+        MarkupDocument document = parser.parse("""
+                <ui>
+                  <table id="panel" class="Panel primary">
+                    <button id="save" text="Save" name="Save"/>
+                  </table>
+                </ui>
+                """, "screen.xml");
+
+        Element panel = document.root().children().getFirst();
+        Element save = panel.children().getFirst();
+        assertEquals("screen.xml", document.source());
+        assertEquals("panel", panel.id());
+        assertEquals(List.of("panel", "primary"), panel.classes());
+        assertEquals("Save", save.text());
+        assertEquals("Save", save.name());
+        assertEquals(3, save.line());
+        ElementProvenance provenance = document.provenanceFor("ui/table/button");
+        assertEquals("screen.xml", provenance.origin().source());
+        assertEquals("screen.xml", provenance.locationFor("id").source());
+    }
+
+    @Test
+    void pathParseUsesAbsoluteNormalizedSourceIdentity() throws Exception {
+        Path file = tempDir.resolve("nested").resolve("..").resolve("screen.xml");
+        Files.createDirectories(tempDir.resolve("nested"));
+        Files.writeString(tempDir.resolve("screen.xml"), "<ui/>");
+
+        MarkupDocument document = parser.parse(file);
+
+        assertEquals(file.toAbsolutePath().normalize().toString(), document.source());
+    }
+
+    @Test
+    void malformedDocumentRetainsExplicitSourceIdentity() {
+        MarkupException failure = assertThrows(
+                MarkupException.class,
+                () -> parser.parse("<ui><", "broken-screen.xml"));
+
+        assertEquals(MarkupException.Kind.MALFORMED_XML, failure.kind());
+        assertEquals("broken-screen.xml", failure.source());
+    }
+
+    @Test
     void capturesTextFromContentPreferringContentOverAttribute() {
         MarkupDocument fromContent = parser.parse(
                 "<ui><label>Hello world</label></ui>");
