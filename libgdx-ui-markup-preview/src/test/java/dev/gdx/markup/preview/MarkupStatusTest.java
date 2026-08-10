@@ -7,7 +7,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.gdx.markup.core.ComponentTraceFrame;
+import dev.gdx.markup.core.MarkupDiagnosticContext;
 import dev.gdx.markup.core.MarkupException;
+import dev.gdx.markup.core.MarkupSourceLocation;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -40,6 +44,21 @@ final class MarkupStatusTest {
         assertEquals(3, node.get("column").asInt());
         assertEquals("expected an integer for width", node.get("message").asText());
         assertFalse(node.has("nodes"));
+    }
+
+    @Test
+    void componentFailureJsonCarriesBoundedStructuredContext() throws Exception {
+        JsonNode node = JSON.readTree(MarkupStatus.error(componentFailure()).json());
+
+        assertEquals(3, node.path("schemaVersion").asInt());
+        assertEquals("hud.xml", node.path("source").asText());
+        assertEquals("value", node.path("attribute").asText());
+        assertEquals("finite float", node.path("expected").asText());
+        assertEquals("fast", node.path("received").asText());
+        assertEquals("HealthBar", node.path("componentTrace").get(0)
+                .path("component").asText());
+        assertEquals("ui/use", node.path("componentTrace").get(0)
+                .path("elementPath").asText());
     }
 
     @Test
@@ -91,6 +110,9 @@ final class MarkupStatusTest {
         assertEquals(0, node.get("line").asInt());
         assertEquals(0, node.get("column").asInt());
         assertEquals("cannot read ui.xml", node.get("message").asText());
+        assertEquals("", node.get("source").asText());
+        assertEquals("", node.get("attribute").asText());
+        assertEquals(0, node.get("componentTrace").size());
     }
 
     @Test
@@ -174,6 +196,70 @@ final class MarkupStatusTest {
                 "a pair ending exactly at the cut must stay whole: " + emitted.length());
     }
 
+    @Test
+    void structuredStringsAndTraceFrameStringsAreSurrogateSafelyBounded() {
+        String oversized = "x".repeat(MarkupStatus.MAX_STRING_LENGTH - 1) + "😀" + "tail";
+        ComponentTraceFrame frame = new ComponentTraceFrame(
+                "HealthBar", new MarkupSourceLocation("hud.xml", oversized, 18, 3));
+        MarkupStatus status = new MarkupStatus(
+                MarkupStatus.SCHEMA_VERSION,
+                false,
+                "INVALID_VALUE",
+                "hud.xml",
+                "ui/progressbar",
+                9,
+                9,
+                "value",
+                oversized,
+                "fast",
+                "",
+                "document rejected before Scene2D build",
+                List.of(frame),
+                "invalid value",
+                0);
+
+        assertTrue(status.expected().length() <= MarkupStatus.MAX_STRING_LENGTH);
+        assertTrue(status.componentTrace().getFirst().invocation().elementPath().length()
+                <= MarkupStatus.MAX_STRING_LENGTH);
+        assertFalse(Character.isSurrogate(status.expected().charAt(status.expected().length() - 1)));
+    }
+
+    @Test
+    void statusRejectsMoreThanSixteenFramesOrOversizedAggregateTrace() {
+        ComponentTraceFrame shortFrame = new ComponentTraceFrame(
+                "Panel", MarkupSourceLocation.memory("ui/use", 1, 1));
+        assertThrows(IllegalArgumentException.class, () -> statusWithTrace(
+                java.util.stream.Stream.generate(() -> shortFrame).limit(17).toList()));
+
+        List<ComponentTraceFrame> oversized = java.util.stream.IntStream.range(0, 16)
+                .mapToObj(index -> new ComponentTraceFrame(
+                        "Panel" + index,
+                        new MarkupSourceLocation(
+                                "screen.xml", "x".repeat(1_100) + index, 1, 1)))
+                .toList();
+        assertThrows(IllegalArgumentException.class, () -> statusWithTrace(oversized));
+    }
+
+    @Test
+    void successCannotCarryStructuredErrorContext() {
+        assertThrows(IllegalArgumentException.class, () -> new MarkupStatus(
+                MarkupStatus.SCHEMA_VERSION,
+                true,
+                null,
+                "screen.xml",
+                null,
+                0,
+                0,
+                null,
+                null,
+                null,
+                null,
+                null,
+                List.of(),
+                null,
+                1));
+    }
+
     private static MarkupException locatedInvalidValue() {
         return new MarkupException(
                 MarkupException.Kind.INVALID_VALUE,
@@ -181,5 +267,44 @@ final class MarkupStatusTest {
                 7,
                 3,
                 "expected an integer for width");
+    }
+
+    private static MarkupException componentFailure() {
+        ComponentTraceFrame frame = new ComponentTraceFrame(
+                "HealthBar", new MarkupSourceLocation("hud.xml", "ui/use", 18, 3));
+        MarkupDiagnosticContext context = new MarkupDiagnosticContext(
+                "hud.xml",
+                "value",
+                "finite float",
+                "fast",
+                "",
+                "document rejected before Scene2D build",
+                List.of(frame));
+        return new MarkupException(
+                MarkupException.Kind.INVALID_VALUE,
+                "ui/table/progressbar",
+                9,
+                9,
+                "invalid value",
+                context);
+    }
+
+    private static MarkupStatus statusWithTrace(List<ComponentTraceFrame> trace) {
+        return new MarkupStatus(
+                MarkupStatus.SCHEMA_VERSION,
+                false,
+                "INVALID_VALUE",
+                "screen.xml",
+                "ui/label",
+                1,
+                1,
+                "text",
+                "non-blank text",
+                "",
+                "",
+                "document rejected before Scene2D build",
+                trace,
+                "invalid value",
+                0);
     }
 }
