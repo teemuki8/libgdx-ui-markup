@@ -30,7 +30,7 @@ custom tags, and diagnosis—see [the agentic cookbook](docs/guides/agentic-cook
 
 ### Ecosystem versions
 
-**Current tested stack:** markup 0.5.0, harness 1.2.0, agent-runtime 2.0.0, and libGDX
+**Current tested stack:** markup 0.6.0, harness 1.2.0, agent-runtime 2.0.0, and libGDX
 1.14.2. This is the recommended combination for new applications.
 
 **Minimum compatible stack:** harness 1.1.0 and agent-runtime 1.0.0. The release gate executes
