@@ -12,9 +12,10 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** Expands bounded document-local components before concrete-dialect validation. */
+/** Expands bounded combined component definitions before concrete-dialect validation. */
 final class ComponentCompiler {
-    private static final Pattern COMPONENT_NAME = Pattern.compile("[A-Z][A-Za-z0-9]{0,63}");
+    private static final Pattern COMPONENT_NAME =
+            Pattern.compile("(?:[A-Z][A-Za-z0-9]{0,63}\\.)?[A-Z][A-Za-z0-9]{0,63}");
     private static final Pattern PARAMETER_NAME = Pattern.compile("[a-z][a-z0-9-]{0,63}");
     private static final Pattern SUBSTITUTION =
             Pattern.compile("\\$\\{([a-z][a-z0-9-]{0,63})}");
@@ -456,7 +457,7 @@ final class ComponentCompiler {
                     nameAttribute.origin(),
                     component.origin().elementPath(),
                     "invalid component name \"" + name + "\"",
-                    "[A-Z][A-Za-z0-9]{0,63}",
+                    "UpperCamel name or Namespace.UpperCamel name",
                     name,
                     "name",
                     List.of());

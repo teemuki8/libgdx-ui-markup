@@ -149,6 +149,32 @@ final class MarkupBuilderTest {
     }
 
     @Test
+    void registeredBundleBuildsTheSameConcreteScene2dAndSemanticPath() throws Exception {
+        GdxTestHost.run(() -> {
+            Skin skin = DefaultSkin.create();
+            try {
+                FakeSink sink = new FakeSink();
+                MarkupParser parser = markup.withComponentBundles(java.util.Map.of("Common", """
+                        <ui><components><component name="ActionButton">
+                          <param name="id" required="true"/>
+                          <button id="${id}" name="Continue" text="Continue" width="180"/>
+                        </component></components></ui>
+                        """));
+                BuiltUi ui = MarkupBuilder.build(parser.parse(
+                        "<ui><table><use component='Common.ActionButton' id='continue'/></table></ui>"),
+                        css.parse("button { width: 220px; }"), skin, sink);
+                TextButton button = ui.root().findActor("continue");
+                assertEquals("Continue", button.getText().toString());
+                assertEquals("button", sink.roles.get("continue"));
+                assertEquals("Continue", sink.accessibleNames.get("continue"));
+                assertEquals(180f, ((Table) button.getParent()).getCell(button).getPrefWidth());
+            } finally {
+                skin.dispose();
+            }
+        });
+    }
+
+    @Test
     void cellConstraintsAreApplied() throws Exception {
         GdxTestHost.run(() -> {
             BuiltUi built = MarkupBuilder.build(markup.parse("""

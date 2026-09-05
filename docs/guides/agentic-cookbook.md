@@ -15,6 +15,7 @@ libgdx-ui-harness 1.2.0, and libgdx-agent-runtime 2.0.0 on Java 25.
 | See an XML/CSS change and get a bounded screenshot | [Preview a document](#1-preview-a-document) |
 | Validate untrusted markup without a GL context | [Parse without GL](#2-parse-without-gl) |
 | Reuse a bounded local UI structure | [Define reusable components](#2a-define-reusable-components) |
+| Share application-supplied components across screens | [Register component bundles](#2b-register-component-bundles-unreleased) |
 | Add the UI to an application-owned Stage | [Build on the render thread](#3-build-on-the-render-thread) |
 | Make a Table UI follow its parent or viewport | [Use responsive GDXCSS layout](#3a-use-responsive-gdxcss-layout) |
 | Style paint, text, images, input, or Actor transforms | [Use bounded Scene2D styling](#3b-use-bounded-scene2d-styling) |
@@ -214,6 +215,45 @@ Reference: the executable [`signin.xml`](../../samples/signin.xml) /
 [`signin.gdxcss`](../../samples/signin.gdxcss),
 [`ComponentCompiler`](../../libgdx-ui-markup/src/main/java/dev/gdx/markup/core/ComponentCompiler.java),
 and [`MarkupParserTest`](../../libgdx-ui-markup/src/test/java/dev/gdx/markup/core/MarkupParserTest.java).
+
+## 2b. Register component bundles (unreleased)
+
+This API is in source after 0.6.0; do not copy it into a consumer using published 0.6.0.
+The application supplies XML strings from its own pinned resources. The parser never resolves
+paths, URLs, or imports from markup:
+
+```java
+MarkupParser parser = new MarkupParser().withComponentBundles(Map.of("Common", """
+    <ui><components><component name="ActionButton">
+      <param name="id" required="true"/>
+      <button id="${id}" name="Continue" text="Continue" width="180"/>
+    </component></components></ui>
+    """));
+MarkupDocument menu = parser.parse("""
+    <ui><table><use component="Common.ActionButton" id="menu-continue"/></table></ui>
+    """, "menu.xml");
+MarkupDocument pause = parser.parse("""
+    <ui><table><use component="Common.ActionButton" id="pause-continue"/></table></ui>
+    """, "pause.xml");
+```
+
+Import `java.util.Map`. Pass either result to the ordinary `MarkupBuilder.build` on the render
+thread using the same approved Skin, CSS and semantic sink as any document-local component.
+At most 16 bundles share the screen's configured byte/element budgets and the existing
+256-definition limit. Bundle sources contain only `<ui><components>...</components></ui>`.
+Namespaces and local definition names each use UpperCamel identifiers up to 64 characters.
+Inside a bundle, `<use component="ActionButton">` resolves locally; an explicit
+`Other.ActionButton` reference remains qualified. Namespaced export collisions and cycles fail.
+
+No Actor ID is prefixed implicitly. Use explicit ID/prefix parameters for each instance, as above;
+duplicate IDs still fail. The returned parser copies configuration and leaves the original parser
+unchanged. Diagnostics retain `bundle:Common` origins and invocation traces. The stock preview
+CLI has no bundle option yet: configure the application's own authoring/test host with the same
+bundle sources, or preview self-contained document-local fixtures. Do not claim an unconfigured
+preview tested bundle loading. See [ADR 0006](../adr/0006-application-component-bundles.md).
+
+Narrow proof: `xvfb-run -a ./gradlew :libgdx-ui-markup:test --tests '*ComponentBundlesTest'
+--tests '*MarkupBuilderTest.registeredBundle*'`.
 
 ## 3. Build on the render thread
 

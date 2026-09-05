@@ -15,6 +15,7 @@ import java.util.Arrays;
 import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import javax.xml.XMLConstants;
@@ -49,7 +50,7 @@ public final class MarkupParser {
     public static final int MAX_NAME_LENGTH = 256;
     /** Maximum custom tags accepted by one parser configuration. */
     public static final int MAX_EXTRA_TAGS = 256;
-    /** Maximum document-local component definitions. */
+    /** Maximum combined document-local and registered bundle component definitions. */
     public static final int MAX_COMPONENTS = 256;
     /** Maximum parameters declared by one component. */
     public static final int MAX_COMPONENT_PARAMETERS = 64;
@@ -68,6 +69,7 @@ public final class MarkupParser {
     private final int maxAttributeValue;
     private final int maxText;
     private final Set<String> extraTags;
+    private final Map<String, String> componentBundles;
 
     /** Creates a parser with the default bounded limits. */
     public MarkupParser() {
@@ -91,12 +93,33 @@ public final class MarkupParser {
     /** Creates a parser with explicit bounded limits and custom tags. */
     public MarkupParser(int maxInputBytes, int maxElements, int maxDepth,
             int maxAttributeValue, int maxText, Set<String> extraTags) {
+        this(maxInputBytes, maxElements, maxDepth, maxAttributeValue, maxText, extraTags, Map.of());
+    }
+
+    private MarkupParser(int maxInputBytes, int maxElements, int maxDepth,
+            int maxAttributeValue, int maxText, Set<String> extraTags,
+            Map<String, String> componentBundles) {
         this.maxInputBytes = maxInputBytes;
         this.maxElements = maxElements;
         this.maxDepth = maxDepth;
         this.maxAttributeValue = maxAttributeValue;
         this.maxText = maxText;
         this.extraTags = boundedExtraTags(extraTags);
+        this.componentBundles = ComponentBundles.sources(componentBundles);
+    }
+
+    /**
+     * Returns an independent parser with application-owned in-memory component bundles.
+     * Keys are UpperCamel namespaces; values are strict {@code <ui><components>...</components></ui>}
+     * documents. At most 16 bundles share this parser's byte/element budgets with the screen.
+     * No path or URL is resolved. Replaces rather than appends previous bundle configuration.
+     *
+     * @param bundles namespace to XML source mapping, copied before return
+     * @return parser retaining these limits and custom tags
+     */
+    public MarkupParser withComponentBundles(Map<String, String> bundles) {
+        return new MarkupParser(maxInputBytes, maxElements, maxDepth, maxAttributeValue,
+                maxText, extraTags, bundles);
     }
 
     /**
@@ -166,11 +189,23 @@ public final class MarkupParser {
     /** Shared parse body for in-bounds UTF-8 markup, whether from a String or a file. */
     private MarkupDocument parseUtf8(int byteLength, String xml, String source) {
         RawElement raw = readRaw(xml, source);
+        int totalBytes = byteLength;
+        Map<String, RawElement> bundles = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : componentBundles.entrySet()) {
+            String bundleSource = "bundle:" + entry.getKey();
+            requireInputLimit(entry.getValue().length(), bundleSource);
+            totalBytes += entry.getValue().getBytes(StandardCharsets.UTF_8).length;
+            requireInputLimit(totalBytes, bundleSource);
+            bundles.put(entry.getKey(), readRaw(entry.getValue(), bundleSource));
+        }
+        if (!bundles.isEmpty()) {
+            raw = ComponentBundles.merge(raw, bundles, maxElements);
+        }
         RawElement expanded =
                 new ComponentCompiler(maxElements, maxAttributeValue, maxText, extraTags)
                         .expand(raw);
         return new ConcreteElementCompiler(extraTags, maxElements)
-                .compile(expanded, byteLength, source);
+                .compile(expanded, totalBytes, source);
     }
 
     /** Reads bounded raw XML without applying the concrete markup dialect. */
