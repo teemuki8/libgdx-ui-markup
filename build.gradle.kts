@@ -6,7 +6,9 @@ data class EcosystemVersions(val harness: String, val agentRuntime: String)
 
 val ecosystemProfiles = mapOf(
     "minimum" to EcosystemVersions("1.1.0", "1.0.0"),
-    "current" to EcosystemVersions("1.2.0", "2.0.0"),
+    // The current ecosystem tracks the reliability releases the consuming stack pairs:
+    // harness 2.1.1 with agent-runtime 3.2.0.
+    "current" to EcosystemVersions("2.1.1", "3.2.0"),
 )
 val ecosystemProfile = providers.gradleProperty("ecosystemProfile").orElse("current")
 val selectedEcosystem = ecosystemProfiles[ecosystemProfile.get()]
