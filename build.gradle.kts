@@ -33,19 +33,6 @@ allprojects {
     group = mavenGroup
     version = releaseVersion.get()
 
-    // Every resolvable configuration in every project (including the IDEA and qualification
-    // modules used by CI/release) must resolve against a committed gradle.lockfile. STRICT mode
-    // fails closed: a missing or altered lock state breaks resolution of the affected
-    // configuration. The root resolveAndLockAll task regenerates the complete lock set, and
-    // --write-locks is the only way to update it.
-    dependencyLocking {
-        lockAllConfigurations()
-        lockMode = LockMode.STRICT
-        if (ecosystemProfile.get() == "minimum") {
-            lockFile.set(layout.projectDirectory.file("gradle-minimum.lockfile"))
-        }
-    }
-
     configurations.configureEach {
         resolutionStrategy.eachDependency {
             if (requested.group == "io.github.teemuki8") {
@@ -61,6 +48,21 @@ allprojects {
 }
 
 subprojects {
+    // Every resolvable configuration in every subproject (including the IDEA and
+    // qualification modules used by CI/release) must resolve against a committed
+    // gradle.lockfile. STRICT mode fails closed: a missing or altered lock state breaks
+    // resolution of the affected configuration. The root resolveAndLockAll task
+    // regenerates the complete lock set, and --write-locks is the only way to update it.
+    // The locking stays in subprojects only: the composite build forbids the
+    // beforeEvaluate that the root-project lockAllConfigurations schedules.
+    dependencyLocking {
+        lockAllConfigurations()
+        lockMode = LockMode.STRICT
+        if (ecosystemProfile.get() == "minimum") {
+            lockFile.set(layout.projectDirectory.file("gradle-minimum.lockfile"))
+        }
+    }
+
     if (name == "libgdx-ui-markup-idea") {
         // The IDEA plugin runs on IntelliJ's JBR (Java 21+) and manages its own toolchain.
         return@subprojects
