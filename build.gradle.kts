@@ -33,18 +33,6 @@ allprojects {
     group = mavenGroup
     version = releaseVersion.get()
 
-    configurations.configureEach {
-        resolutionStrategy.eachDependency {
-            if (requested.group == "io.github.teemuki8") {
-                when {
-                    requested.name.startsWith("harness-") ->
-                        useVersion(selectedEcosystem.harness)
-                    requested.name.startsWith("agent-runtime-") ->
-                        useVersion(selectedEcosystem.agentRuntime)
-                }
-            }
-        }
-    }
 }
 
 subprojects {
